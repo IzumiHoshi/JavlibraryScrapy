@@ -4,6 +4,7 @@ import re
 from xml.sax.saxutils import escape
 from car import javbuscar
 from pathlib import Path
+from utils import split_poster_from_fanart
 
 BaseCase.main(__name__, __file__)
 
@@ -226,6 +227,7 @@ class JavbusScraper(BaseCase):
             if cover:
                 cover_filename = save_dir / f"{filename_prefix}-fanart.png"
                 self.rename(cover, cover_filename)
+                split_poster_from_fanart(cover_filename, save_dir / f"{filename_prefix}-poster.png")
                 # print(f"已下载封面：{cover_filename}")
 
         input("请按 Enter 键继续...")  # 等待用户输入以查看结果
