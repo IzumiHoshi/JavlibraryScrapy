@@ -5,8 +5,13 @@ from car import javbuscar
 from pathlib import Path
 from utils import split_poster_from_fanart
 import os
+import logging
 from dotenv import load_dotenv
 from filesave import write_xml, strip_text, split_text, rename
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
 load_dotenv()
 
@@ -20,7 +25,7 @@ class JavbusScraper(BaseCase):
 
         proxy_enabled = os.getenv("PROXY_ENABLED", "False").lower() == "true"
         if proxy_enabled:
-            print(f'启用代理...{os.getenv("PROXY", "")}')
+            logging.info(f'启用代理...{os.getenv("PROXY", "")}')
             sb_config.proxy = os.getenv("PROXY", "")
 
         self.javbus_url = os.getenv("JAVBUS_URL", "https://www.javbus.com/")
@@ -35,14 +40,14 @@ class JavbusScraper(BaseCase):
         # 只处理封面图片，假设页面已打开且图片已加载
         # selector = "div.movie > div.screencap > a > img"
         if output_path.exists():
-            print(f"文件 {output_path.name} 已存在，跳过下载。")
+            logging.info(f"文件 {output_path.name} 已存在，跳过下载。")
             return output_path
         try:
             self.save_element_as_image_file(selector, str(output_path))
-            print(f"已截图保存图片：{output_path.name}")
+            logging.info(f"已截图保存图片：{output_path.name}")
             return output_path
         except Exception as e:
-            print(f"截图保存图片失败：{e}")
+            logging.error(f"截图保存图片失败：{e}")
             return None
 
     def fetch(self, carid: str, temp_path: str):
@@ -67,17 +72,17 @@ class JavbusScraper(BaseCase):
         try:
             actors = self.get_text("div.info > p:last-child", timeout=5)
         except Exception as e:
-            print(f"获取演员信息失败：{e}")
+            logging.warning(f"获取演员信息失败：{e}")
             actors = ""
 
-        print("页面标题：", title)
-        print("封面：", cover)
-        print("發行日期：", strip_text(release_date))
-        print("導演：", strip_text(director))
-        print("製作商：", strip_text(producer))
-        print("發行商：", strip_text(publisher))
-        print("類別：", split_text(category))
-        print("演員：", split_text(actors))
+        logging.info(f"页面标题：{title}")
+        logging.info(f"封面：{cover}")
+        logging.info(f"發行日期：{strip_text(release_date)}")
+        logging.info(f"導演：{strip_text(director)}")
+        logging.info(f"製作商：{strip_text(producer)}")
+        logging.info(f"發行商：{strip_text(publisher)}")
+        logging.info(f"類別：{split_text(category)}")
+        logging.info(f"演員：{split_text(actors)}")
         return {
             "title": title,
             "carid": carid,
@@ -91,22 +96,22 @@ class JavbusScraper(BaseCase):
         }
 
     def test_get_movie_info(self):
-        print("开始查找车牌...")
+        logging.info("开始查找车牌...")
         root_dir = input("请输入视频目录路径：").strip()
         root_dir = Path(root_dir).resolve()  # 确保路径是绝对路径
         cars = javbuscar(root_dir)  # 替换为实际的视频目录路径
         carinfo = []
         for carid, path in cars:
-            print(f"车牌：{carid}, 路径：{path}")
+            logging.info(f"车牌：{carid}, 路径：{path}")
             try:
                 info = self.fetch(carid, root_dir)
                 if not info:
-                    print(f"未找到车牌 {carid} 的信息。")
+                    logging.warning(f"未找到车牌 {carid} 的信息。")
                     continue
             except Exception as e:
-                print(f"发生错误：{e} : {carid}")
+                logging.error(f"发生错误：{e} : {carid}")
                 continue
-            # 处理获取到的信息
+            # 处理获取到的信息·
             info["path"] = path  # 添加视频文件路径
 
             carinfo.append(info)
@@ -133,6 +138,6 @@ class JavbusScraper(BaseCase):
                 split_poster_from_fanart(
                     cover_filename, save_dir / f"{filename_prefix}-poster.png"
                 )
-                # print(f"已下载封面：{cover_filename}")
+                # logging.info(f"已下载封面：{cover_filename}")
 
         input("请按 Enter 键继续...")  # 等待用户输入以查看结果
