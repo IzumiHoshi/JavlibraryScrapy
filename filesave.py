@@ -1,3 +1,8 @@
+import logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 import re
 from xml.sax.saxutils import escape
 from pathlib import Path
@@ -25,7 +30,7 @@ def write_xml(nfo_filename: str, content: dict):
     category = content.get("category", "")
     actors = content.get("actors", "")
     if not title or not carid:
-        print("标题或车牌不能为空，无法生成 NFO 文件。")
+        logging.warning("标题或车牌不能为空，无法生成 NFO 文件。")
         return
     # 解析字段
     nfo_title = title.strip()
@@ -93,23 +98,23 @@ def write_xml(nfo_filename: str, content: dict):
     # )
     with open(nfo_filename, "w", encoding="utf-8") as f:
         f.write(nfo_content)
-    print(f"已写入 nfo 文件：{nfo_filename}")
+    logging.info(f"已写入 nfo 文件：{nfo_filename}")
 
 
 
 def rename(old_name: Path, new_name: Path):
     """重命名文件"""
     if not old_name.exists():
-        print(f"文件 {old_name} 不存在，无法重命名。")
+        logging.error(f"文件 {old_name} 不存在，无法重命名。")
         return
     if old_name == new_name:
-        print(f"文件 {old_name} 已经是目标名称，无需重命名。")
+        logging.info(f"文件 {old_name} 已经是目标名称，无需重命名。")
         return
     if new_name.exists():
-        print(f"目标文件 {new_name} 已存在，无法重命名。")
+        logging.warning(f"目标文件 {new_name} 已存在，无法重命名。")
         return
     try:
         old_name.rename(new_name)
-        print(f"已将 {old_name.name} 重命名为 {new_name.name}")
+        logging.info(f"已将 {old_name.name} 重命名为 {new_name.name}")
     except Exception as e:
-        print(f"重命名文件失败：{e}")
+        logging.error(f"重命名文件失败：{e}")
