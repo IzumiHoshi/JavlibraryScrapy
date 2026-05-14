@@ -1,7 +1,7 @@
 import logging
+
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 import re
 from xml.sax.saxutils import escape
@@ -20,7 +20,7 @@ def split_text(text):
     return [text.strip()]
 
 
-def write_xml(nfo_filename: str, content: dict):
+def write_xml(nfo_filename: str | Path, content: dict):
     """将内容写入指定的 NFO 文件"""
     title = content.get("title", "")
     carid = content.get("carid", "")
@@ -99,7 +99,6 @@ def write_xml(nfo_filename: str, content: dict):
     with open(nfo_filename, "w", encoding="utf-8") as f:
         f.write(nfo_content)
     logging.info(f"已写入 nfo 文件：{nfo_filename}")
-
 
 
 def rename(old_name: Path, new_name: Path):
