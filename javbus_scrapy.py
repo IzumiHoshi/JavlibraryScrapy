@@ -10,9 +10,9 @@ import logging
 from pathlib import Path
 import os
 from dotenv import load_dotenv
-from filesave import write_xml, strip_text, split_text, rename
-from car import javbuscar
-from utils import split_poster_from_fanart
+from utils.filesave import write_xml, strip_text, split_text, rename
+from utils.car import javbuscar
+from utils.fanart import split_poster_from_fanart
 from PIL import Image
 import io
 import requests
