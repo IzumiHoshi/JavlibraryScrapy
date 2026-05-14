@@ -1,187 +1,237 @@
-# :hugs:New Version Coming!:hugs:
+# JAVBus Web Scraper (Rewritten with Scrapling)
 
-A tool to scrape works data from library and displaying in custom website.
+A Python web scraper for extracting adult video metadata from JAVBus and generating NFO metadata files compatible with media center software like Kodi/Plex.
 
-this project includes backend and frontend.
+**Status**: ✨ Recently rewritten using [Scrapling](https://github.com/D4Vinci/Scrapling) for improved reliability and performance.
 
-<img alt="demo" src="assets/imgs/img.jpg" width="500"/>
+## Features
 
-The previous version of JavlibraryScrapy is released to the following address:
-<https://github.com/desonglll/JavlibraryScrapy/releases>
+- **Dynamic Content Handling**: Uses Scrapling's `AsyncDynamicSession` for proper JavaScript rendering
+- **Metadata Extraction**: Extracts title, release date, producer, publisher, categories, and actors
+- **Image Download**: Automatically downloads and processes cover art with proper HTTP headers
+- **NFO Generation**: Creates Kodi-compatible XML metadata files
+- **Poster Processing**: Automatically generates poster images from cover art
+- **Proxy Support**: Built-in support for HTTP/HTTPS proxies
+- **Error Handling**: Comprehensive logging and error recovery
 
-- [:hugs:New Version Coming!:hugs:](#hugsnew-version-cominghugs)
-    - [Repoistories](#repoistories)
-    - [:zzz: Requirements](#zzz-requirements)
-        - [Before](#before)
-        - [:snake: Install Conda](#snake-install-conda)
-        - [Create a new Python environment using conda](#create-a-new-python-environment-using-conda)
-        - [Clone](#clone)
-        - [Install `poetry`](#install-poetry)
-    - [:rocket: Running](#rocket-running)
-        - [Configuration](#configuration)
-        - [Initialize Database](#initialize-database)
-        - [Start scrapy](#start-scrapy)
-        - [Delete database](#delete-database)
-    - [Backend Server](#backend-server)
-    - [Frontend Server](#frontend-server)
+## Requirements
 
-## Repoistories
+- **Python** 3.9+
+- **[uv](https://docs.astral.sh/uv/)** (Python package manager)
+- **Proxy** (required for JAVBus access from many regions)
+- **Windows/macOS/Linux** environment
 
-**Github**
+## Setup
 
-<https://github.com/desonglll/JavlibraryScrapy>
+### 1. Clone the Repository
 
-**Gitee**
-
-<https://gitee.com/desonglll/scrapy-jav>
-
-## :zzz: Requirements
-
-### Before
-
-`Windows/macOS/Linux`
-
-`git`
-
-`mysql8`
-
-And proxy to access `Javlibrary`.
-
-### :snake: Install Conda
-
-[Quick command line install](https://docs.anaconda.com/free/miniconda/)
-
-These quick command line instructions will get you set up quickly with the latest Miniconda installer. For graphical
-installer (.exe and .pkg) and hash checking instructions, see Installing Miniconda.
-
-**For macOS**
-
-These four commands quickly and quietly install the latest M1 macOS version of the installer and then clean up after
-themselves. To install a different version or architecture of Miniconda for macOS, change the name of the .sh installer
-in the curl command.
-
-```shell
-mkdir -p ~/miniconda3
-curl https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-arm64.sh -o ~/miniconda3/miniconda.sh
-bash ~/miniconda3/miniconda.sh -b -u -p ~/miniconda3
-rm -rf ~/miniconda3/miniconda.sh
+```bash
+git clone https://github.com/IzumiHoshi/JavlibraryScrapy.git
+cd JavlibraryScrapy
 ```
 
-After installing, initialize your newly-installed Miniconda. The following commands initialize for bash and zsh shells:
+### 2. Install Dependencies with uv
 
-```shell
-~/miniconda3/bin/conda init bash
-~/miniconda3/bin/conda init zsh
+```bash
+uv sync
 ```
 
-### Create a new Python environment using conda
+This will install all dependencies including:
+- `scrapling` - Web scraping framework
+- `python-dotenv` - Environment variable management
+- `lxml` - XML processing
+- `Pillow` - Image processing
 
-```shell
-conda create -n scrapyJAV python=3.11
+### 3. Initialize Scrapling (First Time Only)
+
+After installing dependencies, initialize Scrapling's browser environment:
+
+```bash
+uv run python -c "from scrapling.fetchers import DynamicFetcher; print('Scrapling initialized')"
 ```
 
-Then activate environment
+This command will:
+1. Download and install the Chromium browser engine (if not already installed)
+2. Set up the necessary browser profiles and cache
+3. Verify the installation is complete
 
-```shell
-conda activate scrapyJAV
+**Note**: First-time setup may take a few minutes as it downloads the browser (~300MB).
+
+If you have Google Chrome already installed and want to use it instead of Chromium:
+
+```bash
+uv run playwright install chrome
 ```
 
-### Clone
+Then set `real_chrome=True` in the spider configuration (if needed).
 
-**Github**
+### 4. Configure Environment
 
-```shell
-git clone https://github.com/desonglll/JavlibraryScrapy.git scrapyjav-project
+Create a `.env` file in the root directory:
+
+```env
+# JAVBus configuration
+JAVBUS_URL=https://www.javbus.com/
+
+# Proxy settings (optional but recommended)
+PROXY_ENABLED=True
+PROXY=http://127.0.0.1:10808
 ```
 
-**Gitee**
+## Usage
 
-```shell
-git clone https://gitee.com/desonglll/scrapy-jav.git scrapyjav-project
+### Basic Usage
+
+```bash
+uv run javbus_scrapling.py
 ```
 
-### Install `poetry`
-
-If you are in `scrapyjav-project` directory:
-
-```shell
-pip install poetry
-cd scrapyJAV
-poetry install
+When prompted, enter the path to your videos directory:
+```
+请输入视频目录路径：C:\Videos\MyCollection
 ```
 
-## :rocket: Running
+The script will:
+1. Find all video files and extract video codes (e.g., ABF-340)
+2. Fetch metadata from JAVBus for each video
+3. Download cover art (with proper headers to bypass hotlink protection)
+4. Generate Kodi-compatible NFO files
+5. Create poster images from cover art
+6. Organize files in subdirectories with metadata
 
-### Configuration
+### Output Structure
 
-Edit `scrapyJAV/config.yaml` for database configuration.
-
-Edit `scrapyJAV/config.yaml` for argument configuration.
-
-:pencil: Edit configuration arguments based on your needs.
-
-- Enter the actor ID that you want to scrape.
-- Eg: `https://www.javlibrary.com/cn/vl_star.php?list&mode=&s=ae5q6&page=1` and `ae5q6`is the id of 楓カレン
-- In `id_references`, there are some references of actress ID in json format.
-
-### Initialize Database
-
-Suppose you are in `scrapyjav-project` directory.
-
-There is two ways to create database
-
-#### Running `.sql` file
-
-```shell
-cd scrapyJAV
-mysql -u root -p
+```
+C:\Videos\MyCollection\
+├── ABF-340 性欲に支配された倒錯カップルの同棲中出し性交録。 瀧本雫葉/
+│   ├── ABF-340 性欲に...mp4 (original video)
+│   ├── ABF-340 性欲に...nfo (Kodi metadata)
+│   ├── ABF-340 性欲に...-fanart.png (cover art)
+│   └── ABF-340 性欲に...-poster.png (poster thumbnail)
 ```
 
-Then
+### Generated NFO File Example
 
-```mysql
-create database scrapyjav character set utf8;
-exit
+```xml
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<movie>
+  <title>性欲に支配された倒錯カップルの同棲中出し性交録。</title>
+  <id>ABF-340</id>
+  <director>プレステージ</director>
+  <studio>プレステージ</studio>
+  <premiered>2026-04-17</premiered>
+  <genre>フルハイビジョン(FHD)</genre>
+  <genre>巨乳</genre>
+  <actor>
+    <name>瀧本雫葉</name>
+  </actor>
+</movie>
 ```
 
-Running `.sql` file using the following command
+## Architecture
 
-```shell
-mysql -Dscrapyjav -u root < database_structure.sql
+### Core Components
+
+1. **JavbusSpider Class**
+   - Manages the scraping session using Scrapling's `AsyncDynamicSession`
+   - Handles async operations for multiple videos
+   - Manages proxy and browser configuration
+
+2. **parse() Method**
+   - Extracts metadata from JAVBus HTML pages
+   - Handles both absolute and relative image URLs
+   - Saves debug HTML for troubleshooting
+
+3. **download_cover() Method**
+   - Asynchronously downloads cover images
+   - Includes proper HTTP headers (User-Agent, Referer)
+   - Supports proxy connection
+
+4. **process_movie() Method**
+   - Renames video files with proper metadata
+   - Generates NFO files
+   - Creates poster images
+
+## Technical Details
+
+### Browser Configuration
+
+```python
+async with AsyncDynamicSession(
+    load_dom=True,              # Wait for JavaScript to load
+    network_idle=True,          # Wait for network idle
+    disable_resources=True,     # Skip non-essential resources (25% faster)
+    proxy=self.proxy,           # Use configured proxy
+    headless=True,              # Run in headless mode
+    timeout=30000,              # 30 second timeout
+) as session:
 ```
 
-#### Using built-in methods
+### Header Configuration for Image Download
 
-Running the following command for initialize the database.
-
-```shell
-poetry run scrapyjav -d init
+```python
+headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ...',
+    'Referer': f'{self.javbus_url}{car_id}',  # Critical for hotlink bypass
+    'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+}
 ```
 
-### Start scrapy
+## Troubleshooting
 
-Suppose you are in `scrapyjav-project.scrapyJAV` directory.
+### 403 Forbidden Error on Image Download
+- **Cause**: Missing or incorrect Referer header
+- **Solution**: Ensure the Referer header points to the video page
 
-Running the following command:
+### JavaScript Not Loading
+- **Cause**: Browser timeout or network issues
+- **Solution**: Increase `timeout` parameter in AsyncDynamicSession
 
-```shell
-poetry run scrapyjav -c start
+### Metadata Not Extracted
+- **Solution**: Check the debug HTML file (`{video_code}_debug.html`) saved in your video directory
+
+### Proxy Connection Issues
+- **Ensure**: Proxy is running and accessible at the configured address
+- **Check**: PROXY_ENABLED is set to `True` in .env
+
+## Development
+
+### Debugging
+
+Enable debug HTML output to inspect page structure:
+```python
+debug_file = self.root_dir / f"{car_id}_debug.html"
+# HTML is automatically saved for each video
 ```
 
-### Delete database
+### Testing Single Video
 
-```shell
-poetry run scrapyjav -d delete
+```python
+from javbus_scrapling import JavbusSpider
+from pathlib import Path
+import asyncio
+
+async def test():
+    spider = JavbusSpider(root_dir=Path("C:\\Videos"))
+    cars = [("ABF-340", "C:\\Videos\\ABF-340.mp4")]
+    await spider.crawl_and_process(cars)
+
+asyncio.run(test())
 ```
 
-## Backend Server
+## Related Projects
 
-Go into the `backend` folder, and see [`README.md`](./backend/README.md) there.
+- **Previous Version**: [Original JavlibraryScrapy](https://github.com/desonglll/JavlibraryScrapy)
+- **Scraping Framework**: [Scrapling](https://github.com/D4Vinci/Scrapling)
+- **Docs**: [Scrapling Documentation](https://scrapling.readthedocs.io/)
 
-## Frontend Server
+## License
 
-Go into the `frontend` folder, and see [`README.md`](./frontend/README.md) there.
+This project is provided as-is for educational purposes.
 
-## Star History
+## Notes
 
-[![Star History Chart](https://api.star-history.com/svg?repos=desonglll/JavlibraryScrapy&type=Date)](https://star-history.com/#desonglll/JavlibraryScrapy&Date)
+- This tool requires a proxy to access JAVBus from most regions
+- Respect the website's terms of service and robots.txt
+- The spider uses anti-detection measures (real User-Agents, proper headers, controlled request rates)
+- Generated metadata is compatible with Kodi, Plex, and similar media center software

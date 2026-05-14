@@ -1,7 +1,7 @@
 import logging
+
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 import re
 import os
@@ -56,4 +56,3 @@ def javbuscar(root_dir):
                 else:
                     logging.warning(f"No car found in file: {file_path}")
     return cars
-
