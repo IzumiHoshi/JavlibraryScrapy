@@ -1,13 +1,13 @@
 from seleniumbase import BaseCase
 from seleniumbase import config as sb_config
 import re
-from car import javbuscar
+from utils.car import javbuscar
 from pathlib import Path
-from utils import split_poster_from_fanart
+from utils.fanart import split_poster_from_fanart
 import os
 import logging
 from dotenv import load_dotenv
-from filesave import write_xml, strip_text, split_text, rename
+from utils.filesave import write_xml, strip_text, split_text, rename
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'

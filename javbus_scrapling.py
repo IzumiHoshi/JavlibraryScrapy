@@ -13,9 +13,9 @@ from scrapling.fetchers import AsyncDynamicSession
 import asyncio
 import requests
 
-from filesave import write_xml, strip_text, split_text, rename
-from car import javbuscar
-from utils import split_poster_from_fanart
+from utils.filesave import write_xml, strip_text, split_text, rename
+from utils.car import javbuscar
+from utils.fanart import split_poster_from_fanart
 
 load_dotenv()
 
@@ -307,9 +307,8 @@ class JavbusSpider:
 
 async def main():
     """主函数"""
-    # root_dir = input("请输入视频目录路径：").strip()
-    # root_dir = Path(root_dir).resolve()
-    root_dir = Path(r"C:\Users\go\Videos\Captures")
+    root_dir = input("请输入视频目录路径：").strip()
+    root_dir = Path(root_dir).resolve()
 
     if not root_dir.exists():
         logger.error(f"目录 {root_dir} 不存在")
