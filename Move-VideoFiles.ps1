@@ -4,7 +4,8 @@
 
 .DESCRIPTION
     此脚本查找指定文件夹中的所有视频文件，根据大小进行过滤，
-    然后将符合条件的文件移动到目标文件夹
+    然后将符合条件的文件移动到目标文件夹。
+    大文件（≥100MB）使用 robocopy 以支持进度显示。
 
 .PARAMETER SourcePath
     源文件夹路径，需要扫描的目录
@@ -92,6 +93,7 @@ Write-Host "找到 $($filteredFiles.Count) 个符合条件的视频文件`n" -Fo
 $successCount = 0
 $skipCount = 0
 $errorCount = 0
+$totalFiles = $filteredFiles.Count
 
 # 定义处理冲突的函数
 function Resolve-FileConflict {
@@ -177,7 +179,69 @@ function Resolve-FileConflict {
     }
 }
 
+# 定义使用 robocopy 移动文件的函数（支持进度显示）
+function Move-LargeFile {
+    param(
+        [string]$SourceFile,
+        [string]$DestinationPath,
+        [int]$FileIndex,
+        [int]$TotalFiles
+    )
+    
+    $fileName = Split-Path $SourceFile -Leaf
+    $sourceDir = Split-Path $SourceFile -Parent
+    $fileSizeMB = [math]::Round((Get-Item $SourceFile).Length / 1MB, 2)
+    
+    # 计算百分比
+    $percentComplete = [int](($FileIndex / $TotalFiles) * 100)
+    
+    # 显示进度条
+    Write-Progress -Activity "移动视频文件" `
+                   -Status "正在移动: $fileName ($fileSizeMB MB)" `
+                   -PercentComplete $percentComplete `
+                   -CurrentOperation "[$FileIndex/$TotalFiles]"
+    
+    try {
+        # 对于大文件，使用 robocopy 以获得更好的进度和可靠性
+        if ($fileSizeMB -ge 100) {
+            # 使用 robocopy 移动文件（比 Move-Item 更可靠且支持更好的进度）
+            $robocopyArgs = @(
+                "`"$sourceDir`"",           # 源目录
+                "`"$DestinationPath`"",     # 目标目录
+                "`"$fileName`"",            # 文件名
+                "/MOV",                     # 移动（源文件删除）
+                "/Y",                       # 覆盖
+                "/NP",                      # 不显示百分比
+                "/NFL",                     # 不记录文件列表
+                "/NDL",                     # 不记录目录列表
+                "/NJH",                     # 不显示作业标题
+                "/NJS"                      # 不显示作业摘要
+            )
+            
+            $output = & robocopy @robocopyArgs 2>&1
+            
+            # 检查 robocopy 返回码（0-7 都表示成功）
+            if ($LASTEXITCODE -le 7 -and $LASTEXITCODE -ge 0) {
+                return $true
+            }
+            else {
+                throw "robocopy 返回码: $LASTEXITCODE"
+            }
+        }
+        else {
+            # 小文件使用 Move-Item
+            Move-Item -Path $SourceFile -Destination $DestinationPath -Force
+            return $true
+        }
+    }
+    catch {
+        return $false
+    }
+}
+
+$currentIndex = 0
 foreach ($file in $filteredFiles) {
+    $currentIndex++
     $fileSizeMB = [math]::Round($file.Length / 1MB, 2)
     $relativePath = $file.FullName.Replace($SourcePath, "").TrimStart('\')
     
@@ -186,6 +250,7 @@ foreach ($file in $filteredFiles) {
         
         # 处理文件名冲突
         if (Test-Path $destFilePath) {
+            Write-Progress -Completed
             $resolution = Resolve-FileConflict -FileName $file.Name -DestinationPath $DestinationPath -SourceFilePath $file.FullName
             
             if ($resolution.Action -eq "skip") {
@@ -200,15 +265,26 @@ foreach ($file in $filteredFiles) {
             # overwrite 则继续使用原 $destFilePath
         }
         
-        Move-Item -Path $file.FullName -Destination $destFilePath -Force
-        Write-Host "✓ 已移动 ($fileSizeMB MB): $relativePath" -ForegroundColor Green
-        $successCount++
+        # 移动文件
+        $moveSuccess = Move-LargeFile -SourceFile $file.FullName -DestinationPath $DestinationPath -FileIndex $currentIndex -TotalFiles $totalFiles
+        
+        if ($moveSuccess) {
+            Write-Host "✓ 已移动 ($fileSizeMB MB): $relativePath" -ForegroundColor Green
+            $successCount++
+        }
+        else {
+            throw "文件移动失败"
+        }
     }
     catch {
+        Write-Progress -Completed
         Write-Host "✗ 移动失败: $relativePath - $_" -ForegroundColor Red
         $errorCount++
     }
 }
+
+# 清除进度条
+Write-Progress -Completed
 
 
 # 输出统计信息

@@ -55,7 +55,7 @@ def process_all_fanarts(directory: Path) -> None:
             fanart.name.replace("-fanart", "-poster")
         )  # 替换文件名
     logging.info(f"处理开始：{fanart.name} -> {poster_path.name}")
-        split_poster_from_fanart(fanart, poster_path)
+    split_poster_from_fanart(fanart, poster_path)
     logging.info(f"处理完成：{fanart.name} -> {poster_path.name}")
 
 
