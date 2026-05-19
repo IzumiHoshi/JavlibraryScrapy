@@ -32,7 +32,7 @@ class JAVLibrarySpider:
 
     def __init__(
         self,
-        base_url: str = "https://www.javlibrary.com/cn/vl_mostwanted.php",
+        base_url: str = "https://www.c97k.com/cn/vl_mostwanted.php",
         output_dir: Optional[Path] = None,
         proxy: Optional[str] = None,
     ):
@@ -351,7 +351,7 @@ async def main():
     )
 
     # 爬取（可以指定最多页数，如：max_pages=2）
-    await spider.crawl(max_pages=None)
+    await spider.crawl(max_pages=2)
 
     # 保存结果
     spider.save_to_json("javlibrary_movies.json")
