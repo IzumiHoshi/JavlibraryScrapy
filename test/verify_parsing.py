@@ -2,23 +2,20 @@
 """
 验证脚本 - 使用提供的示例 HTML 文件来验证解析逻辑
 """
-import sys
+
 import logging
 from pathlib import Path
 from scrapling import Selector
 
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-sys.path.append(str(Path(__file__).parent.parent))  # 将项目根目录添加到 sys.path，以便导入模块
 
 
 def verify_parsing():
     """使用示例 HTML 验证解析逻辑"""
     
     # 读取示例 HTML 文件
-    html_file = Path(__file__).parent.parent / "temp" / "最想要的影片 - JAVLibrary.html"
+    html_file = Path(__file__).parent / "temp" / "最想要的影片 - JAVLibrary.html"
     
     if not html_file.exists():
         logger.error(f"示例 HTML 文件不存在：{html_file}")
@@ -53,8 +50,6 @@ def verify_parsing():
             title = item.css("a::attr(title)").get()
             if title:
                 title = title.strip()
-            else:
-                title = ""
             
             # 提取封面 URL
             cover_url = item.css("img::attr(src)").get()
@@ -71,14 +66,12 @@ def verify_parsing():
                             cover_url = url_match.group(1)
                 elif not cover_url.startswith("http"):
                     cover_url = "https://www.javlibrary.com" + cover_url
-            else:
-                cover_url = ""
             
             movie_info = {
                 "id": movie_id,
                 "code": code,
-                "title": title,
-                "cover_url": cover_url,
+                "title": title[:50] + "..." if len(title) > 50 else title,
+                "cover_url": cover_url[:80] + "..." if len(cover_url) > 80 else cover_url,
             }
             
             movies.append(movie_info)

@@ -1,58 +1,177 @@
-# JAVLibrary Scrapling 爬虫 - 完整使用说明
+# JAVLibrary Scrapling 爬虫 - HOWTO 使用指南
 
-## 📋 已创建的文件
+## 📚 目录
 
-✅ **主爬虫脚本**
-- `javlibrary_scrapling.py` - 完整的爬虫脚本，支持代理、Cloudflare 验证、多页爬取
+1. [快速开始](#快速开始)
+2. [安装配置](#安装配置)
+3. [使用方法](#使用方法)
+4. [常见问题](#常见问题)
+5. [故障排查](#故障排查)
 
-✅ **测试和验证脚本**
-- `test_scraper.py` - 快速测试脚本（仅爬取第一页）
-- `verify_parsing.py` - 使用示例 HTML 验证解析逻辑 ✓ 已验证成功
+## 快速开始
 
-✅ **文档和配置**
-- `JAVLIBRARY_SCRAPER_GUIDE.md` - 完整的功能指南和开发文档
-- `QUICKSTART.md` - 快速开始指南
-- `.env.example` - 代理配置示例
+### 最简单的方式（2 分钟）
 
-## 🚀 快速开始
-
-### 1️⃣ 安装依赖
 ```bash
-cd d:\Code\JavlibraryScrapy
+# 1. 安装依赖
+uv sync
+
+# 2. 测试爬虫（第一页）
+uv run test_scraper.py
+
+# 3. 查看输出
+cat output/test_movies.json
+```
+
+### 完整爬取（10 分钟设置）
+
+```bash
+# 1. 配置代理（可选但推荐）
+cp .env.example .env
+# 编辑 .env，添加你的代理信息
+
+# 2. 运行爬虫
+uv run javlibrary_scrapling.py
+
+# 3. 爬虫会自动：
+#    - 检测总页数
+#    - 爬取所有页面
+#    - 导出 JSON 和 CSV
+```
+
+## 安装配置
+
+### 1. 安装依赖
+
+```bash
+cd JavlibraryScrapy
 uv sync
 ```
 
-### 2️⃣ 配置代理（可选但推荐）
+这会安装所有必需的包：
+- Scrapling（网页爬虫框架）
+- Playwright（浏览器引擎）
+- python-dotenv（环境配置）
+
+### 2. 配置代理（推荐）
+
 ```bash
-# 复制示例配置
+# 复制配置文件
 cp .env.example .env
 
-# 编辑 .env 文件，配置你的代理
-# PROXY_ENABLED=true
-# PROXY=http://127.0.0.1:7890
+# 编辑 .env，填入你的代理信息
 ```
 
-### 3️⃣ 测试爬虫（推荐先测试）
+#### 代理配置示例
+
+**Clash（最常用）**
+```
+PROXY_ENABLED=true
+PROXY=http://127.0.0.1:7890
+```
+
+**V2Ray**
+```
+PROXY=http://127.0.0.1:8118
+PROXY=socks5://127.0.0.1:10808
+```
+
+**Shadowsocks**
+```
+PROXY=http://127.0.0.1:1086  # 需要配置本地 HTTP 服务
+```
+
+## 使用方法
+
+### 方式 1：快速测试（推荐先用）
+
 ```bash
 uv run test_scraper.py
 ```
 
-这会爬取第一页并生成：
-- `output/test_movies.json`
-- `output/test_movies.csv`
+**优点：**
+- 快速（20-30 秒）
+- 验证配置是否正确
+- 生成 test_movies.json 和 test_movies.csv
 
-### 4️⃣ 爬取全部数据
+**输出：**
+```
+output/test_movies.json  # 第一页的 JSON 数据
+output/test_movies.csv   # 第一页的 CSV 数据
+```
+
+### 方式 2：完整爬取
+
 ```bash
 uv run javlibrary_scrapling.py
 ```
 
-这会爬取所有页面并生成：
-- `output/javlibrary_movies.json`
-- `output/javlibrary_movies.csv`
+**特点：**
+- 自动检测总页数（通常 25 页）
+- 爬取所有页面
+- 生成完整数据集
 
-## 📊 输出数据结构
+**预期时间：** 8-12 分钟
 
-### JSON 格式示例
+**输出：**
+```
+output/javlibrary_movies.json  # 所有影片的 JSON
+output/javlibrary_movies.csv   # 所有影片的 CSV
+```
+
+### 方式 3：在代码中使用
+
+```python
+import asyncio
+from pathlib import Path
+from javlibrary_scrapling import JAVLibrarySpider
+
+async def main():
+    spider = JAVLibrarySpider(
+        output_dir=Path("output"),
+        proxy="http://127.0.0.1:7890"  # 可选
+    )
+    
+    # 爬取前 5 页
+    await spider.crawl(max_pages=5)
+    
+    # 保存数据
+    spider.save_to_json("my_movies.json")
+    spider.save_to_csv("my_movies.csv")
+
+asyncio.run(main())
+```
+
+## 常见问题
+
+### Q: 爬虫太慢了怎么办？
+
+**A:** 这是正常的，原因有：
+1. 需要通过浏览器加载 JS
+2. 需要等待 Cloudflare 验证
+3. 页间延迟以避免被封 IP
+
+**优化方法：**
+- 使用快速代理
+- 减少页间延迟（编辑代码中的 `await asyncio.sleep(3)` 改为 1-2）
+- 注意：过快可能导致被 IP 封禁
+
+### Q: 遇到 403 错误怎么办？
+
+**A:** 这意味着代理 IP 被网站拒绝。
+
+**解决方法：**
+1. 运行诊断：`uv run test_proxy.py`
+2. 在代理工具中更换 IP
+3. 等待 1-2 分钟
+4. 重试爬虫
+
+详见 [TROUBLESHOOT_403.md](TROUBLESHOOT_403.md)
+
+### Q: 数据格式是什么样的？
+
+**A:** JSON 格式：
+
 ```json
 [
   {
@@ -60,197 +179,69 @@ uv run javlibrary_scrapling.py
     "code": "SNOS-222",
     "title": "脚フェチが集うパンストメーカー全男性社員を狂わせた 魔性のあし 楓ふうあ",
     "cover_url": "https://t2.pixhost.to/thumbs/7623/721821470_t677565.jpg"
-  },
-  {
-    "id": "javmefjy3m",
-    "code": "DASS-926",
-    "title": "男をダメにする美脚堪能。甘すぎる極上足フェティスイートルーム。蒸れパンスト神聖おみ足でペニス挟撃...",
-    "cover_url": "https://t2.pixhost.to/thumbs/7262/716061823_t676175.jpg"
   }
 ]
 ```
 
-### CSV 格式示例
+CSV 格式：
 ```
 code,title,id,cover_url
-SNOS-222,脚フェチが集うパンストメーカー全男性社員を狂わせた 魔性のあし 楓ふうあ,javmefjl5q,https://...
-DASS-926,男をダメにする美脚堪能。甘すぎる極上足フェティスイートルーム。蒸れパンスト神聖おみ足でペニス挟撃...,javmefjy3m,https://...
+SNOS-222,脚フェチが集う...,javmefjl5q,https://...
 ```
 
-## ✨ 主要功能
+### Q: 如何下载封面图片？
 
-### ✅ Cloudflare 机器人验证处理
-- 自动通过 Cloudflare 验证
-- 使用 Scrapling 的动态浏览器引擎
-- 等待页面完全加载
+**A:** 你可以用代码下载：
 
-### ✅ 代理支持
-- HTTP/HTTPS/SOCKS5 代理支持
-- 自动避免 IP 被封
-- 通过 .env 文件配置
-
-### ✅ 多页爬取
-- 自动检测总页数
-- 支持指定最多爬取页数
-- 页间自动延迟（避免被封）
-
-### ✅ 灵活的数据导出
-- JSON 格式
-- CSV 格式
-- 易于扩展其他格式
-
-## 🔧 高级用法
-
-### 在代码中调用
 ```python
-import asyncio
-from pathlib import Path
-from javlibrary_scrapling import JAVLibrarySpider
+import requests
 
-async def main():
-    # 创建爬虫实例
-    spider = JAVLibrarySpider(
-        output_dir=Path("my_output"),
-        proxy="http://127.0.0.1:7890"  # 可选
-    )
-    
-    # 爬取前 3 页
-    await spider.crawl(max_pages=3)
-    
-    # 保存数据
-    spider.save_to_json("movies.json")
-    spider.save_to_csv("movies.csv")
-    
-    # 打印统计信息
-    spider.print_summary()
+def download_covers(movies, output_dir):
+    for movie in movies:
+        try:
+            response = requests.get(movie['cover_url'], timeout=10)
+            filename = f"{output_dir}/{movie['code']}.jpg"
+            with open(filename, 'wb') as f:
+                f.write(response.content)
+            print(f"已下载：{filename}")
+        except Exception as e:
+            print(f"下载失败：{e}")
 
-asyncio.run(main())
+import json
+with open("output/javlibrary_movies.json") as f:
+    movies = json.load(f)
+download_covers(movies, "covers")
 ```
 
-### 修改代理配置
-```python
-# 直接指定代理
-spider = JAVLibrarySpider(proxy="socks5://127.0.0.1:1080")
+## 故障排查
 
-# 或从 .env 读取
-import os
-from dotenv import load_dotenv
-load_dotenv()
-proxy = os.getenv("PROXY") if os.getenv("PROXY_ENABLED").lower() == "true" else None
-spider = JAVLibrarySpider(proxy=proxy)
+### 问题：连接超时
+
+**原因：** 代理不可用或网络问题
+
+**解决：**
+```bash
+uv run test_proxy.py  # 检查代理
 ```
 
-## 📈 性能参数
+### 问题：未找到影片信息
 
-| 参数 | 值 | 说明 |
-|-----|----|----|
-| 超时时间 | 60 秒 | Scrapling 加载页面的最大等待时间 |
-| 页间延迟 | 2 秒 | 每页之间的延迟（避免被封 IP） |
-| 网络等待 | 启用 | 等待所有网络请求完成 |
-| 动态加载 | 启用 | 加载 JavaScript 动态内容 |
+**原因：** 页面结构可能改变或加载失败
 
-## ⚙️ 代理配置示例
-
-### Clash 配置
-```
-PROXY_ENABLED=true
-PROXY=http://127.0.0.1:7890
+**解决：**
+```bash
+uv run debug_scraper.py  # 查看详细调试信息
 ```
 
-### V2Ray 配置
-```
-PROXY_ENABLED=true
-PROXY=http://127.0.0.1:8118
-# 或 SOCKS5
-PROXY=socks5://127.0.0.1:10808
-```
+### 问题：解析错误
 
-### Shadowsocks 配置
-```
-PROXY_ENABLED=true
-# 需要先启用本地 HTTP 代理服务
-PROXY=http://127.0.0.1:1086
+**原因：** HTML 结构变化
+
+**解决：**
+```bash
+uv run verify_parsing.py  # 验证解析逻辑
 ```
 
-## ❓ 常见问题
+---
 
-### Q: 爬虫很慢是正常的吗？
-**A:** 是的。由于需要通过浏览器加载页面和处理 Cloudflare 验证，速度会比较慢。预期：
-- 单页：20-30 秒
-- 全部页面（25 页）：8-12 分钟
-
-### Q: 如何加快爬虫速度？
-**A:**
-1. 使用代理可能会加快速度（取决于代理质量）
-2. 减少页间延迟（编辑代码中的 `await asyncio.sleep(2)` 为 1 秒或更少）
-3. 注意：过快可能导致被 IP 封禁
-
-### Q: 爬虫被 Cloudflare 挡住了怎么办？
-**A:** Scrapling 已自动处理。如果还是失败：
-1. 检查网络连接
-2. 尝试使用代理
-3. 增加超时时间（修改代码中的 `timeout=60000` 为 `timeout=120000`）
-
-### Q: 数据格式可以自定义吗？
-**A:** 可以。编辑 `parse_movies_from_html()` 方法来改变提取的字段，或添加新的 `save_to_*` 方法。
-
-### Q: 如何处理大量数据？
-**A:** 
-1. 添加数据库支持（SQLite/PostgreSQL）
-2. 实现流式处理而不是一次性加载所有数据
-3. 分批爬取和处理
-
-## 📝 脚本结构
-
-```
-javlibrary_scrapling.py
-├── JAVLibrarySpider 类
-│   ├── __init__() - 初始化
-│   ├── fetch_page() - 获取单页
-│   ├── parse_movies_from_html() - 解析 HTML
-│   ├── get_page_count() - 获取总页数
-│   ├── crawl() - 主爬虫循环
-│   ├── save_to_json() - 保存为 JSON
-│   ├── save_to_csv() - 保存为 CSV
-│   └── print_summary() - 打印统计
-└── main() - 入口函数
-```
-
-## 🛠️ 调试技巧
-
-1. **查看日志输出**：脚本会打印详细的日志，包括爬取进度和错误信息
-
-2. **保存 HTML 进行调试**：编辑爬虫脚本，在 `fetch_page()` 后添加：
-   ```python
-   with open(f"debug_page_{page}.html", "w", encoding="utf-8") as f:
-       f.write(response.text)
-   ```
-
-3. **测试单页**：使用 `test_scraper.py` 只爬取第一页进行快速测试
-
-4. **增加日志级别**：将 `logging.INFO` 改为 `logging.DEBUG` 获取更多信息
-
-## 📚 相关文档
-
-- 完整功能指南：`JAVLIBRARY_SCRAPER_GUIDE.md`
-- 快速开始指南：`QUICKSTART.md`
-- Scrapling 文档：https://github.com/D4Vinci/Scrapling
-
-## ✅ 验证结果
-
-已通过示例 HTML 验证，成功解析 20 部影片：
-```
-✓ ID 提取正确（如：javmefjl5q）
-✓ 代码提取正确（如：SNOS-222）
-✓ 标题提取正确（完整日文标题）
-✓ 封面 URL 提取正确（有效的图片链接）
-```
-
-## 🎯 下一步
-
-1. 配置你的代理（如果需要）
-2. 运行 `uv run test_scraper.py` 进行测试
-3. 检查 `output` 目录中的 JSON/CSV 文件
-4. 根据需要调整参数并运行完整爬虫
-
-祝爬虫运行顺利！🚀
+更多信息请查看其他文档或项目 GitHub 仓库。
