@@ -80,7 +80,7 @@ PROXY=http://127.0.0.1:10808
 
 ## Usage
 
-### Basic Usage
+### JAVBus Scraper (Video Metadata)
 
 ```bash
 uv run javbus_scrapling.py
@@ -98,6 +98,44 @@ The script will:
 4. Generate Kodi-compatible NFO files
 5. Create poster images from cover art
 6. Organize files in subdirectories with metadata
+
+### JAVLibrary Scraper (Most Wanted List)
+
+**New!** Extract video information from JAVLibrary's "Most Wanted" list:
+
+#### Quick Test (First Page Only)
+```bash
+uv run test_scraper.py
+```
+
+#### Full Crawl
+```bash
+uv run javlibrary_scrapling.py
+```
+
+This will extract:
+- **Video ID** (e.g., javmefjl5q)
+- **Video Code** (e.g., SNOS-222)
+- **Title** (Complete Japanese title)
+- **Cover URL** (Download link for cover art)
+
+**Output formats:**
+- `output/javlibrary_movies.json` - JSON format
+- `output/javlibrary_movies.csv` - CSV format
+
+**Features:**
+- Automatic Cloudflare bot verification handling
+- Proxy support (HTTP/HTTPS/SOCKS5)
+- Multi-page crawling with automatic page detection
+- 2-second delay between pages to avoid IP blocking
+
+**Configuration:**
+```env
+PROXY_ENABLED=true
+PROXY=http://127.0.0.1:7890
+```
+
+See `HOWTO.md` for detailed usage guide.
 
 ### Output Structure
 
