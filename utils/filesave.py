@@ -29,6 +29,7 @@ def write_xml(nfo_filename: str | Path, content: dict):
     producer = content.get("producer", "")
     category = content.get("category", "")
     actors = content.get("actors", "")
+    magnet = content.get("magnet", "")
     if not title or not carid:
         logging.warning("标题或车牌不能为空，无法生成 NFO 文件。")
         return
@@ -90,6 +91,9 @@ def write_xml(nfo_filename: str | Path, content: dict):
         xml_lines.append(f"    <name>{escape(actor)}</name>")
         xml_lines.append("    <type>Actor</type>")
         xml_lines.append("  </actor>")
+    # 磁力链接
+    if magnet:
+        xml_lines.append(f"  <magnet>{escape(magnet)}</magnet>")
     xml_lines.append("</movie>")
 
     nfo_content = "\n".join(xml_lines)

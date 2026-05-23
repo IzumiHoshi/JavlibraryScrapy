@@ -49,6 +49,77 @@ class JavbusSpider:
         self.movie_info_list = []
         self.proxy_enabled = os.getenv("PROXY_ENABLED", "False").lower() == "true"
         self.proxy = os.getenv("PROXY", None) if self.proxy_enabled else None
+        
+        # Scrapling 会话配置
+        self.load_dom = os.getenv("SCRAPLING_LOAD_DOM", "true").lower() == "true"
+        self.network_idle = os.getenv("SCRAPLING_NETWORK_IDLE", "true").lower() == "true"
+        self.disable_resources = os.getenv("SCRAPLING_DISABLE_RESOURCES", "true").lower() == "true"
+        self.headless = os.getenv("SCRAPLING_HEADLESS", "true").lower() == "true"
+        self.timeout = int(os.getenv("SCRAPLING_TIMEOUT", "30000"))
+        
+        # 请求头配置
+        self.user_agent = os.getenv("USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        
+        # 下载配置
+        self.download_timeout = int(os.getenv("DOWNLOAD_TIMEOUT", "10"))
+        self.verify_ssl = os.getenv("VERIFY_SSL", "False").lower() == "true"
+
+        # 基础 URL 配置（用于处理相对路径）
+        self.javbus_base_url = os.getenv("JAVBUS_BASE_URL", "https://www.javbus.com")
+
+    def _extract_magnet_link(self, response) -> Optional[str]:
+        """
+        从页面中提取磁力链接，优先级：
+        1. 高清且带字幕 (HD with subtitle)
+        2. 高清 (HD)
+        3. 普通 (standard)
+
+        Args:
+            response: Scrapling Response 对象
+
+        Returns:
+            磁力链接或 None
+        """
+        try:
+            # 获取所有磁力链接条目
+            links = response.css("a.link-magnet")
+            
+            # 定义优先级
+            hd_subtitle = None
+            hd_only = None
+            standard = None
+            
+            for link in links:
+                magnet_url = link.attrib.get("href", "")
+                if not magnet_url.startswith("magnet:"):
+                    continue
+                
+                # 获取链接的文本内容
+                link_text = link.css("::text").get() or ""
+                link_text = link_text.strip().upper()
+                
+                # 检查质量和字幕
+                is_hd = "HD" in link_text or "高清" in link_text
+                has_subtitle = "字幕" in link_text or "SUBTITLES" in link_text
+                
+                # 根据优先级分类
+                if is_hd and has_subtitle:
+                    hd_subtitle = magnet_url
+                    break  # 找到最高优先级，立即返回
+                elif is_hd and not hd_only:
+                    hd_only = magnet_url
+                elif not standard:
+                    standard = magnet_url
+            
+            # 按优先级返回第一个匹配的
+            result = hd_subtitle or hd_only or standard
+            if result:
+                logger.info(f"已获取磁力链接：{result[:50]}...")
+            return result
+            
+        except Exception as e:
+            logger.warning(f"提取磁力链接失败：{e}")
+            return None
 
     async def parse(self, response) -> Dict[str, Any]:
         """
@@ -142,13 +213,16 @@ class JavbusSpider:
                 # 如果是相对 URL，转换为绝对 URL
                 if not cover_img_url.startswith("http"):
                     if cover_img_url.startswith("/"):
-                        base_url = "https://www.javbus.com"
+                        base_url = self.javbus_base_url
                         cover_img_url = base_url + cover_img_url
                     else:
-                        base_url = "https://www.javbus.com/"
+                        base_url = self.javbus_base_url + "/"
                         cover_img_url = base_url + cover_img_url
 
                 cover_path = await self.download_cover(cover_img_url, car_id)
+
+            # 提取磁力链接
+            magnet_link = self._extract_magnet_link(response)
 
             logger.info(f"页面标题：{title}")
             logger.info(f"發行日期：{strip_text(release_date)}")
@@ -167,6 +241,7 @@ class JavbusSpider:
                 "publisher": publisher,
                 "category": category,
                 "actors": actors,
+                "magnet": magnet_link,
             }
 
             return movie_info
@@ -195,7 +270,7 @@ class JavbusSpider:
 
             # 添加完整的请求头，包含 Referer，否则 JAVBus 会返回 403
             headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "User-Agent": self.user_agent,
                 "Referer": f"{self.javbus_url}{car_id}",
                 "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",
                 "Accept-Language": "en-US,en;q=0.9",
@@ -207,11 +282,11 @@ class JavbusSpider:
             response = requests.get(
                 img_url,
                 headers=headers,
-                timeout=10,
+                timeout=self.download_timeout,
                 proxies=(
                     {"http": self.proxy, "https": self.proxy} if self.proxy else None
                 ),
-                verify=False,
+                verify=self.verify_ssl,
             )
             response.raise_for_status()
 
@@ -235,12 +310,12 @@ class JavbusSpider:
         """
         # 使用 AsyncDynamicSession 保持浏览器会话
         async with AsyncDynamicSession(
-            load_dom=True,
-            network_idle=True,
-            disable_resources=True,
+            load_dom=self.load_dom,
+            network_idle=self.network_idle,
+            disable_resources=self.disable_resources,
             proxy=self.proxy,
-            headless=True,
-            timeout=30000,
+            headless=self.headless,
+            timeout=self.timeout,
         ) as session:
             for car_id, video_path in car_list:
                 url = f"{self.javbus_url}{car_id}"
