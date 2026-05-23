@@ -171,7 +171,7 @@ async def step3_scrape(intermediate_path: Path, output_path: Path):
                 if video_path.exists():
                     new_video_name = f"{filename_prefix}{video_path.suffix}"
                     new_video_path = save_dir / new_video_name
-                    shutil.copy(video_path, new_video_path)
+                    shutil.move(str(video_path), str(new_video_path))
 
                 nfo_filename = save_dir / f"{filename_prefix}.nfo"
                 write_xml(nfo_filename, {**info, "path": save_dir / new_video_name if video_path.exists() else save_dir / f"{filename_prefix}.mp4"})
