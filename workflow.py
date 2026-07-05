@@ -11,7 +11,6 @@ import argparse
 import asyncio
 import logging
 import shutil
-import subprocess
 from pathlib import Path
 import sys
 
@@ -29,7 +28,6 @@ logger = logging.getLogger(__name__)
 
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".flv", ".wmv", ".webm", ".m4v", ".ts", ".mpg", ".mpeg", ".3gp"}
 DEFAULT_MIN_SIZE_MB = 500
-MIN_ROBOCOPY_SIZE_MB = 100
 
 
 def find_video_files(source_path: Path, min_size_mb: int) -> list[Path]:
@@ -72,20 +70,7 @@ def step1_move_videos(download_path: Path, intermediate_path: Path, min_size_mb:
             continue
 
         try:
-            if file_size_mb >= MIN_ROBOCOPY_SIZE_MB:
-                robocopy_cmd = [
-                    "robocopy",
-                    str(src.parent),
-                    str(intermediate_path),
-                    str(src.name),
-                    "/MOV", "/Y", "/NP", "/NFL", "/NDL", "/NJH", "/NJS",
-                ]
-                result = subprocess.run(robocopy_cmd, capture_output=True, text=True)
-                if result.returncode > 7:
-                    raise Exception(f"robocopy 返回码: {result.returncode}")
-            else:
-                shutil.move(str(src), str(dst))
-
+            shutil.move(str(src), str(dst))
             logger.info(f"已移动: {src.name} ({file_size_mb:.1f} MB)")
             moved += 1
         except Exception as e:
