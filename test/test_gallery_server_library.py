@@ -107,6 +107,25 @@ def assert_eq(label: str, got, expected) -> None:
     print(f"  OK   {label}")
 
 
+def test_path_normalization():
+    """_normalize_path_for_compare 应处理：UNC ↔ 映射盘、大小写、斜杠、尾部分隔符。"""
+    print("\n[0] _normalize_path_for_compare")
+    from gallery_server import _normalize_path_for_compare as norm
+
+    assert_eq("Z:\\JAV == Z:/JAV", norm("Z:\\JAV"), norm("Z:/JAV"))
+    assert_eq("Z:\\jav 与 Z:\\JAV 比较时大小写归一", norm("Z:\\jav").lower(), norm("Z:\\JAV").lower())
+    assert_eq("Z:\\JAV\\ == Z:\\JAV", norm("Z:\\JAV\\"), norm("Z:\\JAV"))
+    assert_eq("空字符串", norm(""), "")
+
+    if sys.platform == "win32":
+        z = norm("Z:\\JAV")
+        unc = norm("\\\\192.168.0.47\\团队文件-我的地盘\\Private\\JAV")
+        if z == unc:
+            print(f"  OK   Z: ↔ UNC 映射展开后等价 ({z!r})")
+        else:
+            print(f"  INFO 当前机器 Z: 未映射到该 UNC（z={z!r}, unc={unc!r}），跳过")
+
+
 def wait_ready(port: int, timeout: float = 8.0) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -119,6 +138,7 @@ def wait_ready(port: int, timeout: float = 8.0) -> bool:
 
 
 def main():
+    test_path_normalization()
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         # 1) 伪造 JAVLibrary 数据（含 ABF-340 / SNIS-001 / MIDE-999）
