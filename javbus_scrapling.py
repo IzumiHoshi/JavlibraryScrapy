@@ -81,44 +81,82 @@ class JavbusSpider:
             磁力链接或 None
         """
         try:
-            # 获取所有磁力链接条目
-            links = response.css("a.link-magnet")
-            
+            # JAVBus 页面不一定给磁力链接加 link-magnet class，优先使用旧选择器，
+            # 找不到时回退到 href 属性选择器。
+            links = response.css('a.link-magnet[href^="magnet:"]')
+            selector_name = 'a.link-magnet[href^="magnet:"]'
+            if not links:
+                links = response.css('a[href^="magnet:"]')
+                selector_name = 'a[href^="magnet:"]'
+
+            logger.info(
+                "磁力解析：选择器 %s 找到 %d 个候选，页面 URL=%s",
+                selector_name,
+                len(links),
+                getattr(response, "url", "(未知)"),
+            )
+
             # 定义优先级
             hd_subtitle = None
             hd_only = None
             standard = None
-            
+            unique_magnets: set[str] = set()
+
             for link in links:
-                magnet_url = link.attrib.get("href", "")
-                if not magnet_url.startswith("magnet:"):
+                magnet_url = (link.attrib.get("href") or "").strip()
+                if not magnet_url.lower().startswith("magnet:"):
                     continue
-                
-                # 获取链接的文本内容
-                link_text = link.css("::text").get() or ""
-                link_text = link_text.strip().upper()
-                
-                # 检查质量和字幕
+                if magnet_url in unique_magnets:
+                    continue
+                unique_magnets.add(magnet_url)
+
+                # 高清/字幕标记在同一行的其它 a 标签上，不在磁力链接自身文本中。
+                row = link.xpath("../..")
+                row_text = " ".join(row.css("a::text").getall())
+                row_titles = " ".join(row.css("a::attr(title)").getall())
+                link_text = f"{row_text} {row_titles}".strip().upper()
+
                 is_hd = "HD" in link_text or "高清" in link_text
                 has_subtitle = "字幕" in link_text or "SUBTITLES" in link_text
-                
+
+                logger.debug(
+                    "磁力候选：%s，HD=%s，字幕=%s，行文本=%r，标题=%r",
+                    magnet_url[:100],
+                    is_hd,
+                    has_subtitle,
+                    row_text.strip(),
+                    row_titles.strip(),
+                )
+
                 # 根据优先级分类
-                if is_hd and has_subtitle:
+                if is_hd and has_subtitle and not hd_subtitle:
                     hd_subtitle = magnet_url
-                    break  # 找到最高优先级，立即返回
                 elif is_hd and not hd_only:
                     hd_only = magnet_url
                 elif not standard:
                     standard = magnet_url
-            
-            # 按优先级返回第一个匹配的
+
             result = hd_subtitle or hd_only or standard
+            logger.info(
+                "磁力解析结果：去重后 %d 个，HD+字幕=%s，HD=%s，普通=%s，最终=%s",
+                len(unique_magnets),
+                bool(hd_subtitle),
+                bool(hd_only),
+                bool(standard),
+                "已获取" if result else "无",
+            )
             if result:
-                logger.info(f"已获取磁力链接：{result[:50]}...")
+                logger.info(f"已获取磁力链接：{result[:100]}...")
+            else:
+                logger.warning(
+                    "磁力解析为空：请检查页面是否使用了其它链接格式；"
+                    "普通 a 标签数量=%d",
+                    len(response.css("a")),
+                )
             return result
-            
+
         except Exception as e:
-            logger.warning(f"提取磁力链接失败：{e}")
+            logger.exception("提取磁力链接失败：%s", e)
             return None
 
     async def parse(self, response) -> Dict[str, Any]:
@@ -308,6 +346,16 @@ class JavbusSpider:
         Args:
             car_list: 车牌列表，格式为 [(car_id, video_path), ...]
         """
+        logger.info(
+            "创建 JAVBus 会话：代理=%s，load_dom=%s，network_idle=%s，"
+            "disable_resources=%s，headless=%s，timeout=%sms",
+            self.proxy or "未启用",
+            self.load_dom,
+            self.network_idle,
+            self.disable_resources,
+            self.headless,
+            self.timeout,
+        )
         # 使用 AsyncDynamicSession 保持浏览器会话
         async with AsyncDynamicSession(
             load_dom=self.load_dom,
@@ -324,9 +372,29 @@ class JavbusSpider:
                 try:
                     # 使用会话获取页面
                     page = await session.fetch(url)
+                    logger.info(
+                        "页面响应：车牌=%s，类型=%s，URL=%s，HTML长度=%s",
+                        car_id,
+                        type(page).__name__,
+                        getattr(page, "url", "(未知)"),
+                        len(getattr(page, "html", "") or ""),
+                    )
+                    logger.info(
+                        "页面结构统计：车牌=%s，磁力链接=%d，旧 class 选择器=%d，全部 a 标签=%d",
+                        car_id,
+                        len(page.css('a[href^="magnet:"]')),
+                        len(page.css("a.link-magnet")),
+                        len(page.css("a")),
+                    )
 
                     # 解析页面
                     movie_info = await self.parse(page)
+                    logger.info(
+                        "解析完成：车牌=%s，标题=%r，磁力=%s",
+                        car_id,
+                        movie_info.get("title", ""),
+                        "已提取" if movie_info.get("magnet") else "为空",
+                    )
                     movie_info["path"] = video_path
 
                     self.movie_info_list.append(movie_info)
