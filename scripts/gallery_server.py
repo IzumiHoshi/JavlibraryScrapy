@@ -385,6 +385,29 @@ def run_scrape_job(
 
 
 # --------------------------------------------------------------------------- #
+# 工具函数
+# --------------------------------------------------------------------------- #
+def _normalize_path_for_compare(p: str) -> str:
+    """
+    规范化路径用于等价比较，处理 Windows 上的常见差异：
+
+    - 大小写不敏感
+    - 正反斜杠统一
+    - 展开映射盘为 UNC（如 ``Z:\\JAV`` → ``\\\\server\\share\\JAV``）
+    - 去掉尾部分隔符
+
+    用于比较"索引里存的 root"与"当前配置的 root"，避免映射盘 / UNC 误报。
+    """
+    if not p:
+        return ""
+    try:
+        # realpath 会展开映射盘、解析符号链接；strict=False 避免路径不存在时报错
+        return os.path.normcase(os.path.normpath(os.path.realpath(p))).rstrip("\\/")
+    except OSError:
+        return os.path.normcase(os.path.normpath(p)).replace("/", "\\").rstrip("\\/")
+
+
+# --------------------------------------------------------------------------- #
 # 应用状态
 # --------------------------------------------------------------------------- #
 class GalleryApp:
@@ -439,7 +462,11 @@ class GalleryApp:
 
     # ---- 本地库 -------------------------------------------------------- #
     def _maybe_load_library_index(self) -> None:
-        """启动时尝试加载已有索引。失败或 root 不一致时不报错（等手动刷新）。"""
+        """启动时尝试加载已有索引。失败或 root 不一致时不报错（等手动刷新）。
+
+        比较 root 时用规范化形式（处理 UNC ↔ 映射盘、大小写、斜杠差异），
+        避免 ``Z:\\JAV`` 与 ``\\\\server\\share\\JAV`` 这种指向同处的形式被误判。
+        """
         if not self.library_root:
             return
         if not self.library_index_path.exists():
@@ -447,10 +474,14 @@ class GalleryApp:
         data = load_index(self.library_index_path)
         if data is None:
             return
-        if data.get("root") and data.get("root") != str(self.library_root):
+        stored_root = data.get("root") or ""
+        current_root = str(self.library_root)
+        if stored_root and _normalize_path_for_compare(stored_root) != _normalize_path_for_compare(current_root):
             logger.warning(
-                f"索引 root ({data.get('root')}) 与当前配置 "
-                f"({self.library_root}) 不一致，标记为待重建"
+                f"索引 root 与当前配置不一致：\n"
+                f"  索引里：{stored_root}\n"
+                f"  当前：  {current_root}\n"
+                f"标记为待重建。点击页面「刷新库」可强制重建。"
             )
             return
         self.library_index = LibraryIndex.from_dict(data)
@@ -486,7 +517,9 @@ class GalleryApp:
             movies, stats = scan_library(
                 self.library_root, progress=self.scan_state
             )
-            save_index(movies, stats, self.library_index_path, self.library_root)
+            # 落盘时用规范化路径（避免下次启动因 Z: ↔ UNC 形式不一致误判）
+            canonical_root = Path(_normalize_path_for_compare(str(self.library_root)))
+            save_index(movies, stats, self.library_index_path, canonical_root)
             # 重新加载并原子替换引用
             data = load_index(self.library_index_path)
             if data:
