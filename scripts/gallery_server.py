@@ -462,20 +462,26 @@ class GalleryApp:
         )
 
     def start_rescan(self) -> bool:
-        """触发后台扫描。返回 True 表示已启动，False 表示已在运行。"""
+        """触发后台扫描。返回 True 表示已启动，False 表示已在运行。
+
+        is_running 在持锁状态下同步置位，再 spawn 线程，杜绝两次快速调用之间的 race。
+        """
         with self._scan_lock:
             if self.scan_state.is_running:
                 return False
-            self.scan_state = ScanProgress()  # 重置进度
+            new_state = ScanProgress()
+            new_state.is_running = True  # 关键：立即标记，让后续调用看到
+            self.scan_state = new_state
             threading.Thread(target=self._run_rescan, daemon=True).start()
             return True
 
     def _run_rescan(self) -> None:
         """后台线程：扫描 → 落盘 → 替换索引。"""
         if not self.library_root:
+            self.scan_state.is_running = False
             return
         try:
-            self.scan_state.is_running = True
+            # is_running 已在 start_rescan 中标记
             logger.info(f"开始后台扫描 {self.library_root} …")
             movies, stats = scan_library(
                 self.library_root, progress=self.scan_state
@@ -797,7 +803,7 @@ class GalleryHandler(BaseHTTPRequestHandler):
             size = int(qs.get("size", ["100"])[0])
         except ValueError:
             size = 100
-        size = min(200, max(10, size))
+        size = min(200, max(1, size))
         sort = qs.get("sort", ["carid"])[0]
         if sort not in ("carid", "mtime"):
             sort = "carid"
