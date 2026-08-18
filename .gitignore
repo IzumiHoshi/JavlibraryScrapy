@@ -3,3 +3,5 @@ __pycache__
 .idea
 .venv
 temp/
+output/.cover_cache/
+output/library_index.json
