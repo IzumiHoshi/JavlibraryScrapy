@@ -164,11 +164,13 @@ def _parse_nfo(nfo_path: Path) -> Tuple[str, List[str], str]:
     return title, actors, release
 
 
-def _scan_movie_folder(folder: Path) -> Optional[MovieEntry]:
+def scan_movie_folder(folder: Path) -> Optional[MovieEntry]:
     """
     扫描单个影片目录，返回 MovieEntry 或 None（文件夹名无法解析为车牌）。
 
     只在已经被外层 walk() 判定为"含视频文件"的目录上调用。
+
+    用于刷新单个影片后增量更新索引。
     """
     carid = _parse_carid(folder.name)
     if not carid:
@@ -303,7 +305,7 @@ def scan_library(
             progress.scanned += 1
             progress.current_folder = str(folder)
 
-        entry = _scan_movie_folder(folder)
+        entry = scan_movie_folder(folder)
         if entry is None:
             stats.folders_no_carid.append(str(folder))
             continue
@@ -433,6 +435,10 @@ class LibraryIndex:
     def all_sorted(self) -> List[MovieEntry]:
         """按车牌字典序返回所有记录。"""
         return [self._movies[k] for k in sorted(self._movies)]
+
+    def upsert(self, entry: MovieEntry) -> None:
+        """插入或更新单个条目（用于单个影片刷新后增量更新索引）。"""
+        self._movies[entry.carid.upper()] = entry
 
     def find_match(self, target_code: str) -> Optional[MovieEntry]:
         """

@@ -35,7 +35,7 @@ from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -48,12 +48,14 @@ from dotenv import load_dotenv  # noqa: E402
 load_dotenv(ROOT / ".env")
 
 from javbus_scrapling import JavbusSpider  # noqa: E402
+from library_refresher import refresh_library_movie  # noqa: E402
 from library_scanner import (  # noqa: E402
     LibraryIndex,
     ScanProgress,
     load_index,
     save_index,
     scan_library,
+    scan_movie_folder,
 )
 
 logger = logging.getLogger("gallery")
@@ -232,6 +234,141 @@ class JobLogHandler(logging.Handler):
             self.job.add_log(f"{stamp} {record.getMessage()}")
         except Exception:  # 日志本身不能拖垮任务
             pass
+
+
+class RescanJob:
+    """单条刷新任务的状态容器（线程安全）。"""
+
+    def __init__(self, carid: str, folder: Path):
+        self.carid = carid
+        self.folder = Path(folder)
+        self.status = "queued"  # queued | running | done | error
+        self.error: Optional[str] = None
+        self.started_at: Optional[str] = None
+        self.finished_at: Optional[str] = None
+        self.title: str = ""
+        self.logs: deque[str] = deque(maxlen=200)
+        self._lock = threading.Lock()
+
+    def add_log(self, line: str) -> None:
+        with self._lock:
+            self.logs.append(line)
+
+    def snapshot(self) -> Dict[str, Any]:
+        with self._lock:
+            logs = list(self.logs)
+        return {
+            "carid": self.carid,
+            "folder": str(self.folder),
+            "status": self.status,
+            "error": self.error,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "title": self.title,
+            "logs": logs,
+        }
+
+
+class RescanQueue:
+    """FIFO 单消费者队列：一个后台线程逐个处理刷新任务。"""
+
+    def __init__(self, library_root_getter, javbus_url_getter, proxy_getter):
+        self._queue: "deque[RescanJob]" = deque()
+        self._lock = threading.Lock()
+        self._wakeup = threading.Event()
+        self._worker_thread: Optional[threading.Thread] = None
+        self._current: Optional[RescanJob] = None
+        self._on_complete: Optional[Callable[[Path], None]] = None
+        # 通过 getter 在任务执行时拉取最新配置（避免启动后 .env 变更的 stale 引用）
+        self._library_root_getter = library_root_getter
+        self._javbus_url_getter = javbus_url_getter
+        self._proxy_getter = proxy_getter
+
+    def set_on_complete(self, cb: Callable[[Path], None]) -> None:
+        """注册单条任务完成后的回调（用于重扫该目录更新索引）。"""
+        self._on_complete = cb
+
+    def start_worker(self) -> None:
+        if self._worker_thread and self._worker_thread.is_alive():
+            return
+        self._worker_thread = threading.Thread(target=self._worker, daemon=True)
+        self._worker_thread.start()
+
+    def enqueue(self, carid: str, folder: Path) -> RescanJob:
+        job = RescanJob(carid, folder)
+        with self._lock:
+            self._queue.append(job)
+            self._wakeup.set()
+        return job
+
+    def status_snapshot(self) -> Dict[str, Any]:
+        with self._lock:
+            current = self._current.snapshot() if self._current else None
+            queued = [
+                {**j.snapshot(), "position": i + 1}
+                for i, j in enumerate(self._queue)
+            ]
+        return {
+            "active": current is not None,
+            "current": current,
+            "queued": queued,
+            "total": (1 if current else 0) + len(queued),
+        }
+
+    def _worker(self) -> None:
+        while True:
+            with self._lock:
+                if not self._queue:
+                    self._current = None
+                else:
+                    self._current = self._queue.popleft()
+            if self._current is None:
+                self._wakeup.wait(timeout=1.0)
+                self._wakeup.clear()
+                continue
+            self._process_one(self._current)
+
+    def _process_one(self, job: RescanJob) -> None:
+        job.status = "running"
+        job.started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        def log_cb(level: int, msg: str) -> None:
+            stamp = datetime.now().strftime("%H:%M:%S")
+            job.add_log(f"{stamp} [{logging.getLevelName(level)}] {msg}")
+
+        library_root = self._library_root_getter()
+        if library_root is None:
+            job.status = "error"
+            job.error = "未配置 LIBRARY_ROOT"
+            return
+
+        try:
+            result = asyncio.run(
+                refresh_library_movie(
+                    folder=job.folder,
+                    carid=job.carid,
+                    javbus_url=self._javbus_url_getter(),
+                    proxy=self._proxy_getter(),
+                    log_callback=log_cb,
+                )
+            )
+            if result.get("ok"):
+                job.status = "done"
+                job.title = result.get("title", "")
+                # 回调：让 GalleryApp 用 scan_movie_folder 重扫并更新索引
+                if self._on_complete is not None:
+                    try:
+                        self._on_complete(job.folder)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(f"刷新后更新索引失败：{e}")
+            else:
+                job.status = "error"
+                job.error = result.get("error", "未知错误")
+        except Exception as e:  # noqa: BLE001
+            job.status = "error"
+            job.error = str(e)
+        finally:
+            job.finished_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 class MagnetSpider(JavbusSpider):
@@ -458,6 +595,13 @@ class GalleryApp:
         self.library_scanned_at: Optional[str] = None
         self.scan_state: ScanProgress = ScanProgress()
         self._scan_lock = threading.Lock()
+        self.rescan_queue: RescanQueue = RescanQueue(
+            library_root_getter=lambda: self.library_root,
+            javbus_url_getter=lambda: self.javbus_url,
+            proxy_getter=lambda: self.proxy,
+        )
+        self.rescan_queue.set_on_complete(self._refresh_index_after_rescan)
+        self.rescan_queue.start_worker()
         self._maybe_load_library_index()
 
     # ---- 本地库 -------------------------------------------------------- #
@@ -536,6 +680,34 @@ class GalleryApp:
             self.scan_state.error = str(e)
         finally:
             self.scan_state.is_running = False
+
+    # ---- 单部刷新（队列逐个） -------------------------------------- #
+    def enqueue_rescan_movie(self, carid: str) -> RescanJob:
+        """把单个车牌入队等刷新。"""
+        entry = self.library_index.get(carid)
+        if entry is None:
+            raise ValueError(f"本地库中未找到车牌 {carid}")
+        if not self.library_root:
+            raise RuntimeError("未配置 LIBRARY_ROOT")
+        if not entry.has_video:
+            raise ValueError(f"该目录下未找到视频文件：{entry.folder}")
+        return self.rescan_queue.enqueue(carid, Path(entry.folder))
+
+    def get_rescan_status(self) -> Dict[str, Any]:
+        """返回整个队列状态（前端轮询用）。"""
+        return self.rescan_queue.status_snapshot()
+
+    def _refresh_index_after_rescan(self, folder: Path) -> None:
+        """单部刷新完成后，重扫该目录更新 LibraryIndex。"""
+        try:
+            entry = scan_movie_folder(folder)
+            if entry is None:
+                logger.warning(f"刷新后重扫失败：{folder}")
+                return
+            self.library_index.upsert(entry)
+            logger.info(f"索引已更新：{entry.carid}")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"刷新后更新索引异常：{e}")
 
     def is_within_library(self, path: Path) -> bool:
         """检查 path 是否在配置的 library_root 内（防越界）。"""
@@ -684,6 +856,11 @@ class GalleryHandler(BaseHTTPRequestHandler):
             return self._serve_library_warnings()
         if path.startswith("/api/library/"):
             carid = path[len("/api/library/"):]
+            if carid == "rescan-status":
+                return self._serve_rescan_status()
+            if carid.startswith("rescan/"):
+                # 兼容 /api/library/rescan/<carid> 形式（虽然我们用 POST 处理）
+                return self._send_json({"error": "未找到该路径"}, HTTPStatus.NOT_FOUND)
             if carid:
                 return self._serve_library_detail(carid)
         if path == "/favicon.ico":
@@ -697,6 +874,11 @@ class GalleryHandler(BaseHTTPRequestHandler):
             return self._start_scrape()
         if path == "/api/library/rescan":
             return self._trigger_rescan()
+        if path.startswith("/api/library/"):
+            carid = path[len("/api/library/"):]
+            if carid.endswith("/rescan"):
+                target = carid[: -len("/rescan")]
+                return self._enqueue_rescan_movie(target)
         if path == "/api/open-folder":
             return self._open_folder()
         self._send_json({"error": "未找到该路径"}, HTTPStatus.NOT_FOUND)
@@ -950,6 +1132,40 @@ class GalleryHandler(BaseHTTPRequestHandler):
         return self._send_json(
             {"error": "扫描已在进行中"}, HTTPStatus.CONFLICT
         )
+
+    def _enqueue_rescan_movie(self, carid: str) -> None:
+        """POST /api/library/{carid}/rescan（入队；队列已存在该 carid 则跳过）"""
+        if not carid or not re.fullmatch(r"[A-Z0-9_-]{2,32}", carid.strip().upper()):
+            return self._send_json({"error": "非法的车牌"}, HTTPStatus.BAD_REQUEST)
+        if self.app.library_root is None:
+            return self._send_json(
+                {"error": "未配置 LIBRARY_ROOT"},
+                HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+        try:
+            job = self.app.enqueue_rescan_movie(carid)
+        except ValueError as e:
+            return self._send_json({"error": str(e)}, HTTPStatus.NOT_FOUND)
+        except RuntimeError as e:
+            return self._send_json({"error": str(e)}, HTTPStatus.SERVICE_UNAVAILABLE)
+        # 同一 carid 已在队列中（running 或 queued）则去重
+        snap = self.app.get_rescan_status()
+        for q in snap.get("queued", []):
+            if q["carid"] == carid.upper():
+                return self._send_json(
+                    {"ok": True, "carid": carid, "already": True, "position": q["position"]}
+                )
+        if snap.get("current") and snap["current"]["carid"] == carid.upper():
+            return self._send_json(
+                {"ok": True, "carid": carid, "already": True, "running": True}
+            )
+        self._send_json(
+            {"ok": True, "carid": carid, "status": job.status, "position": snap["total"]}
+        )
+
+    def _serve_rescan_status(self) -> None:
+        """GET /api/library/rescan-status（前端轮询）"""
+        self._send_json(self.app.get_rescan_status())
 
     def _serve_local_cover(self, query: str) -> None:
         """GET /api/local-cover?folder=...&name=poster.jpg

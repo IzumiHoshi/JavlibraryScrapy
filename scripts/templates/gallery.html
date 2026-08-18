@@ -364,6 +364,69 @@
   .pagination button { padding: 5px 10px; }
   .pagination .info { align-self: center; padding: 0 10px; }
 
+  /* ---------- 单部刷新按钮（/library 卡片左上角） ---------- */
+  .rescan-btn {
+    position: absolute;
+    top: 6px; left: 6px;
+    width: 30px; height: 30px;
+    padding: 0;
+    background: rgba(0, 0, 0, 0.55);
+    border: 1px solid var(--border);
+    border-radius: 50%;
+    color: #fff;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 15px;
+    line-height: 1;
+    z-index: 2;
+    transition: background .15s, transform .12s;
+  }
+  .rescan-btn:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); transform: scale(1.05); }
+  .rescan-btn:disabled { cursor: not-allowed; opacity: .9; }
+  .rescan-btn.running { background: var(--warn); border-color: var(--warn); animation: pulse 1.4s ease-in-out infinite; }
+  .rescan-btn.queued { background: var(--text-dim); border-color: var(--text-dim); }
+  .rescan-btn.done { background: var(--ok); border-color: var(--ok); }
+  @keyframes pulse {
+    0%, 100% { opacity: .9; }
+    50% { opacity: .55; }
+  }
+
+  /* ---------- 灯箱（双页面通用） ---------- */
+  #lightbox {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.88);
+    z-index: 200;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    cursor: zoom-out;
+    padding: 24px;
+  }
+  #lightbox.show { display: flex; }
+  #lightbox img {
+    max-width: 92vw;
+    max-height: 92vh;
+    object-fit: contain;
+    box-shadow: 0 12px 48px rgba(0, 0, 0, 0.7);
+    border-radius: 8px;
+    background: var(--bg);
+  }
+  #lightbox .lb-caption {
+    position: absolute;
+    bottom: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: rgba(255, 255, 255, 0.85);
+    font: 13px/1.4 ui-monospace, Consolas, monospace;
+    background: rgba(0, 0, 0, 0.5);
+    padding: 5px 12px;
+    border-radius: 99px;
+    pointer-events: none;
+  }
+
   #toast {
     position: fixed; left: 50%; bottom: 26px; transform: translate(-50%, 20px);
     padding: 9px 16px; border-radius: 9px;
@@ -536,6 +599,7 @@
 </aside>
 
 <div id="tooltip" hidden></div>
+<div id="lightbox" hidden role="dialog" aria-label="查看大图"><img id="lightbox-img" alt=""><div class="lb-caption" id="lightbox-cap"></div></div>
 <div id="toast"></div>
 
 <script>
@@ -604,6 +668,30 @@
     tooltipEl.classList.remove('show');
     tooltipTimer = setTimeout(() => { tooltipEl.hidden = true; }, 150);
   }
+
+  /* ---------- 灯箱（双页面通用） ---------- */
+  const lightboxEl = $('lightbox');
+  const lightboxImg = $('lightbox-img');
+  const lightboxCap = $('lightbox-cap');
+  function showLightbox(src, caption) {
+    if (!src) return;
+    lightboxImg.src = src;
+    lightboxCap.textContent = caption || '';
+    lightboxEl.hidden = false;
+    requestAnimationFrame(() => lightboxEl.classList.add('show'));
+  }
+  function hideLightbox() {
+    lightboxEl.classList.remove('show');
+    setTimeout(() => {
+      lightboxEl.hidden = true;
+      lightboxImg.src = '';
+      lightboxCap.textContent = '';
+    }, 180);
+  }
+  lightboxEl.addEventListener('click', hideLightbox);
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && lightboxEl.classList.contains('show')) hideLightbox();
+  });
 
   function tick(on) { return `<span class="${on ? 'tip-tick' : 'tip-cross'}">${on ? '✓' : '✗'}</span>`; }
   function renderLocalTooltip(entry) {
@@ -818,6 +906,15 @@
     $('grid').addEventListener('click', (e) => {
       if (e.target.closest('a')) return;
       if (e.target.closest('.local-badge')) return;  // badge 自己处理
+      // 点击封面 → 灯箱
+      const cover = e.target.closest('.cover');
+      if (cover && cover.src && !cover.classList.contains('broken')) {
+        e.stopPropagation();
+        e.preventDefault();
+        const card = cover.closest('.card');
+        showLightbox(cover.src, card?.dataset.code || '');
+        return;
+      }
       const card = e.target.closest('.card');
       if (!card) return;
       const code = card.dataset.code;
@@ -932,8 +1029,13 @@
       const actors = (m.actors || []).slice(0, 2).join(' · ') || '—';
       const tick = (on, label) =>
         `<span class="icon ${on ? 'on' : 'off'}" title="${label}">${on ? '✓' : '✗'} ${label}</span>`;
+      // 刷新按钮：有视频的卡片才显示（没有视频没东西可刷）
+      const rescanBtn = m.has_video
+        ? `<button class="rescan-btn" data-code="${esc(m.carid)}" title="重新搜刮（生成 NFO + 封面）">↻</button>`
+        : '';
       return `
         <div class="card${noVideoCls}" data-code="${esc(m.carid)}" data-folder="${esc(m.folder)}" tabindex="0">
+          ${rescanBtn}
           <img class="cover" src="${esc(localCoverUrl(m.folder))}" alt="" loading="lazy"
                referrerpolicy="no-referrer" onerror="this.classList.add('broken')">
           ${badge}
@@ -1068,8 +1170,43 @@
       }
     });
 
-    /* ---------- 点击卡片 → 打开文件夹 ---------- */
+    /* ---------- 点击处理：刷新按钮 > 灯箱 > 打开文件夹 ---------- */
     $('grid').addEventListener('click', async (e) => {
+      // 1) 刷新按钮
+      const rbtn = e.target.closest('.rescan-btn');
+      if (rbtn) {
+        e.stopPropagation();
+        e.preventDefault();
+        const carid = rbtn.dataset.code;
+        try {
+          rbtn.disabled = true;
+          rbtn.classList.add('running');
+          const res = await fetch(`/api/library/${encodeURIComponent(carid)}/rescan`, { method: 'POST' });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || res.statusText);
+          if (data.already) {
+            toast(data.running ? `${carid} 正在刷新` : `${carid} 已在队列 #${data.position}`);
+          } else {
+            toast(`已入队：${carid}（位置 #${data.position}）`);
+          }
+          refreshRescanStatus();
+        } catch (err) {
+          rbtn.disabled = false;
+          rbtn.classList.remove('running', 'queued', 'done');
+          toast('触发刷新失败：' + err.message);
+        }
+        return;
+      }
+      // 2) 封面 → 灯箱
+      const cover = e.target.closest('.cover');
+      if (cover && cover.src && !cover.classList.contains('broken')) {
+        e.stopPropagation();
+        e.preventDefault();
+        const card = cover.closest('.card');
+        showLightbox(cover.src, card?.dataset.code || '');
+        return;
+      }
+      // 3) 卡片其他位置 → 打开文件夹
       const card = e.target.closest('.card');
       if (!card) return;
       const folder = card.dataset.folder;
@@ -1094,12 +1231,61 @@
       card.click();
     });
 
+    /* ---------- 刷新状态轮询：按钮实时反映队列状态 ---------- */
+    const prevRescanState = new Map(); // carid -> 'running' | 'queued'
+    async function refreshRescanStatus() {
+      try {
+        const res = await fetch('/api/library/rescan-status');
+        if (!res.ok) return;
+        const data = await res.json();
+        const inProgress = new Map();
+        if (data.current) inProgress.set(data.current.carid, 'running');
+        for (const q of (data.queued || [])) inProgress.set(q.carid, 'queued');
+
+        document.querySelectorAll('.rescan-btn').forEach((btn) => {
+          const code = btn.dataset.code;
+          const st = inProgress.get(code);
+          if (st) {
+            btn.disabled = true;
+            btn.classList.toggle('running', st === 'running');
+            btn.classList.toggle('queued', st === 'queued');
+            btn.classList.remove('done');
+            btn.textContent = '↻';
+            btn.title = st === 'running' ? '正在刷新…' : '队列中…';
+          } else {
+            const wasActive = prevRescanState.has(code);
+            if (wasActive) {
+              btn.classList.add('done');
+              btn.classList.remove('running', 'queued');
+              btn.textContent = '✓';
+              btn.title = '刷新完成';
+              setTimeout(() => {
+                btn.classList.remove('done');
+                btn.textContent = '↻';
+                btn.title = '重新搜刮';
+              }, 1800);
+            } else {
+              btn.disabled = false;
+              btn.classList.remove('running', 'queued', 'done');
+              btn.textContent = '↻';
+              btn.title = '重新搜刮';
+            }
+          }
+        });
+        prevRescanState.clear();
+        inProgress.forEach((v, k) => prevRescanState.set(k, v));
+      } catch { /* 静默 */ }
+    }
+
     /* ---------- 启动 ---------- */
     $('source').textContent = '本地影片库';
     await loadWarnings();
     await load();
     // 持续轮询状态（每 3 秒）
     setInterval(loadStatus, 3000);
+    // 刷新按钮状态轮询（每 1.5 秒）
+    refreshRescanStatus();
+    setInterval(refreshRescanStatus, 1500);
   }
 
   /* ============================================================== */
