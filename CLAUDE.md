@@ -23,6 +23,14 @@ uv run javlibrary_scrapling.py
 uv run python scripts/gallery_server.py [--port 8000] [--data output/javlibrary_movies.json] [--no-browser]
 # 加上本地库（需在 .env 配置 LIBRARY_ROOT）：
 uv run python scripts/gallery_server.py --library-root "Z:\\JAV"
+# 显式调用新入口（与 gallery_server.py 等价）：
+uv run python -m scripts.gallery.main [--help]
+# 后台启停（Windows）：用 PowerShell 脚本管理 uvicorn 进程（PID 持久化 + 日志）
+pwsh scripts/Start-GalleryServer.ps1 -Action Start     # 后台启动，PID 写入 output/.gallery_server.pid
+pwsh scripts/Start-GalleryServer.ps1 -Action Status   # 显示 PID/内存/端点探活/最近日志
+pwsh scripts/Start-GalleryServer.ps1 -Action Stop      # 优雅停止（PID 文件 + 端口双定位）
+pwsh scripts/Start-GalleryServer.ps1 -Action Restart   # Stop 后自动 Start
+pwsh scripts/Start-GalleryServer.ps1 -Action Start -Port 8080 -LibraryRoot "Z:\\JAV" -NoBrowser  # 传参
 
 # 单独跑本地库扫描（不启动 server）：
 uv run python scripts/library_scanner.py --root "Z:\\JAV" --index output/library_index.json

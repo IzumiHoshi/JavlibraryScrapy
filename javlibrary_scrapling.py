@@ -32,7 +32,7 @@ class JAVLibrarySpider:
 
     def __init__(
         self,
-        base_url: str = "https://www.c97k.com/cn/vl_mostwanted.php",
+        base_url: str = "https://www.c99i.com/cn/vl_mostwanted.php",
         output_dir: Optional[Path] = None,
         proxy: Optional[str] = None,
     ):
@@ -344,10 +344,10 @@ async def main():
     else:
         logger.info("未配置代理")
 
-    # 创建爬虫实例
+    # 创建爬虫实例（c99i.com 镜像不需要代理）
     spider = JAVLibrarySpider(
         output_dir=Path(__file__).parent / "output",
-        proxy=proxy,
+        proxy=None,
     )
 
     # 爬取（可以指定最多页数，如：max_pages=2）
