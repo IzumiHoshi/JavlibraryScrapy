@@ -21,4 +21,7 @@ def register(app: FastAPI) -> None:
                 f"缺少页面模板：{TEMPLATE_PATH}",
                 status_code=500,
             )
-        return HTMLResponse(TEMPLATE_PATH.read_text(encoding="utf-8"))
+        return HTMLResponse(
+            TEMPLATE_PATH.read_text(encoding="utf-8"),
+            headers={"Cache-Control": "no-cache, must-revalidate"},
+        )
