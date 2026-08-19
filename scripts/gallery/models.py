@@ -100,7 +100,7 @@ class LibraryListResponse(_CompatModel):
     q: str = ""
     month: str = ""
     actor: str = ""
-    sort: str = "carid"
+    sort: str = "released"
     months: List[Dict[str, Any]] = Field(default_factory=list)
     movies: List[LibraryMovieSummary]
 

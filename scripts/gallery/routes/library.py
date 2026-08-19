@@ -55,7 +55,7 @@ def register(app: FastAPI) -> None:
         actor: str = "",
         page: int = 1,
         size: int = 100,
-        sort: str = "carid",
+        sort: str = "released",
     ) -> Dict[str, Any]:
         state = request.app.state.gallery
         if state.library_root is None:
@@ -63,8 +63,8 @@ def register(app: FastAPI) -> None:
 
         page = max(1, page)
         size = min(200, max(1, size))
-        if sort not in ("carid", "mtime"):
-            sort = "carid"
+        if sort not in ("carid", "mtime", "released"):
+            sort = "released"
 
         idx = state.library_index
         items = idx.all_sorted()
@@ -84,6 +84,10 @@ def register(app: FastAPI) -> None:
 
         if sort == "mtime":
             items = sorted(items, key=lambda e: e.modified, reverse=True)
+        elif sort == "released":
+            # release_date 是 "YYYY-MM-DD" 字符串，字典序 == 时间序；
+            # 缺 release_date 的影片排在最末。
+            items = sorted(items, key=lambda e: (not (e.release_date or "").strip(), e.release_date), reverse=True)
 
         if q:
             q_upper = q.upper()
