@@ -738,7 +738,7 @@
   </nav>
 
   <!-- /wanted 工具栏：月份导航 + 搜索 + 抓取 + 刷新 -->
-  <div class="toolbar" id="toolbar-wanted" hidden>
+  <div class="toolbar" id="toolbar-wanted" style="display:none">
     <input type="search" id="search" placeholder="搜索车牌或标题…" autocomplete="off">
     <button id="btn-all">全选</button>
     <button id="btn-none">清空</button>
@@ -755,9 +755,10 @@
   <div class="months-bar" id="months-bar" hidden></div>
 
   <!-- /library 工具栏 -->
-  <div class="toolbar" id="toolbar-library" hidden>
+  <div class="toolbar" id="toolbar-library" style="display:none">
     <input type="search" id="lib-search" placeholder="搜索车牌 / 标题 / 演员…" autocomplete="off">
     <select id="lib-sort" style="padding:7px 11px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font:inherit;">
+      <option value="released" selected>按发售时间</option>
       <option value="carid">按车牌</option>
       <option value="mtime">按修改时间</option>
     </select>
@@ -785,7 +786,7 @@
   </div>
 
   <!-- /library 当前筛选（演员等，可点 × 清除） -->
-  <div class="active-filters" id="active-filters" hidden></div>
+  <div class="active-filters" id="active-filters" style="display:none"></div>
 
   <div id="banner" hidden></div>
 </header>
@@ -932,7 +933,9 @@
   /* ============================================================== */
 
   async function initWanted() {
-    $('toolbar-wanted').hidden = false;
+    $('toolbar-wanted').style.display = 'flex';
+    $('toolbar-library').style.display = 'none';
+    $('active-filters').style.display = 'none';
     const STORE_KEY = 'jav-gallery-selection';
     const STATUS_TEXT = {
       pending: '等待中', ok: '成功', no_magnet: '无磁力', failed: '失败',
@@ -1379,12 +1382,13 @@
   /* ============================================================== */
 
   async function initLibrary() {
-    $('toolbar-library').hidden = false;
+    $('toolbar-library').style.display = 'flex';
+    $('toolbar-wanted').style.display = 'none';
 
     const params = new URLSearchParams(location.search);
     let page = Math.max(1, parseInt(params.get('page') || '1', 10) || 1);
     let q = params.get('q') || '';
-    let sort = params.get('sort') || 'carid';
+    let sort = params.get('sort') || 'released';
     let month = params.get('month') || '';
     let actor = params.get('actor') || '';
 
@@ -1401,7 +1405,7 @@
       const p = new URLSearchParams();
       if (q) p.set('q', q);
       if (page > 1) p.set('page', page);
-      if (sort !== 'carid') p.set('sort', sort);
+      if (sort !== 'released') p.set('sort', sort);
       if (month) p.set('month', month);
       if (actor) p.set('actor', actor);
       const qs = p.toString();
@@ -1494,11 +1498,11 @@
     function renderActiveFilters() {
       const el = $('active-filters');
       if (!actor) {
-        el.hidden = true;
+        el.style.display = 'none';
         el.innerHTML = '';
         return;
       }
-      el.hidden = false;
+      el.style.display = 'flex';
       el.innerHTML = `
         <span class="label">当前筛选：</span>
         <span class="chip">演员：${esc(actor)}
