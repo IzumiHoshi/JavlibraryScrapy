@@ -176,6 +176,133 @@
   }
   .active-filters .chip-x:hover { color: var(--err); }
 
+  /* ---------- 月份选择器（/library） ---------- */
+  .month-picker-wrap {
+    position: relative;
+  }
+  .month-trigger {
+    padding: 7px 12px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font: inherit;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+  }
+  .month-trigger:hover { background: var(--card-hover); border-color: var(--border-strong); }
+  .month-trigger.active {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .month-trigger .caret { font-size: 10px; opacity: .7; }
+  .month-popup {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 40;
+    background: var(--bg-elev);
+    border: 1px solid var(--border-strong);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    padding: 12px;
+    min-width: 280px;
+  }
+  .month-popup-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+  }
+  .year-display {
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--text);
+  }
+  .month-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+    margin: 12px 0;
+  }
+  .month-cell {
+    padding: 6px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text-dim);
+    font: inherit;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1px;
+    min-width: 0;
+    aspect-ratio: 1;
+    transition: background .12s, border-color .12s, color .12s;
+  }
+  .month-cell:hover:not(:disabled):not(.active) {
+    background: var(--card-hover);
+    border-color: var(--border-strong);
+    color: var(--text);
+  }
+  .month-cell.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+  .month-cell.empty { opacity: .35; cursor: not-allowed; grid-column: auto; }
+  .month-cell:disabled:not(.active) { opacity: .35; cursor: not-allowed; }
+  .month-cell .month-count {
+    font-size: 10.5px;
+    color: var(--text-faint);
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    display: block;
+    min-height: 10.5px;
+  }
+  .month-cell .month-count.empty { visibility: hidden; }
+  .month-cell.active .month-count { color: rgba(255, 255, 255, .75); }
+  .month-popup-foot {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+  }
+  .chip-btn {
+    padding: 5px 12px;
+    border-radius: 999px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    font: inherit;
+    cursor: pointer;
+    transition: background .12s, border-color .12s, color .12s;
+  }
+  .chip-btn:hover:not(:disabled) { background: var(--card-hover); color: var(--text); }
+  .chip-btn.active {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent);
+    font-weight: 500;
+  }
+  .chip-btn:disabled { opacity: .35; cursor: not-allowed; }
+  .chip-btn .count {
+    color: var(--text-faint);
+    margin-left: 4px;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+  .chip-btn.active .count { color: var(--accent); opacity: .7; }
+
   /* ---------- 状态横幅（重复车牌等报警） ---------- */
   .banner {
     margin-top: 10px;
@@ -245,7 +372,7 @@
     color: var(--text-faint); font-size: 12px; text-decoration: none;
   }
   .card-links a:hover { color: var(--accent); text-decoration: underline; }
-  .empty { grid-column: 1 / -1; padding: 40px; text-align: center; color: var(--text-faint); }
+  .empty { grid-column: 1 / -1; text-align: center; color: var(--text-faint); }
 
   /* ---------- 本地已有 badge ---------- */
   .local-badge {
@@ -634,6 +761,24 @@
       <option value="carid">按车牌</option>
       <option value="mtime">按修改时间</option>
     </select>
+    <div class="month-picker-wrap">
+      <button id="btn-month" class="month-trigger" type="button" title="按发行月份筛选">
+        <span id="month-trigger-label">全部月份</span>
+        <span class="caret">▾</span>
+      </button>
+      <div class="month-popup" id="month-popup" hidden role="dialog" aria-label="按月份筛选">
+        <div class="month-popup-head">
+          <button class="icon-btn" id="year-prev" type="button" title="上一年">‹</button>
+          <span class="year-display" id="year-display">— 年</span>
+          <button class="icon-btn" id="year-next" type="button" title="下一年">›</button>
+        </div>
+        <div class="month-grid" id="month-grid"></div>
+        <div class="month-popup-foot">
+          <button class="chip-btn" id="month-unknown" type="button">未知月份 <span class="count">0</span></button>
+          <button class="chip-btn" id="month-clear" type="button">清除筛选</button>
+        </div>
+      </div>
+    </div>
     <button id="btn-lib-rescan">刷新库</button>
     <span class="spacer"></span>
     <span class="count" id="lib-status">—</span>
@@ -1247,6 +1392,7 @@
     let months = [];
     let total = 0;
     let pages = 1;
+    let popupYear = null;  // 月份选择器当前展示的年份（懒初始化）
 
     $('lib-search').value = q;
     $('lib-sort').value = sort;
@@ -1262,30 +1408,87 @@
       history.replaceState(null, '', qs ? `?${qs}` : location.pathname);
     }
 
-    function sumMonthCounts() {
-      return months.reduce((s, m) => s + m.count, 0);
+    function parseMonthsData() {
+      // 把 months payload 按年聚合；unknown 单独保留
+      const years = new Map();
+      let unknown = 0;
+      for (const m of months) {
+        if (m.month === 'unknown') { unknown = m.count; continue; }
+        const parts = m.month.split('-');
+        if (parts.length !== 2) continue;
+        const y = parseInt(parts[0], 10);
+        const mo = parseInt(parts[1], 10);
+        if (!y || !mo) continue;
+        if (!years.has(y)) years.set(y, new Map());
+        years.get(y).set(mo, m.count);
+      }
+      return { years, unknown };
     }
 
-    function renderMonths() {
-      const bar = $('months-bar');
-      if (!months.length) { bar.hidden = true; return; }
-      bar.hidden = false;
-      const allChip = `<span class="chip ${month === '' ? 'active' : ''}" data-month="">
-        全部<span class="count">${sumMonthCounts()}</span></span>`;
-      const monthChips = months.map(m => {
-        const isUnknown = m.month === 'unknown';
-        return `<span class="chip ${isUnknown ? 'unknown' : ''} ${month === m.month ? 'active' : ''}" data-month="${esc(m.month)}">
-          ${esc(m.month)}<span class="count">${m.count}</span></span>`;
-      }).join('');
-      bar.innerHTML = `<span class="label">按发行月份：</span>${allChip}${monthChips}`;
-      bar.querySelectorAll('.chip').forEach(chip => {
-        chip.addEventListener('click', () => {
-          month = chip.dataset.month;
+    function openMonthPopup() {
+      $('month-popup').hidden = false;
+      renderMonthPicker();
+    }
+    function closeMonthPopup() {
+      $('month-popup').hidden = true;
+    }
+
+    function renderMonthPicker() {
+      const { years, unknown } = parseMonthsData();
+      const yearList = [...years.keys()].sort((a, b) => a - b);
+
+      // 决定弹层里展示的年份
+      if (month && month !== 'unknown') {
+        const y = parseInt(month.slice(0, 4), 10);
+        if (y) popupYear = y;
+      }
+      if (!popupYear || (yearList.length && !yearList.includes(popupYear))) {
+        popupYear = yearList.length ? yearList[yearList.length - 1] : new Date().getFullYear();
+      }
+
+      // 触发按钮 label
+      let label;
+      if (month === 'unknown') label = '未知月份';
+      else if (month) label = `${popupYear} 年 ${parseInt(month.slice(5, 7), 10)} 月`;
+      else label = '全部月份';
+      $('month-trigger-label').textContent = label;
+      $('btn-month').classList.toggle('active', !!month);
+
+      // 年份导航
+      $('year-display').textContent = `${popupYear} 年`;
+      $('year-prev').disabled = yearList.length > 0 && popupYear <= yearList[0];
+      $('year-next').disabled = yearList.length > 0 && popupYear >= yearList[yearList.length - 1];
+
+      // 12 月网格
+      const grid = $('month-grid');
+      grid.innerHTML = '';
+      for (let m = 1; m <= 12; m++) {
+        const count = years.get(popupYear)?.get(m) || 0;
+        const key = `${popupYear}-${String(m).padStart(2, '0')}`;
+        const cell = document.createElement('button');
+        cell.type = 'button';
+        cell.className = 'month-cell';
+        const isActive = month === key;
+        if (isActive) cell.classList.add('active');
+        if (count === 0) cell.classList.add('empty');
+        cell.disabled = count === 0 && !isActive;
+        cell.innerHTML = `<span class="month-num">${m}月</span><span class="month-count${count === 0 ? ' empty' : ''}">${count || ''}</span>`;
+        cell.addEventListener('click', () => {
+          month = key;
           page = 1;
+          closeMonthPopup();
           updateUrl();
           load();
         });
-      });
+        grid.appendChild(cell);
+      }
+
+      // 未知月份 + 清除
+      const unkBtn = $('month-unknown');
+      unkBtn.classList.toggle('active', month === 'unknown');
+      unkBtn.querySelector('.count').textContent = unknown || '';
+      unkBtn.disabled = unknown === 0 && month !== 'unknown';
+      $('month-clear').disabled = !month;
     }
 
     function renderActiveFilters() {
@@ -1438,7 +1641,7 @@
         months = data.months || [];
         total = data.total;
         pages = Math.max(1, Math.ceil(total / data.size));
-        renderMonths();
+        renderMonthPicker();
         renderActiveFilters();
         render();
         loadStatus();
@@ -1454,6 +1657,47 @@
       searchTimer = setTimeout(() => { q = e.target.value; page = 1; load(); }, 250);
     });
     $('lib-sort').addEventListener('change', (e) => { sort = e.target.value; page = 1; load(); });
+
+    /* ---------- 月份选择器 ---------- */
+    $('btn-month').addEventListener('click', (e) => {
+      e.stopPropagation();
+      if ($('month-popup').hidden) openMonthPopup();
+      else closeMonthPopup();
+    });
+    $('year-prev').addEventListener('click', (e) => {
+      e.stopPropagation();
+      popupYear--;
+      renderMonthPicker();
+    });
+    $('year-next').addEventListener('click', (e) => {
+      e.stopPropagation();
+      popupYear++;
+      renderMonthPicker();
+    });
+    $('month-unknown').addEventListener('click', (e) => {
+      e.stopPropagation();
+      month = 'unknown';
+      page = 1;
+      closeMonthPopup();
+      updateUrl();
+      load();
+    });
+    $('month-clear').addEventListener('click', (e) => {
+      e.stopPropagation();
+      month = '';
+      page = 1;
+      closeMonthPopup();
+      updateUrl();
+      load();
+    });
+    document.addEventListener('click', (e) => {
+      if ($('month-popup').hidden) return;
+      if (e.target.closest('#month-popup') || e.target.closest('#btn-month')) return;
+      closeMonthPopup();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !$('month-popup').hidden) closeMonthPopup();
+    });
 
     $('btn-lib-rescan').addEventListener('click', async () => {
       $('btn-lib-rescan').disabled = true;
