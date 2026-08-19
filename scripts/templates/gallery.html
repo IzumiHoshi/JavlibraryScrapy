@@ -156,6 +156,26 @@
   }
   .months-bar .chip.active .count { color: var(--accent); opacity: .7; }
 
+  /* ---------- 当前筛选（/library） ---------- */
+  .active-filters {
+    display: flex; flex-wrap: wrap; gap: 6px;
+    padding: 8px 18px; background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    align-items: center;
+  }
+  .active-filters .label { color: var(--text-faint); font-size: 12px; margin-right: 4px; }
+  .active-filters .chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 4px 10px; border-radius: 999px;
+    background: var(--accent-soft); border: 1px solid var(--accent);
+    color: var(--accent); font-size: 12.5px; font-weight: 500;
+  }
+  .active-filters .chip-x {
+    background: transparent; border: 0; padding: 0; margin: 0;
+    color: inherit; cursor: pointer; font: inherit; line-height: 1;
+  }
+  .active-filters .chip-x:hover { color: var(--err); }
+
   /* ---------- 状态横幅（重复车牌等报警） ---------- */
   .banner {
     margin-top: 10px;
@@ -303,6 +323,24 @@
     margin-top: 2px;
     max-height: 30px;
     overflow: hidden;
+  }
+  body.page-library .actor-tag {
+    background: transparent;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+  }
+  body.page-library .actor-tag:hover {
+    color: var(--accent);
+    text-decoration: underline;
+  }
+  body.page-library .actor-tag:focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 2px;
   }
 
   /* ---------- 抓取面板（/wanted） ---------- */
@@ -600,6 +638,9 @@
     <span class="spacer"></span>
     <span class="count" id="lib-status">—</span>
   </div>
+
+  <!-- /library 当前筛选（演员等，可点 × 清除） -->
+  <div class="active-filters" id="active-filters" hidden></div>
 
   <div id="banner" hidden></div>
 </header>
@@ -1199,8 +1240,11 @@
     let page = Math.max(1, parseInt(params.get('page') || '1', 10) || 1);
     let q = params.get('q') || '';
     let sort = params.get('sort') || 'carid';
+    let month = params.get('month') || '';
+    let actor = params.get('actor') || '';
 
     let movies = [];
+    let months = [];
     let total = 0;
     let pages = 1;
 
@@ -1212,8 +1256,57 @@
       if (q) p.set('q', q);
       if (page > 1) p.set('page', page);
       if (sort !== 'carid') p.set('sort', sort);
+      if (month) p.set('month', month);
+      if (actor) p.set('actor', actor);
       const qs = p.toString();
       history.replaceState(null, '', qs ? `?${qs}` : location.pathname);
+    }
+
+    function sumMonthCounts() {
+      return months.reduce((s, m) => s + m.count, 0);
+    }
+
+    function renderMonths() {
+      const bar = $('months-bar');
+      if (!months.length) { bar.hidden = true; return; }
+      bar.hidden = false;
+      const allChip = `<span class="chip ${month === '' ? 'active' : ''}" data-month="">
+        全部<span class="count">${sumMonthCounts()}</span></span>`;
+      const monthChips = months.map(m => {
+        const isUnknown = m.month === 'unknown';
+        return `<span class="chip ${isUnknown ? 'unknown' : ''} ${month === m.month ? 'active' : ''}" data-month="${esc(m.month)}">
+          ${esc(m.month)}<span class="count">${m.count}</span></span>`;
+      }).join('');
+      bar.innerHTML = `<span class="label">按发行月份：</span>${allChip}${monthChips}`;
+      bar.querySelectorAll('.chip').forEach(chip => {
+        chip.addEventListener('click', () => {
+          month = chip.dataset.month;
+          page = 1;
+          updateUrl();
+          load();
+        });
+      });
+    }
+
+    function renderActiveFilters() {
+      const el = $('active-filters');
+      if (!actor) {
+        el.hidden = true;
+        el.innerHTML = '';
+        return;
+      }
+      el.hidden = false;
+      el.innerHTML = `
+        <span class="label">当前筛选：</span>
+        <span class="chip">演员：${esc(actor)}
+          <button type="button" class="chip-x" data-clear="actor" title="清除演员筛选">×</button>
+        </span>`;
+      el.querySelector('.chip-x[data-clear="actor"]').addEventListener('click', () => {
+        actor = '';
+        page = 1;
+        updateUrl();
+        load();
+      });
     }
 
     function localCoverUrl(folder) {
@@ -1225,7 +1318,12 @@
       const badge = m.has_video
         ? ''
         : '<div class="local-badge warn" data-code="' + esc(m.carid) + '" title="此目录下未找到视频文件">无视频</div>';
-      const actors = (m.actors || []).slice(0, 2).join(' · ') || '—';
+      const visibleActors = (m.actors || []).slice(0, 2);
+      const actorsHtml = visibleActors.length
+        ? visibleActors.map(a =>
+            `<button type="button" class="actor-tag" data-actor="${esc(a)}" title="点击只看 ${esc(a)}">${esc(a)}</button>`
+          ).join(' · ')
+        : '—';
       const tick = (on, label) =>
         `<span class="icon ${on ? 'on' : 'off'}" title="${label}">${on ? '✓' : '✗'} ${label}</span>`;
       // 刷新按钮：有视频的卡片才显示（没有视频没东西可刷）
@@ -1247,8 +1345,9 @@
               ${tick(m.has_fanart, 'Fanart')}
               <span class="icon">🎬 ${m.video_count} · ${fmtBytes(m.total_size_bytes)}</span>
             </div>
+            ${m.release_date ? `<div class="meta-line"><span class="icon">📅 ${esc(m.release_date)}</span></div>` : ''}
+            <div class="meta-line"><span class="icon">👤</span> ${actorsHtml}</div>
             <div class="folder" title="${esc(m.folder)}">${esc(m.folder)}</div>
-            <div class="meta-line"><span class="icon">👤 ${esc(actors)}</span></div>
           </div>
         </div>`;
     }
@@ -1322,6 +1421,8 @@
     async function load() {
       updateUrl();
       const qs = new URLSearchParams({ q, page, size: 100, sort });
+      if (month) qs.set('month', month);
+      if (actor) qs.set('actor', actor);
       try {
         const res = await fetch(`/api/library?${qs}`);
         const data = await res.json();
@@ -1334,8 +1435,11 @@
         }
         if (!res.ok) throw new Error(data.error || res.statusText);
         movies = data.movies || [];
+        months = data.months || [];
         total = data.total;
         pages = Math.max(1, Math.ceil(total / data.size));
+        renderMonths();
+        renderActiveFilters();
         render();
         loadStatus();
       } catch (e) {
@@ -1369,7 +1473,7 @@
       }
     });
 
-    /* ---------- 点击处理：刷新按钮 > 灯箱 > 打开文件夹 ---------- */
+    /* ---------- 点击处理：刷新按钮 > 灯箱（卡片其他位置不再触发打开文件夹） ---------- */
     $('grid').addEventListener('click', async (e) => {
       // 1) 刷新按钮
       const rbtn = e.target.closest('.rescan-btn');
@@ -1403,31 +1507,19 @@
         e.preventDefault();
         const card = cover.closest('.card');
         showLightbox(cover.src, card?.dataset.code || '');
+      }
+      // 3) 演员标签 → 按演员筛选
+      const actorTag = e.target.closest('.actor-tag');
+      if (actorTag) {
+        e.stopPropagation();
+        e.preventDefault();
+        actor = actorTag.dataset.actor;
+        page = 1;
+        updateUrl();
+        load();
         return;
       }
-      // 3) 卡片其他位置 → 打开文件夹
-      const card = e.target.closest('.card');
-      if (!card) return;
-      const folder = card.dataset.folder;
-      try {
-        const res = await fetch('/api/open-folder', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ folder }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || res.statusText);
-        toast(`已打开：${folder.split(/[\\\\/]/).pop()}`);
-      } catch (e) {
-        toast('打开失败：' + e.message);
-      }
-    });
-    $('grid').addEventListener('keydown', (e) => {
-      if (e.key !== 'Enter' && e.key !== ' ') return;
-      const card = e.target.closest('.card');
-      if (!card) return;
-      e.preventDefault();
-      card.click();
+      // 卡片其他位置不触发任何动作（不再打开本地文件夹）
     });
 
     /* ---------- 刷新状态轮询：按钮实时反映队列状态 ---------- */
