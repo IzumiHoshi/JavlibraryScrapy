@@ -26,8 +26,8 @@
     本地影片库根目录，覆盖 .env 中的 LIBRARY_ROOT。仅 Start/Restart 使用。
     不传则使用 .env 的值。
 
-.PARAMETER NoBrowser
-    启动后不打开浏览器。仅 Start/Restart 使用。
+.PARAMETER OpenBrowser
+    启动后自动打开浏览器（默认不打开）。仅 Start/Restart 使用。
 
 .PARAMETER NoRescanOnStartup
     启动时不自动扫描本地库。仅 Start/Restart 使用。
@@ -63,7 +63,7 @@ param(
     [string]$LibraryRoot,
 
     [Parameter(Mandatory=$false)]
-    [switch]$NoBrowser,
+    [switch]$OpenBrowser,
 
     [Parameter(Mandatory=$false)]
     [switch]$NoRescanOnStartup,
@@ -190,7 +190,7 @@ function Invoke-Start {
 
     # 组装参数
     $argList = @('-m', 'scripts.gallery.main', '--port', "$Port", '--image-proxy', $ImageProxy)
-    if ($NoBrowser)      { $argList += '--no-browser' }
+    if ($OpenBrowser)    { $argList += '--open-browser' }
     if ($NoRescanOnStartup) { $argList += '--no-rescan-on-startup' }
     if ($LibraryRoot)    { $argList += @('--library-root', $LibraryRoot) }
 

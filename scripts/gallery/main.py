@@ -67,9 +67,9 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         help="封面是否经服务端代理拉取（auto：配置了代理时启用）",
     )
     p.add_argument(
-        "--no-browser",
+        "--open-browser",
         action="store_true",
-        help="启动后不自动打开浏览器",
+        help="启动后自动打开浏览器（默认不打开）",
     )
     return p.parse_args(argv)
 
@@ -138,7 +138,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             logger.info(f"本地库已配置但索引为空：{library_root}，可在页面上点击「刷新库」")
     logger.info("按 Ctrl+C 停止服务")
 
-    if not args.no_browser:
+    if args.open_browser:
         threading.Timer(0.5, lambda: webbrowser.open(local_url)).start()
 
     uvicorn.run(

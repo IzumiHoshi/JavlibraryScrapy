@@ -182,8 +182,7 @@ def main():
                 "--output-dir", str(tmp_path / "output"),
                 "--library-root", str(lib_root),
                 "--library-index", str(idx_path),
-                "--no-browser",
-            ],
+                ],
             cwd=str(ROOT), env=env,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
