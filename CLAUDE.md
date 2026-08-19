@@ -19,6 +19,14 @@ uv run javbus_scrapling.py
 # JAVLibrary：爬取 "Most Wanted" 列表，输出 JSON/CSV
 uv run javlibrary_scrapling.py
 
+# 最想要列表 → 本地库（每部一个文件夹，含 movie.nfo / poster.jpg / fanart.jpg）
+uv run python scripts/export_mostwanted.py
+# 等价于：uv run python scripts/export_mostwanted.py --source output/javlibrary_movies.json --library-root "$MOSTWANTED_LIBRARY_ROOT"
+uv run python scripts/export_mostwanted.py --library-root "Z:\\JAV\\MostWanted" --overwrite  # 强制覆盖已存在
+uv run python scripts/export_mostwanted.py --dry-run  # 只打印计划，不写文件
+uv run python scripts/export_mostwanted.py --limit 5  # 只处理前 5 部（调试用）
+uv run python scripts/export_mostwanted.py --skip-javbus  # 只下 poster.jpg，跳过 JAVBus 抓取
+
 # 影片画廊（FastAPI + uvicorn，把 output/ 的结果以卡片展示，勾选后一键抓磁力链接）
 uv run python scripts/gallery_server.py [--port 8000] [--data output/javlibrary_movies.json] [--open-browser]
 # 加上本地库（需在 .env 配置 LIBRARY_ROOT）：
@@ -69,6 +77,7 @@ uv run python test/test_gallery_server_library.py # 离线跑画廊 + 本地库�
   - `process_movie()` 被 `workflow.py` 子类化以重定向输出到不同目录（构造后设置 `spider.output_dir = output_path`；子类把封面复制到子目录，而不是原地重命名）。
 
 - **`javlibrary_scrapling.py`** — `JAVLibrarySpider`：爬取 JAVLibrary `vl_mostwanted.php`（或可配置的基础 URL），自动检测总页数，页间休眠 3 秒，导出 `movies.json` + `movies.csv` 到 `output/`。使用 `stealth_mode=True` 和 90 秒超时以通过 Cloudflare 验证。
+- **`scripts/export_mostwanted.py`** — 把 JAVLibrary `movies.json` 导出到本地库。对每部影片建 `<root>/<CARID> <title>/`，写 `movie.nfo`（用 `JavbusSpider.parse()` 拉 JAVBus 详情页元数据填 NFO）+ `poster.jpg`（JAVLibrary 缩略图）+ `fanart.jpg`（JAVBus 横版原图）。复用 `JavbusSpider` 处理 JAVBus 部分，仅覆写 `process_movie` 把 `fanart.png → fanart.jpg`、NFO 改名为 `movie.nfo`、不做 `split_poster_from_fanart`。默认跳过已存在文件夹；排除列表与 `find_car_bus` 一致（`HEYZO/PONDO/CARIB/OKYOHOT`，这些在 JAVBus 上没页面）。配置项 `.env` 的 `MOSTWANTED_LIBRARY_ROOT`，CLI 用 `--library-root` 覆盖。
 
 两个爬虫都使用 `scrapling.fetchers.AsyncDynamicSession` 进行 JS 渲染。
 

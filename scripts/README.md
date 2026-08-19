@@ -64,6 +64,52 @@ uv run python scripts/gallery_server.py --port 8000 --data output/javlibrary_mov
 
 > 代理、超时、User-Agent 等都读 `.env`，与 `javbus_scrapling.py` 共用一套配置。同一时间只允许一个抓取任务。
 
+## export_mostwanted.py
+
+把 JAVLibrary「最想要」列表导出到本地库：每部影片一个文件夹，命名 `<CARID> <title>/`，内含：
+
+- `movie.nfo` —— 从 JAVBus 详情页抓到的完整元数据（Kodi/Plex 兼容）
+- `poster.jpg` —— JAVLibrary 列表的竖版缩略图
+- `fanart.jpg` —— JAVBus 详情页的横版原图
+
+复用 `javbus_scrapling.JavbusSpider` 处理 JAVBus 部分，只覆写 `process_movie` 把 `fanart.png → fanart.jpg`、NFO 改名 `movie.nfo`、不做 poster/fanart 拆分。
+
+```bash
+# 读取默认 output/javlibrary_movies.json，导出到 .env 的 MOSTWANTED_LIBRARY_ROOT
+uv run python scripts/export_mostwanted.py
+
+# 显式指定路径
+uv run python scripts/export_mostwanted.py \
+  --source output/javlibrary_movies.json \
+  --library-root "Z:\\JAV\\MostWanted"
+
+# 强制覆盖已存在的文件夹
+uv run python scripts/export_mostwanted.py --overwrite
+
+# 只打印计划，不写文件
+uv run python scripts/export_mostwanted.py --dry-run
+
+# 调试：只处理前 5 部
+uv run python scripts/export_mostwanted.py --limit 5
+
+# 只下 poster.jpg（不拉 JAVBus）
+uv run python scripts/export_mostwanted.py --skip-javbus
+```
+
+**参数：**
+
+- `--source` JAVLibrary 抓取结果 JSON（默认 `output/javlibrary_movies.json`）
+- `--library-root` 本地库根目录（默认读 `.env` 的 `MOSTWANTED_LIBRARY_ROOT`，未设置则报错）
+- `--overwrite` 目标文件夹已存在时仍写入（默认跳过）
+- `--dry-run` 只打印计划，不写文件
+- `--delay` JAVBus 每部间隔秒数（默认 3）
+- `--skip-javbus` 跳过 JAVBus 抓取（只写 poster.jpg）
+- `--limit` 只处理前 N 部
+
+**排除列表：** `HEYZO / PONDO / CARIB / OKYOHOT`（这些在 JAVBus 上没页面，跳过并提示）。
+
+**注意：** 跑完会清理 JAVBus 留在 `library_root` 下的临时 `<CARID>.png`。
+
 ## workflow.py
 
 完整工作流：从下载目录扫描视频，调用 JAVBus 爬虫，输出 NFO 和封面到指定目录。
