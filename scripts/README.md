@@ -30,12 +30,12 @@ uv run python scripts/move_videos.py <源路径> <目标路径> [--min-size 500]
 
 ```bash
 uv run python scripts/gallery_server.py
-uv run python scripts/gallery_server.py --port 8000 --data output/javlibrary_movies.json --no-browser
+uv run python scripts/gallery_server.py --port 8000 --data output/javlibrary_movies.json
 ```
 
 默认监听 `0.0.0.0:8000`，同一局域网内可通过启动日志显示的地址访问，例如 `http://192.168.0.116:8000`。如果 Windows 防火墙弹出提示，请允许 Python 在“专用网络”中通信。
 
-启动后自动打开 <http://127.0.0.1:8000>。
+**默认启动后不自动打开浏览器**，如需自动打开加上 `--open-browser`（PowerShell 脚本用 `-OpenBrowser`）。
 
 **页面功能：**
 
@@ -60,7 +60,7 @@ uv run python scripts/gallery_server.py --port 8000 --data output/javlibrary_mov
 - `--output-dir` 结果输出目录（默认 `output/`）
 - `--host` / `--port` 监听地址与端口（默认 `0.0.0.0:8000`，允许局域网访问）
 - `--image-proxy {auto,on,off}` 封面是否经服务端代理拉取。`auto`（默认）在 `.env` 里 `PROXY_ENABLED=true` 时启用；封面缓存在 `output/.cover_cache/`
-- `--no-browser` 启动后不自动打开浏览器
+- `--open-browser` 启动后自动打开浏览器（默认不打开）
 
 > 代理、超时、User-Agent 等都读 `.env`，与 `javbus_scrapling.py` 共用一套配置。同一时间只允许一个抓取任务。
 
