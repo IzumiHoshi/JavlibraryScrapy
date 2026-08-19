@@ -11,7 +11,7 @@ GET  /api/library/{carid}      —— 单部详情
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from fastapi import FastAPI, HTTPException, Request
 
@@ -51,6 +51,8 @@ def register(app: FastAPI) -> None:
     async def library_list(
         request: Request,
         q: str = "",
+        month: str = "",
+        actor: str = "",
         page: int = 1,
         size: int = 100,
         sort: str = "carid",
@@ -66,6 +68,20 @@ def register(app: FastAPI) -> None:
 
         idx = state.library_index
         items = idx.all_sorted()
+
+        # 先聚合月份桶（与 q/month/actor 过滤无关，让 chips 始终稳定可点）
+        month_counts: Dict[str, int] = {}
+        for e in items:
+            rd = (e.release_date or "").strip()
+            key = rd[:7] if len(rd) >= 7 and rd[4] == "-" else "unknown"
+            month_counts[key] = month_counts.get(key, 0) + 1
+        known_months = sorted((k for k in month_counts if k != "unknown"), reverse=True)
+        months_payload: List[Dict[str, Any]] = [
+            {"month": m, "count": month_counts[m]} for m in known_months
+        ]
+        if "unknown" in month_counts:
+            months_payload.append({"month": "unknown", "count": month_counts["unknown"]})
+
         if sort == "mtime":
             items = sorted(items, key=lambda e: e.modified, reverse=True)
 
@@ -80,6 +96,20 @@ def register(app: FastAPI) -> None:
                 or any(q_lower in a.lower() for a in e.actors)
             ]
 
+        if month:
+            if month == "unknown":
+                items = [e for e in items if not (e.release_date or "").strip()]
+            else:
+                items = [e for e in items if (e.release_date or "").startswith(month)]
+
+        if actor:
+            a_lower = actor.strip().lower()
+            items = [
+                e
+                for e in items
+                if any(a_lower == (a or "").lower() for a in (e.actors or []))
+            ]
+
         total = len(items)
         start = (page - 1) * size
         page_items = items[start : start + size]
@@ -92,7 +122,10 @@ def register(app: FastAPI) -> None:
             "page": page,
             "size": size,
             "q": q,
+            "month": month,
+            "actor": actor,
             "sort": sort,
+            "months": months_payload,
             "movies": [
                 {
                     "carid": e.carid,
