@@ -146,7 +146,13 @@ def register(app: FastAPI) -> None:
             f"/api/wanted/{carid_norm}/image?type=cover" if cover_path.exists() else None
         )
 
-        sample_paths = sorted(folder.glob("sample_*.jpg"))
+        sample_paths = sorted(
+            folder.glob("sample_*.jpg"),
+            # 按数字 idx 排序而非文件名（sample_10.jpg 不能排在 sample_2.jpg 前面）
+            key=lambda p: int(_SAMPLE_IDX_RE.match(p.name).group(1))
+            if _SAMPLE_IDX_RE.match(p.name)
+            else 0,
+        )
         samples: List[str] = []
         for p in sample_paths:
             # 直接从文件名取 idx，保证 URL idx 与磁盘文件名一致
