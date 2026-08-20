@@ -306,6 +306,34 @@ def _save_per_movie_folder(
 
 
 # --------------------------------------------------------------------------- #
+# 落盘（每次抓完一部后增量写；崩了只丢当前这一部）
+# --------------------------------------------------------------------------- #
+def save_wanted_json(
+    local: List[Dict[str, Any]],
+    data_path: Path,
+    log: Optional[Callable[[str], None]] = None,
+) -> None:
+    """原子写：``<data_path>.tmp`` → rename ``data_path``。
+
+    - 每部 JavBus 抓完 + 落 folder 后调用一次（崩了 JSON 也有最近状态）
+    - ``local`` 中所有 ``release_date`` 已填但缺 ``_bucket`` 的，自动补
+    - 失败抛异常让上层捕获（不要静默吞）
+    """
+    data_path.parent.mkdir(parents=True, exist_ok=True)
+    for entry in local:
+        if "release_date" in entry and "_bucket" not in entry:
+            entry["_bucket"] = _bucket_for_release_date(entry.get("release_date"))
+    tmp = data_path.with_suffix(data_path.suffix + ".tmp")
+    tmp.write_text(
+        json.dumps(local, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    tmp.replace(data_path)
+    if log:
+        log(f"已写入 {data_path.name}（{len(local)} 部）")
+
+
+# --------------------------------------------------------------------------- #
 # 主编排
 # --------------------------------------------------------------------------- #
 def refresh_wanted(
@@ -412,6 +440,14 @@ def refresh_wanted(
             f"missing {result.marked_missing}，待抓 JavBus {len(result.needs_javbus)}"
         )
 
+        # merge 完立刻落盘：新增/更新/missing 标记先写一次，Phase 3 崩了也比
+        # 之前「全跑完再写」更接近当前状态
+        try:
+            save_wanted_json(local, data_path, log=log)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"merge 阶段落盘失败：{e}")
+            log(f"⚠ merge 阶段落盘失败：{e}")
+
         # ---- Phase 3: 抓 JavBus ----
         if result.needs_javbus:
             job._set(phase="fetch_javbus")
@@ -491,6 +527,13 @@ def refresh_wanted(
                             log(f"    ✗ {code} 异常：{e}")
                         finally:
                             job._set(javbus_done=job.javbus_done + 1)
+                            # 每部完成（无论成功/失败）就增量落盘：
+                            # 服务崩 / 网络断 → JSON 反映「最近一次成功」状态，
+                            # 不会停留在几十部前的 release_date
+                            try:
+                                save_wanted_json(local, data_path, log=None)
+                            except Exception as save_err:  # noqa: BLE001
+                                logger.warning(f"增量落盘失败 {code}: {save_err}")
                             await asyncio.sleep(1.5)
 
             try:
@@ -500,19 +543,14 @@ def refresh_wanted(
 
         job._set(current_code=None)
 
-        # ---- Phase 4: 落盘 ----
+        # ---- Phase 4: 最终落盘 ----
+        # 每部循环内已经增量写过一次；这里再写一次兜底（万一循环里 save 全失败）
         job._set(phase="save")
-        for entry in local:
-            if "release_date" in entry and "_bucket" not in entry:
-                entry["_bucket"] = _bucket_for_release_date(entry.get("release_date"))
-        data_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = data_path.with_suffix(data_path.suffix + ".tmp")
-        tmp.write_text(
-            json.dumps(local, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        tmp.replace(data_path)
-        log(f"已写入 {data_path}（共 {len(local)} 部）")
+        try:
+            save_wanted_json(local, data_path, log=log)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"最终落盘失败：{e}")
+            log(f"⚠ 最终落盘失败：{e}")
 
         job._set(status="done", phase="done", finished_at=_now())
         log("✅ wanted refresh 完成")
