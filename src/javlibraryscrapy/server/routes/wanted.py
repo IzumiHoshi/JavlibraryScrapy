@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -31,6 +32,9 @@ from ..services.proxy import proxied_url
 from ..services.wanted import WantedService
 
 logger = logging.getLogger("gallery.wanted_routes")
+
+
+_SAMPLE_IDX_RE = re.compile(r"sample_(\d+)\.jpg")
 
 
 class RefreshBody(BaseModel):
@@ -144,11 +148,17 @@ def register(app: FastAPI) -> None:
         )
 
         sample_paths = sorted(folder.glob("sample_*.jpg"))
-        samples: List[str] = [
-            f"/api/wanted/{carid_norm}/image?type=sample&idx={i + 1}"
-            for i, p in enumerate(sample_paths)
-            if p.exists()
-        ]
+        samples: List[str] = []
+        for p in sample_paths:
+            # 直接从文件名取 idx，保证 URL idx 与磁盘文件名一致
+            # （不依赖连续编号——用户手动删了某张也不会 404）
+            m = _SAMPLE_IDX_RE.match(p.name)
+            if not m:
+                continue
+            idx = int(m.group(1))
+            samples.append(
+                f"/api/wanted/{carid_norm}/image?type=sample&idx={idx}"
+            )
 
         return {
             "cover": cover_url,

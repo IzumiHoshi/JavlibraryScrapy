@@ -91,7 +91,7 @@
                     └─────────────────────┘
 ```
 
-`library_scanner.py` 是**独立模块**——可以被服务调用，也可以 `python src/javlibraryscrapy/library/scanner.py` 单独跑（CLI 模式）。
+`library_scanner.py` 是**独立模块**——可以被服务调用，也可以 `python -m javlibraryscrapy.library.scanner` 单独跑（CLI 模式）。
 
 ## 4. 数据模型
 
