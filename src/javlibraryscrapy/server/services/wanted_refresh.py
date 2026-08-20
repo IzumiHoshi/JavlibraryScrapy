@@ -35,7 +35,12 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
+
+if TYPE_CHECKING:
+    # 仅类型提示；运行时仍是鸭子类型，避免循环导入。
+    # sample_cache 位于 services/sample_cache.py，与本文件同层。
+    from .sample_cache import SampleCountCache
 
 logger = logging.getLogger("gallery.wanted_refresh")
 
@@ -209,6 +214,7 @@ def _save_per_movie_folder(
     info: Dict[str, Any],
     code: str,
     root_dir: Path,
+    sample_cache: Optional["SampleCountCache"] = None,
 ) -> Dict[str, int]:
     """把单部影片的 cover + samples 落地到 ``<root>/<CARID> <title>/``。
 
@@ -219,6 +225,9 @@ def _save_per_movie_folder(
       - cover.jpg 已存在 → 跳过写入（幂等），但仍清理临时 ``<CARID>.png``
       - sample_NNN.jpg 已存在 → 跳过写入，清理临时 ``<CARID>_sample_NNN.jpg``
       - 任何一步失败不抛异常（让 Phase 3 主流程不受影响）
+      - 落盘完成后，若 sample_cache 不为空且 folder 存在 → 写一条
+        ``code -> (existing_count + new_samples, mtime)``，
+        避免下次 /api/wanted 列表扫 NFS
     """
     result = {"cover": 0, "samples": 0}
     title = (info.get("title") or "").strip()
@@ -285,6 +294,14 @@ def _save_per_movie_folder(
             except OSError:
                 pass
 
+    # 落盘完成 → 回填 cache。这里直接 glob 一次拿到「本地已有」总数（含之前手动下载的）
+    if sample_cache is not None and folder.exists():
+        try:
+            existing = sum(1 for _ in folder.glob("sample_*.jpg"))
+            sample_cache.put(code, existing)
+        except OSError as e:
+            logger.warning(f"回填 cache 失败 {code}: {e}")
+
     return result
 
 
@@ -299,11 +316,14 @@ def refresh_wanted(
     *,
     max_pages: Optional[int] = None,
     on_complete: Optional[Callable[[], None]] = None,
+    sample_cache: Optional["SampleCountCache"] = None,
 ) -> None:
     """在线程中运行：抓 Most Wanted → merge → 抓 JavBus → 落盘。
 
-    - ``javlibrary_proxy``：传给 JAVLibrary 镜像（c99i.com 默认 None）
-    - ``javbus_proxy``：传给 JavBus 详情抓取（绕过 Cloudflare）
+    - ``javlibrary_proxy``: 传给 JAVLibrary 镜像 (c99i.com 默认 None)
+    - ``javbus_proxy``: 传给 JavBus 详情抓取 (绕过 Cloudflare)
+    - ``sample_cache``: 外部注入的样本计数缓存；_save_per_movie_folder
+      落盘成功后回写 (count)，避免下次扫描 NFS
     """
     try:
         from javlibraryscrapy.scraping.javbus import JavbusSpider
@@ -445,7 +465,8 @@ def refresh_wanted(
                                 if mw_root:
                                     try:
                                         saved = _save_per_movie_folder(
-                                            bus_spider, info, code, mw_root
+                                            bus_spider, info, code, mw_root,
+                                            sample_cache=sample_cache,
                                         )
                                         if saved["cover"] or saved["samples"]:
                                             job._set(local_saved=job.local_saved + 1)

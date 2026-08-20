@@ -16,7 +16,10 @@ import threading
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+if TYPE_CHECKING:
+    from .sample_cache import SampleCountCache
 
 from .wanted_refresh import (
     WantedRefreshJob,
@@ -177,10 +180,12 @@ class WantedService:
     def start_refresh(
         self,
         max_pages: Optional[int] = None,
+        sample_cache: Optional["SampleCountCache"] = None,
     ) -> Dict[str, Any]:
         """启动后台刷新任务。
 
         返回：``{"job_id": str, "is_already_running": bool}``
+        ``sample_cache`` 透传给后台线程，落盘后回填（避免下次扫描 NFS）。
         """
         with self._lock:
             if self.job is not None and self.job.status == "running":
@@ -193,7 +198,11 @@ class WantedService:
             t = threading.Thread(
                 target=refresh_wanted,
                 args=(self.data_path, self.javlibrary_proxy, self.javbus_proxy, job),
-                kwargs={"max_pages": max_pages, "on_complete": self.reload},
+                kwargs={
+                    "max_pages": max_pages,
+                    "on_complete": self.reload,
+                    "sample_cache": sample_cache,
+                },
                 daemon=True,
             )
             self._thread = t

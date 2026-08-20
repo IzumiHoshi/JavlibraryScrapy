@@ -29,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ..services.library import CARID_RE
 from ..services.proxy import proxied_url
+from ..services.sample_cache import get_sample_cache
 from ..services.wanted import WantedService
 
 logger = logging.getLogger("gallery.wanted_routes")
@@ -70,19 +71,6 @@ def _find_movie_folder(mw_root: Path, carid: str) -> Optional[Path]:
     return None
 
 
-def _count_local_samples(folder: Path) -> int:
-    """统计 ``folder`` 下 ``sample_*.jpg`` 的数量。失败时返回 0。
-
-    - 只数 jpg 后缀（与 wanted_refresh 落盘的格式一致）
-    - ``OSError`` 视为 0（NFS 短暂不可用不影响整页渲染）
-    """
-    try:
-        return sum(1 for _ in folder.glob("sample_*.jpg"))
-    except OSError as e:
-        logger.warning(f"无法枚举 sample_*.jpg @ {folder}: {e}")
-        return 0
-
-
 def register(app: FastAPI) -> None:
     # 注册顺序：精确路径（/refresh, /refresh-status, /months, /）必须在
     # {carid} path-param 路由之前注册，否则会被 path-param 吞掉。
@@ -101,7 +89,9 @@ def register(app: FastAPI) -> None:
         payload = RefreshBody.model_validate(body_dict)
         # 保持旧行为：<=0 视同未传（前端偶尔会传 0 / 负数兜底）
         max_pages = payload.max_pages if payload.max_pages and payload.max_pages > 0 else None
-        return wanted.start_refresh(max_pages=max_pages)
+        # 把 cache 透传给后台线程，落盘后回填（避免下次 /api/wanted 扫 NFS）
+        cache = getattr(request.app.state, "sample_cache", None) or get_sample_cache()
+        return wanted.start_refresh(max_pages=max_pages, sample_cache=cache)
 
     @app.get("/api/wanted/refresh-status")
     async def refresh_status(request: Request) -> Dict[str, Any]:
@@ -126,8 +116,8 @@ def register(app: FastAPI) -> None:
     ) -> Dict[str, Any]:
         wanted: WantedService = request.app.state.wanted
         gallery = request.app.state.gallery
-        settings = request.app.state.settings
-        mw_root: Optional[Path] = settings.mostwanted_library_root
+        # 启动期 create_app 已经按 settings 配好 cache；这里直接用。
+        cache = getattr(request.app.state, "sample_cache", None) or get_sample_cache()
         result = wanted.list(
             month=month,
             page=page,
@@ -135,21 +125,17 @@ def register(app: FastAPI) -> None:
             include_missing=include_missing,
         )
 
-        def _local_samples_for(code: str) -> int:
-            if not mw_root:
-                return 0
-            folder = _find_movie_folder(Path(mw_root), code.upper())
-            if not folder:
-                return 0
-            return _count_local_samples(folder)
+        # local_samples：NFS glob 单次几百毫秒～几秒，60 条串行扫 = 几十秒。
+        # 走 SampleCountCache：命中即返，未命中并发 glob（thread pool）。
+        codes = [item.get("code") or "" for item in result.get("items", [])]
+        counts = cache.counts_for(codes)
 
         # 封面代理：跟随 GalleryState 的 image_proxy 标志（与 /api/movies 共用同一 helper）
-        # 同时按车牌扫一次本地 folder，统计 sample_*.jpg 数量（用于卡片角标）
         result["items"] = [
             {
                 **item,
                 "cover": proxied_url(item.get("cover_url") or item.get("cover"), gallery),
-                "local_samples": _local_samples_for(item.get("code") or ""),
+                "local_samples": counts.get((item.get("code") or "").upper(), 0),
             }
             for item in result.get("items", [])
         ]
