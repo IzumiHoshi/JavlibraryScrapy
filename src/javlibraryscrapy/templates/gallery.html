@@ -396,6 +396,21 @@
   .local-badge::before { content: '✓ '; font-weight: 700; }
   .local-badge.warn::before { content: '⚠ '; }
 
+  /* 本地 sample 数量角标（右下角，不与 .local-badge 冲突） */
+  .sample-badge {
+    position: absolute;
+    bottom: 6px; right: 6px;
+    padding: 3px 7px;
+    background: rgba(91, 159, 255, 0.15);
+    color: var(--accent, #5b9fff);
+    border: 1px solid rgba(91, 159, 255, 0.4);
+    border-radius: 99px;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1;
+    pointer-events: none;
+  }
+
   /* ---------- Tooltip ---------- */
   #tooltip {
     position: fixed;
@@ -1254,6 +1269,7 @@
                     : '<div class="cover"></div>'}
           ${localBadgeHtml(m)}
           ${statusBadge(m)}
+          ${(m.local_samples|0) > 0 ? `<div class="sample-badge" title="本地已下载的 sample 圖片數量">${esc(m.local_samples)} 張樣品</div>` : ''}
           <div class="body">
             <div class="code">${esc(m.code)}</div>
             <div class="name">${esc(displayTitle(m))}</div>
