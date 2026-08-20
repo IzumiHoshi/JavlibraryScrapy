@@ -185,7 +185,7 @@ JAVLibrary 在 `main()` 中直接读取 `PROXY_ENABLED`/`PROXY`，忽略 Scrapli
 - **磁链优先级**：`HD + 字幕` > `HD` > `标准`。命中最高优先级时短路循环。
 - **文件名编码**：所有 I/O 使用 UTF-8；车牌正则期望大写文件名。
 - **输出布局**（每个视频）：`<CARID> <title>/` 包含 `<prefix>.<ext>`（视频）、`<prefix>.nfo`、`fanart.png`、`poster.png`。根目录的 `JavbusSpider.process_movie()` 把封面放到 `fanart.png`；`cli/workflow.py` 的子类同样如此。
-- **没有真正的测试套件**：`tests/` 脚本访问网络，依赖 `temp/*.html` 夹具。`.pytest_cache/` 已过期。
+- **测试**：`tests/unit/` 与 `tests/integration/` 下是可 pytest 跑的离线测试；`tests/unit/{debug_scraper,verify_*,check_iptd}.py` 是依赖网络/夹具的手动调试脚本。手动调试脚本生成的 HTML 夹具放到 `temp/`。
 
 ## 范围外 / 已废弃
 
