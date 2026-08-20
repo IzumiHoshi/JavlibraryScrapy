@@ -110,6 +110,11 @@ def create_app(
         javbus_proxy=settings.proxy,      # JavBus 需要代理绕过 Cloudflare
     )
 
+    # sample 数量缓存：启动期用 settings.mostwanted_library_root 一次性配置。
+    # 之后刷新任务会用 cache.put() 回填，避免下次扫描 NFS。
+    from javlibraryscrapy.server.services.sample_cache import get_sample_cache
+    sample_cache = get_sample_cache(mw_root=settings.mostwanted_library_root)
+
     app = FastAPI(
         title="JAV Gallery",
         version="2.0",
@@ -119,6 +124,7 @@ def create_app(
     app.state.gallery = state
     app.state.settings = settings
     app.state.wanted = wanted
+    app.state.sample_cache = sample_cache
 
     register_routes(app)
 
