@@ -55,7 +55,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# ---- 标准名表（与 scripts\library_scanner.py 的 COVER_NAMES / FANART_NAMES 对齐） ----
+# ---- 标准名表（与 src/javlibraryscrapy/library/scanner.py 的 COVER_NAMES / FANART_NAMES 对齐） ----
 $StandardPoster = @('poster.jpg', 'poster.png', 'poster.jpeg',
                     'folder.jpg', 'folder.png',
                     'cover.jpg', 'cover.png', 'cover.jpeg')

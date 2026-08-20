@@ -17,6 +17,26 @@ dependencies = [
     "uvicorn>=0.30.0",
 ]
 
+[project.scripts]
+# 启动画廊 FastAPI 服务（等价于旧的 `python -m scripts.gallery.main`）
+javlibraryscrapy-gallery = "javlibraryscrapy.cli.gallery:main"
+# 把 Most Wanted 列表导出到本地库
+javlibraryscrapy-export = "javlibraryscrapy.cli.export_mostwanted:main"
+# 全流程：下载目录 → 中间 → 最终（削刮）
+javlibraryscrapy-workflow = "javlibraryscrapy.cli.workflow:main"
+# 把视频文件按大小过滤后移动
+javlibraryscrapy-move = "javlibraryscrapy.cli.move_videos:main"
+# 去除文件名中 @ 符号之前的内容
+javlibraryscrapy-rename = "javlibraryscrapy.cli.rename_at_symbol:main"
+# 扫描本地影片库（不暴露 CLI 入口，仅 `python -m` 调用）
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/javlibraryscrapy"]
+
 [[tool.uv.index]]
 # Optional name for the index. 这个可以不写
 name = "aliyun"
@@ -25,7 +45,7 @@ default = true
 
 [[tool.uv.index]]
 name = "torch-cpu-nju"
-url = "https://mirror.nju.edu.cn/pytorch/whl/cpu/"
+url = "https://mirror.nju.edu.cn/pytorch/cpu/"
 explicit = true
 
 [tool.uv.sources]

@@ -3,8 +3,8 @@
 画廊服务里一共有 **3 个刷新按钮**，每个触发不同的后端 pipeline。本文档逐个梳理
 「前端点击 → API → 后台执行 → 落盘/回填 → 前端轮询」的完整链路。
 
-> 服务入口：`scripts/gallery/main.py`（包装 `python -m scripts.gallery.main`）
-> 模板：单文件 `scripts/templates/gallery.html`，从磁盘实时读，改完刷新即生效
+> 服务入口：`src/javlibraryscrapy/cli/gallery.py`（包装 `python -m javlibraryscrapy.cli.gallery`）
+> 模板：单文件 `src/javlibraryscrapy/templates/gallery.html`，从磁盘实时读，改完刷新即生效
 
 ---
 
@@ -137,13 +137,13 @@ JavbusSpider.parse() 返回 info
 
 ### 关键代码位置
 
-- 前端：`scripts/templates/gallery.html:1138-1190`（`startRefresh` / `pollRefreshStatus`）
-- 路由：`scripts/gallery/routes/wanted_refresh.py:46-63`
-- 服务：`scripts/gallery/services/wanted.py:156-183`（任务管理）
-- Pipeline：`scripts/gallery/services/wanted_refresh.py:201-`（4 phase 主编排）
-- Merge 逻辑：`scripts/gallery/services/wanted_refresh.py:129-195`
-- 本地库落地：`scripts/gallery/services/wanted_refresh.py:_save_per_movie_folder`
-- JAVBus 解析：`javbus_scrapling.py:parse()`（samples 提取）、`javbus_scrapling.py:download_samples()`
+- 前端：`src/javlibraryscrapy/templates/gallery.html:1138-1190`（`startRefresh` / `pollRefreshStatus`）
+- 路由：`src/javlibraryscrapy/server/routes/wanted.py:46-63`
+- 服务：`src/javlibraryscrapy/server/services/wanted.py:156-183`（任务管理）
+- Pipeline：`src/javlibraryscrapy/server/services/wanted_refresh.py:201-`（4 phase 主编排）
+- Merge 逻辑：`src/javlibraryscrapy/server/services/wanted_refresh.py:129-195`
+- 本地库落地：`src/javlibraryscrapy/server/services/wanted_refresh.py:_save_per_movie_folder`
+- JAVBus 解析：`javlibraryscrapy.scraping.javbus:parse()`（samples 提取）、`javlibraryscrapy.scraping.javbus:download_samples()`
 
 ### 排错要点
 
@@ -230,14 +230,14 @@ JavbusSpider.parse() 返回 info
 
 ### 关键代码位置
 
-- 前端：`scripts/templates/gallery.html:1706-1722`（按钮 handler）+ `:1580-1620`（loadStatus 渲染）
-- 路由：`scripts/gallery/routes/rescan.py:21-28`
-- 服务：`scripts/gallery/services/library.py:188-223`（`start_rescan` / `_run_rescan`）
-- 扫描器：`scripts/library_scanner.py`（`scan_library` / `save_index` / `load_index` / `LibraryIndex`）
+- 前端：`src/javlibraryscrapy/templates/gallery.html:1706-1722`（按钮 handler）+ `:1580-1620`（loadStatus 渲染）
+- 路由：`src/javlibraryscrapy/server/routes/rescan.py:21-28`
+- 服务：`src/javlibraryscrapy/server/services/library.py:188-223`（`start_rescan` / `_run_rescan`）
+- 扫描器：`src/javlibraryscrapy/library/scanner.py`（`scan_library` / `save_index` / `load_index` / `LibraryIndex`）
 
 ### 排错要点
 
-- **索引与 root 不一致**：启动时 `_maybe_load_library_index()` 会比较规范化路径，不一致则丢弃旧索引、等待手动刷新（`scripts/gallery/services/library.py:159-186`）。
+- **索引与 root 不一致**：启动时 `_maybe_load_library_index()` 会比较规范化路径，不一致则丢弃旧索引、等待手动刷新（`src/javlibraryscrapy/server/services/library.py:159-186`）。
 - **大库性能**：扫描是单线程 walk IO 密集型；目前没有 cancel 接口（`ScanProgress.cancel_event` 字段保留但未接线）。
 - **NoRescanOnStartup**：服务启动时索引缺失/root 不一致**不会**自动扫描（除非 `PROXY_ENABLED=true` 之类有副作用逻辑变化）。要重新扫必须手动点。
 
@@ -328,11 +328,11 @@ JavbusSpider.parse() 返回 info
 
 ### 关键代码位置
 
-- 前端：`scripts/templates/gallery.html:1724-1810`（按钮 handler + 状态轮询）
-- 路由：`scripts/gallery/routes/rescan.py:35-70`（`{carid}/rescan` + 返回 `already/running/position`）
-- 服务：`scripts/gallery/services/library.py:226-248`
-- 队列：`scripts/gallery/services/jobs.py:RescanQueue`
-- 单部重扫：`scripts/javbus_scrapling.py:JavbusSpider.crawl_and_process`（被复用）
+- 前端：`src/javlibraryscrapy/templates/gallery.html:1724-1810`（按钮 handler + 状态轮询）
+- 路由：`src/javlibraryscrapy/server/routes/rescan.py:35-70`（`{carid}/rescan` + 返回 `already/running/position`）
+- 服务：`src/javlibraryscrapy/server/services/library.py:226-248`
+- 队列：`src/javlibraryscrapy/server/services/jobs.py:RescanQueue`
+- 单部重扫：`src/javlibraryscrapy/scraping/javbus.py:JavbusSpider.crawl_and_process`（被复用）
 
 ### 排错要点
 
@@ -359,7 +359,7 @@ JavbusSpider.parse() 返回 info
 
 ## 相关文档
 
-- 画廊架构：`CLAUDE.md`（重点看「`scripts/gallery/`」一节）
+- 画廊架构：`CLAUDE.md`（重点看「`src/javlibraryscrapy/server/`」一节）
 - 本地库索引格式：`docs/library-feature.md`
-- Wanted 月份桶设计：见 `scripts/gallery/services/wanted_refresh.py` 顶部 docstring
-- 调试脚本：`test/test_rescan_queue.py`（队列）/ `test/test_gallery_server_library.py`（整合）
+- Wanted 月份桶设计：见 `src/javlibraryscrapy/server/services/wanted_refresh.py` 顶部 docstring
+- 调试脚本：`tests/integration/test_rescan_queue.py`（队列）/ `tests/integration/test_gallery_server_library.py`（整合）
