@@ -2,7 +2,7 @@
 
 > 状态：v1.0 设计稿（已通过 grill-me 五轮拷问）
 > 创建日期：2026-08-18
-> 关联代码：`scripts/gallery_server.py`、`scripts/library_scanner.py`（新增）、`scripts/templates/gallery.html`
+> 关联代码：`src/javlibraryscrapy/cli/gallery.py`、`src/javlibraryscrapy/library/scanner.py`（新增）、`src/javlibraryscrapy/templates/gallery.html`
 
 ---
 
@@ -91,7 +91,7 @@
                     └─────────────────────┘
 ```
 
-`library_scanner.py` 是**独立模块**——可以被服务调用，也可以 `python scripts/library_scanner.py` 单独跑（CLI 模式）。
+`library_scanner.py` 是**独立模块**——可以被服务调用，也可以 `python -m javlibraryscrapy.library.scanner` 单独跑（CLI 模式）。
 
 ## 4. 数据模型
 
@@ -224,25 +224,26 @@ def is_local_match(target_code, local_code):
 
 | 文件 | 作用 |
 |---|---|
-| `scripts/library_scanner.py` | 扫描模块（CLI + import） |
+| `src/javlibraryscrapy/library/scanner.py` | 扫描模块（CLI + import） |
 | `docs/library-feature.md` | 本设计文档 |
 
 ### 修改
 
 | 文件 | 改动 |
 |---|---|
-| `scripts/gallery_server.py` | 新增 `LibraryApp` 状态、新增 5 个端点、修改 `/api/movies` 与 `/api/scrape`、新增导航条 HTML |
-| `scripts/templates/gallery.html` | 重构为支持双页面（`/wanted`、`/library`）；新增 nav bar、search bar、tooltip、状态横幅 |
+| `src/javlibraryscrapy/cli/gallery.py` | 新增 `LibraryApp` 状态、新增 5 个端点、修改 `/api/movies` 与 `/api/scrape`、新增导航条 HTML |
+| `src/javlibraryscrapy/templates/gallery.html` | 重构为支持双页面（`/wanted`、`/library`）；新增 nav bar、search bar、tooltip、状态横幅 |
 | `.gitignore` | 加 `output/library_index.json` |
 | `CLAUDE.md` | 补充「本地影片库」架构说明 |
 | `.env`（或 `.env.example`） | 加 `LIBRARY_ROOT`、`LIBRARY_INDEX` 注释 |
 
 ## 9. 测试策略
 
-没有 pytest 套件（CLAUDE.md 已确认），延续 `test/` 手动调试脚本风格：
+按 CLAUDE.md 的约定，`tests/` 目录区分自动测试与手动调试脚本：
 
-- `test/test_library_scanner.py`：构造 `tmp_path/` 假目录（含若干影片子目录 + NFO + poster + 异常 case），跑 `scan_library()`，断言索引内容
-- 手动：`python scripts/library_scanner.py --root tmp/fake_jav` 看落盘 JSON
+- 自动（pytest 可跑）：`tests/unit/test_library_scanner.py`、`tests/integration/test_gallery_server_library.py`、`tests/integration/test_rescan_queue.py`
+- 手动调试脚本（保留为开发辅助）：`tests/unit/{debug_scraper,verify_abf,verify_cawd,verify_parsing,verify_errors,check_iptd}.py`
+- 手动：`python -m javlibraryscrapy.library.scanner --root tmp/fake_jav` 看落盘 JSON
 - 手动：启服务 → 访问 `/wanted` 看 badge → 访问 `/library` 看列表 → 点卡片看是否打开文件夹 → 点「刷新库」看进度
 
 ## 10. 风险与未决问题

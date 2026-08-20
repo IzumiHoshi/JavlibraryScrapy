@@ -3,7 +3,7 @@
     启动 / 停止 / 查询影片画廊 FastAPI 服务（uvicorn）。
 
 .DESCRIPTION
-    包装 ``uv run python -m scripts.gallery.main``，提供子命令：
+    包装 ``uv run python -m javlibraryscrapy.cli.gallery``，提供子命令：
         Start   —— 后台启动（用 pythonw 避免控制台闪烁），并把 PID 写到 .pid 文件
         Stop    —— 按 PID 文件 / 端口查找 uvicorn 子进程并停止
         Status  —— 显示当前运行状态（PID、端口、URL、内存、最近日志）
@@ -189,7 +189,7 @@ function Invoke-Start {
     }
 
     # 组装参数
-    $argList = @('-m', 'scripts.gallery.main', '--port', "$Port", '--image-proxy', $ImageProxy)
+    $argList = @('-m', 'javlibraryscrapy.cli.gallery', '--port', "$Port", '--image-proxy', $ImageProxy)
     if ($OpenBrowser)    { $argList += '--open-browser' }
     if ($NoRescanOnStartup) { $argList += '--no-rescan-on-startup' }
     if ($LibraryRoot)    { $argList += @('--library-root', $LibraryRoot) }
