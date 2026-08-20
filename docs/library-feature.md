@@ -239,10 +239,11 @@ def is_local_match(target_code, local_code):
 
 ## 9. 测试策略
 
-没有 pytest 套件（CLAUDE.md 已确认），延续 `tests/` 手动调试脚本风格：
+按 CLAUDE.md 的约定，`tests/` 目录区分自动测试与手动调试脚本：
 
-- `tests/unit/test_library_scanner.py`：构造 `tmp_path/` 假目录（含若干影片子目录 + NFO + poster + 异常 case），跑 `scan_library()`，断言索引内容
-- 手动：`python src/javlibraryscrapy/library/scanner.py --root tmp/fake_jav` 看落盘 JSON
+- 自动（pytest 可跑）：`tests/unit/test_library_scanner.py`、`tests/integration/test_gallery_server_library.py`、`tests/integration/test_rescan_queue.py`
+- 手动调试脚本（保留为开发辅助）：`tests/unit/{debug_scraper,verify_abf,verify_cawd,verify_parsing,verify_errors,check_iptd}.py`
+- 手动：`python -m javlibraryscrapy.library.scanner --root tmp/fake_jav` 看落盘 JSON
 - 手动：启服务 → 访问 `/wanted` 看 badge → 访问 `/library` 看列表 → 点卡片看是否打开文件夹 → 点「刷新库」看进度
 
 ## 10. 风险与未决问题

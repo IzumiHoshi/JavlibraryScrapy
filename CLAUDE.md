@@ -128,7 +128,7 @@ uv run python tests/integration/test_gallery_server_library.py # 离线跑画廊
 
 `--preview` 仅执行步骤 1–2，到抓取步骤前停止。
 
-### 本地影片库（`library.scanner.py` + `javlibraryscrapy.cli.gallery` 集成）
+### 本地影片库（`src/javlibraryscrapy/library/scanner.py` + `javlibraryscrapy.cli.gallery` 集成）
 
 从 `Z:\JAV`（`LIBRARY_ROOT`）扫描已下载影片，在画廊服务里新增 `/library` 页面，并在 JAVLibrary 页面上给已下载的车牌打 badge。设计文档：[`docs/library-feature.md`](docs/library-feature.md)。
 

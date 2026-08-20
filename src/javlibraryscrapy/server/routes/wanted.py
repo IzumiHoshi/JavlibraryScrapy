@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..services.proxy import maybe_proxy_cover
 from ..services.wanted import WantedService
@@ -33,6 +34,23 @@ logger = logging.getLogger("gallery.wanted_routes")
 
 # 与 gallery 其他端点一致的车牌格式
 _CARID_RE = re.compile(r"[A-Z0-9_-]{2,32}")
+
+
+class RefreshBody(BaseModel):
+    """POST /api/wanted/refresh 的请求体。body 可空 / 字段可缺。
+
+    - 空 body / 非 dict：所有字段走默认（max_pages=None = 整站抓）
+    - ``max_pages <= 0`` 视同未传（保持旧行为「正数才生效」）
+    - 多余字段静默忽略
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    max_pages: Optional[int] = Field(
+        default=None,
+        gt=0,
+        description="限制抓取的 Most Wanted 页数；不传 = 抓所有页。",
+    )
 
 
 def _find_movie_folder(mw_root: Path, carid: str) -> Optional[Path]:
@@ -59,21 +77,16 @@ def register(app: FastAPI) -> None:
     @app.post("/api/wanted/refresh")
     async def refresh(request: Request) -> Dict[str, Any]:
         wanted: WantedService = request.app.state.wanted
-        # max_pages 是可选 body 参数（前端通常不传 = 整站抓）
-        max_pages: Optional[int] = None
+        # body 是可选的：空 body / 非 JSON / 非 dict 都按 max_pages=None 处理
+        body_dict: Dict[str, Any] = {}
         try:
-            body = await request.json()
-            if isinstance(body, dict):
-                mp = body.get("max_pages")
-                if mp is not None:
-                    mp_int = int(mp)
-                    if mp_int > 0:
-                        max_pages = mp_int
+            raw = await request.json()
+            if isinstance(raw, dict):
+                body_dict = raw
         except Exception:
-            # 空 body / 非 JSON / 无 max_pages 字段 → 用 None
             pass
-        result = wanted.start_refresh(max_pages=max_pages)
-        return result
+        payload = RefreshBody.model_validate(body_dict)
+        return wanted.start_refresh(max_pages=payload.max_pages)
 
     @app.get("/api/wanted/refresh-status")
     async def refresh_status(request: Request) -> Dict[str, Any]:
