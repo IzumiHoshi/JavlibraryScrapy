@@ -99,8 +99,13 @@ def create_app(
 
     # JAVLibrary 镜像（c99i.com）当前不需要代理；磁力抓取（JavBus）由 GalleryState 用 settings.proxy。
     # 这里的两个 proxy 字段分别控制 wanted pipeline 两阶段的代理使用。
+    # data_path：MOSTWANTED_LIBRARY_ROOT 设了 → JSON 放在那里；否则退回 library_index.parent（保持旧行为）
+    if settings.mostwanted_library_root:
+        wanted_data_path = settings.mostwanted_library_root / "javlibrary_movies.json"
+    else:
+        wanted_data_path = settings.library_index.parent / "javlibrary_movies.json"
     wanted = WantedService(
-        data_path=settings.library_index.parent / "javlibrary_movies.json",
+        data_path=wanted_data_path,
         javlibrary_proxy=None,            # c99i.com 直连
         javbus_proxy=settings.proxy,      # JavBus 需要代理绕过 Cloudflare
     )

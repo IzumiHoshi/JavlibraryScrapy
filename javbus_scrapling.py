@@ -259,6 +259,18 @@ class JavbusSpider:
 
                 cover_path = await self.download_cover(cover_img_url, car_id)
 
+            # 樣品圖像（div#sample-waterfall > a.sample-box[href]）
+            # JAVBus 把樣品縮略圖放在 <img> src，但完整 URL 在父 <a> 的 href（DMM CDN）
+            sample_urls: List[str] = []
+            for href in response.css("#sample-waterfall a.sample-box::attr(href)").getall():
+                if not href:
+                    continue
+                href = href.strip()
+                if href.lower().startswith("http"):
+                    sample_urls.append(href)
+                elif href.startswith("/"):
+                    sample_urls.append(self.javbus_base_url + href)
+
             # 提取磁力链接
             magnet_link = self._extract_magnet_link(response)
 
@@ -280,6 +292,7 @@ class JavbusSpider:
                 "category": category,
                 "actors": actors,
                 "magnet": magnet_link,
+                "samples": sample_urls,
             }
 
             return movie_info
@@ -338,6 +351,64 @@ class JavbusSpider:
         except Exception as e:
             logger.error(f"下载封面失败 - URL: {img_url}, 错误: {e}")
             return None
+
+    def download_samples(
+        self, sample_urls: List[str], car_id: str
+    ) -> List[Path]:
+        """
+        同步下载樣品圖像到 ``self.root_dir``，返回保存的路径列表。
+
+        每张樣品落地为 ``<root_dir>/<car_id>_sample_NNN.jpg``（与 cover 临时文件
+        同目录，由 caller 负责移动/清理）。已存在的文件跳过（幂等）。
+
+        Args:
+            sample_urls: parse() 提取的樣品 URL 列表
+            car_id: 车牌（用于文件命名 + Referer 头）
+
+        Returns:
+            成功保存的 Path 列表（顺序与输入一致；失败的 URL 不在结果里）
+        """
+        if not sample_urls:
+            return []
+        paths: List[Path] = []
+        for idx, url in enumerate(sample_urls, start=1):
+            dest = self.root_dir / f"{car_id}_sample_{idx:03d}.jpg"
+            if dest.exists():
+                logger.debug(f"樣品 {dest.name} 已存在，跳过下载")
+                paths.append(dest)
+                continue
+            try:
+                headers = {
+                    "User-Agent": self.user_agent,
+                    "Referer": f"{self.javbus_url}{car_id}",
+                    "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",
+                }
+                response = requests.get(
+                    url,
+                    headers=headers,
+                    timeout=self.download_timeout,
+                    proxies=(
+                        {"http": self.proxy, "https": self.proxy}
+                        if self.proxy
+                        else None
+                    ),
+                    verify=self.verify_ssl,
+                )
+                response.raise_for_status()
+                dest.write_bytes(response.content)
+                paths.append(dest)
+                logger.debug(
+                    f"已下载樣品：{dest.name}（{len(response.content)} bytes）"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"下载樣品 {idx} 失败 - URL: {url[:80]}, 错误: {e}"
+                )
+        if paths:
+            logger.info(
+                f"樣品下载完成：{car_id} 共 {len(paths)}/{len(sample_urls)} 张"
+            )
+        return paths
 
     async def crawl_and_process(self, car_list: List[tuple]):
         """

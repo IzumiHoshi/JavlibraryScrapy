@@ -344,9 +344,19 @@ async def main():
     else:
         logger.info("未配置代理")
 
+    # 输出目录：若 .env 的 MOSTWANTED_LIBRARY_ROOT 设了，把 JSON/CSV 与
+    # export_mostwanted 的影片文件夹放到一起；否则退回项目内 output/。
+    mw_root = os.getenv("MOSTWANTED_LIBRARY_ROOT", "").strip()
+    output_dir = Path(mw_root) if mw_root else Path(__file__).parent / "output"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if mw_root:
+        logger.info(f"MOSTWANTED_LIBRARY_ROOT={mw_root}，输出落到 {output_dir}")
+    else:
+        logger.info(f"输出目录：{output_dir}")
+
     # 创建爬虫实例（c99i.com 镜像不需要代理）
     spider = JAVLibrarySpider(
-        output_dir=Path(__file__).parent / "output",
+        output_dir=output_dir,
         proxy=None,
     )
 
