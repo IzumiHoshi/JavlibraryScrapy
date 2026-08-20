@@ -1362,8 +1362,14 @@
       if (month) qs.set('month', month);
       try {
         const res = await fetch(`/api/wanted?${qs}`);
-        if (!res.ok) throw new Error((await res.json()).error || res.statusText);
-        const data = await res.json();
+        const text = await res.text();
+        // 非 2xx 时服务端可能返回 HTML 错误页，先尝试解析 JSON 拿 .detail/.error
+        if (!res.ok) {
+          let msg = res.statusText;
+          try { msg = (JSON.parse(text).detail || JSON.parse(text).error || msg); } catch {}
+          throw new Error(msg);
+        }
+        const data = JSON.parse(text);
         movies = data.items || [];
         months = data.months || [];
         missingCount = data.missing_in_remote_count || 0;
