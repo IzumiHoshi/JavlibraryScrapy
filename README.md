@@ -9,26 +9,30 @@
 uv sync
 
 # JAVBus 爬虫（从视频文件名提取车牌，生成 NFO）
-uv run javbus_scrapling.py
+uv run src/javlibraryscrapy/scraping/javbus.py
 
 # JAVLibrary 爬虫（爬取 Most Wanted 列表）
-uv run javlibrary_scrapling.py
+uv run src/javlibraryscrapy/scraping/javlibrary.py
 ```
 
 ## 目录结构
 
 ```
-├── javbus_scrapling.py      # JAVBus 主爬虫
-├── javlibrary_scrapling.py  # JAVLibrary 爬虫
-├── utils/
+├── src/javlibraryscrapy/scraping/javbus.py      # JAVBus 主爬虫
+├── src/javlibraryscrapy/scraping/javlibrary.py  # JAVLibrary 爬虫
+├── src/javlibraryscrapy/utils/
 │   ├── car.py              # 车牌代码提取 (regex)
 │   ├── filesave.py         # NFO 文件生成 / 文件重命名
 │   └── fanart.py          # 封面裁剪为 poster
-├── scripts/
+├── src/javlibraryscrapy/cli/
+│   ├── gallery.py          # FastAPI 画廊服务入口
+│   ├── export_mostwanted.py # 导出 Most Wanted 到本地库
 │   ├── workflow.py         # 完整工作流：扫描 → 爬取 → 输出
-│   ├── move_videos.py     # 移动视频（按大小过滤）
+│   ├── move_videos.py      # 移动视频（按大小过滤）
 │   └── rename_at_symbol.py # 去除文件名 @ 前缀
-├── test/                   # 测试脚本
+├── src/javlibraryscrapy/server/                 # FastAPI 画廊实现
+├── tests/                  # pytest 测试 + 调试脚本（unit / integration / ps1）
+├── scripts/                # 仅 PowerShell 运维脚本
 ├── deprecated/             # 废弃版本（Selenium/Scrapy）
 └── docs/archive/           # 开发文档
 ```
@@ -37,7 +41,7 @@ uv run javlibrary_scrapling.py
 
 ```bash
 # 完整流程：下载目录 → 爬取 → 输出 NFO/封面
-uv run python scripts/workflow.py <下载路径> <输出路径> [--preview]
+uv run python -m javlibraryscrapy.cli.workflow <下载路径> <输出路径> [--preview]
 ```
 
 ## 环境配置

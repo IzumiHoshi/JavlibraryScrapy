@@ -83,7 +83,7 @@ PROXY=http://127.0.0.1:10808
 ### 基本使用
 
 ```bash
-uv run javbus_scrapling.py
+uv run src/javlibraryscrapy/scraping/javbus.py
 ```
 
 当提示时，输入您的视频目录路径：
@@ -207,7 +207,7 @@ debug_file = self.root_dir / f"{car_id}_debug.html"
 ### 测试单个视频
 
 ```python
-from javbus_scrapling import JavbusSpider
+from javlibraryscrapy.scraping.javbus import JavbusSpider
 from pathlib import Path
 import asyncio
 

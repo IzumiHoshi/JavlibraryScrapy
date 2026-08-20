@@ -9,7 +9,7 @@
 **示例：** `hkbisi.com@ABF-340-C.mp4` → `ABF-340-C.mp4`
 
 ```bash
-uv run python scripts/rename_at_symbol.py <源路径> [--preview]
+uv run python src/javlibraryscrapy/cli/rename_at_symbol.py <源路径> [--preview]
 ```
 
 ## move_videos.py
@@ -17,7 +17,7 @@ uv run python scripts/rename_at_symbol.py <源路径> [--preview]
 将视频文件移动到目标路径，支持按大小过滤。
 
 ```bash
-uv run python scripts/move_videos.py <源路径> <目标路径> [--min-size 500]
+uv run python src/javlibraryscrapy/cli/move_videos.py <源路径> <目标路径> [--min-size 500]
 ```
 
 - 默认只移动 ≥500MB 的视频文件
@@ -29,8 +29,8 @@ uv run python scripts/move_videos.py <源路径> <目标路径> [--min-size 500]
 影片画廊本地服务器：把 `output/` 里的 JAVLibrary 抓取结果以卡片形式展示，勾选影片后一键抓取磁力链接。
 
 ```bash
-uv run python scripts/gallery_server.py
-uv run python scripts/gallery_server.py --port 8000 --data output/javlibrary_movies.json
+uv run python src/javlibraryscrapy/cli/gallery.py
+uv run python src/javlibraryscrapy/cli/gallery.py --port 8000 --data output/javlibrary_movies.json
 ```
 
 默认监听 `0.0.0.0:8000`，同一局域网内可通过启动日志显示的地址访问，例如 `http://192.168.0.116:8000`。如果 Windows 防火墙弹出提示，请允许 Python 在“专用网络”中通信。
@@ -41,7 +41,7 @@ uv run python scripts/gallery_server.py --port 8000 --data output/javlibrary_mov
 
 - 卡片展示封面、车牌、标题，点卡片任意位置即可勾选（选中状态存在浏览器 localStorage，刷新不丢）
 - 搜索框按车牌/标题过滤；「全选 / 清空 / 反选」作用于当前过滤结果
-- **抓取选中的磁力** —— 调用 `javbus_scrapling.py` 的 `crawl_and_process`，右侧面板显示实时进度、日志和每个车牌的结果，可单条或整批复制磁力链接
+- **抓取选中的磁力** —— 调用 `src/javlibraryscrapy/scraping/javbus.py` 的 `crawl_and_process`，右侧面板显示实时进度、日志和每个车牌的结果，可单条或整批复制磁力链接
 - **导出 code** —— 把选中的车牌下载成 `selected_codes.txt`（不联网，纯浏览器侧导出）
 - 抓完可「重试失败项」，只重跑没拿到磁力的车牌
 
@@ -62,7 +62,7 @@ uv run python scripts/gallery_server.py --port 8000 --data output/javlibrary_mov
 - `--image-proxy {auto,on,off}` 封面是否经服务端代理拉取。`auto`（默认）在 `.env` 里 `PROXY_ENABLED=true` 时启用；封面缓存在 `output/.cover_cache/`
 - `--open-browser` 启动后自动打开浏览器（默认不打开）
 
-> 代理、超时、User-Agent 等都读 `.env`，与 `javbus_scrapling.py` 共用一套配置。同一时间只允许一个抓取任务。
+> 代理、超时、User-Agent 等都读 `.env`，与 `src/javlibraryscrapy/scraping/javbus.py` 共用一套配置。同一时间只允许一个抓取任务。
 
 ## export_mostwanted.py
 
@@ -72,28 +72,28 @@ uv run python scripts/gallery_server.py --port 8000 --data output/javlibrary_mov
 - `poster.jpg` —— JAVLibrary 列表的竖版缩略图
 - `fanart.jpg` —— JAVBus 详情页的横版原图
 
-复用 `javbus_scrapling.JavbusSpider` 处理 JAVBus 部分，只覆写 `process_movie` 把 `fanart.png → fanart.jpg`、NFO 改名 `movie.nfo`、不做 poster/fanart 拆分。
+复用 `javlibraryscrapy.scraping.javbus.JavbusSpider` 处理 JAVBus 部分，只覆写 `process_movie` 把 `fanart.png → fanart.jpg`、NFO 改名 `movie.nfo`、不做 poster/fanart 拆分。
 
 ```bash
 # 读取默认 output/javlibrary_movies.json，导出到 .env 的 MOSTWANTED_LIBRARY_ROOT
-uv run python scripts/export_mostwanted.py
+uv run python src/javlibraryscrapy/cli/export_mostwanted.py
 
 # 显式指定路径
-uv run python scripts/export_mostwanted.py \
+uv run python src/javlibraryscrapy/cli/export_mostwanted.py \
   --source output/javlibrary_movies.json \
   --library-root "Z:\\JAV\\MostWanted"
 
 # 强制覆盖已存在的文件夹
-uv run python scripts/export_mostwanted.py --overwrite
+uv run python src/javlibraryscrapy/cli/export_mostwanted.py --overwrite
 
 # 只打印计划，不写文件
-uv run python scripts/export_mostwanted.py --dry-run
+uv run python src/javlibraryscrapy/cli/export_mostwanted.py --dry-run
 
 # 调试：只处理前 5 部
-uv run python scripts/export_mostwanted.py --limit 5
+uv run python src/javlibraryscrapy/cli/export_mostwanted.py --limit 5
 
 # 只下 poster.jpg（不拉 JAVBus）
-uv run python scripts/export_mostwanted.py --skip-javbus
+uv run python src/javlibraryscrapy/cli/export_mostwanted.py --skip-javbus
 ```
 
 **参数：**
@@ -110,14 +110,14 @@ uv run python scripts/export_mostwanted.py --skip-javbus
 
 **注意：** 跑完会清理 JAVBus 留在 `library_root` 下的临时 `<CARID>.png`。
 
-## workflow.py
+## src/javlibraryscrapy/cli/workflow.py
 
 完整工作流：从下载目录扫描视频，调用 JAVBus 爬虫，输出 NFO 和封面到指定目录。
 
 > 注意：脚本实际位于**项目根目录**，不在 `scripts/` 下。
 
 ```bash
-uv run python workflow.py <下载路径> <中间路径> <输出路径> [--min-size 500] [--preview]
+uv run python src/javlibraryscrapy/cli/workflow.py <下载路径> <中间路径> <输出路径> [--min-size 500] [--preview]
 ```
 
 **流程：**
