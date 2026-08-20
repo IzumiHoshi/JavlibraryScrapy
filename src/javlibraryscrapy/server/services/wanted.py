@@ -94,6 +94,45 @@ class WantedService:
             tmp.replace(self.data_path)
 
     # ---- 列表查询 ----
+    def list_months(
+        self,
+        include_missing: bool = True,
+    ) -> Dict[str, Any]:
+        """只返回月份桶摘要 + 整个集合的 missing_in_remote 计数。
+
+        与 :meth:`list` 共享 ``_compute_months_summary``；调用方不需要
+        分页 / 月份筛选时可走这里，避免复用 list 的副作用。
+        """
+        with self._lock:
+            movies = list(self._movies)
+
+        months = self._compute_months_summary(movies, include_missing=include_missing)
+        missing_count = sum(1 for m in movies if m.get("missing_in_remote"))
+        return {"months": months, "missing_in_remote_count": missing_count}
+
+    @staticmethod
+    def _compute_months_summary(
+        movies: List[Dict[str, Any]],
+        include_missing: bool,
+    ) -> List[Dict[str, Any]]:
+        """月份桶计数 + 排序（``unknown`` 排最后，按月份倒序）。"""
+        bucket_counter: Counter = Counter()
+        for m in movies:
+            if m.get("missing_in_remote") and not include_missing:
+                continue
+            bkt = m.get("_bucket") or "unknown"
+            if bkt == "":
+                bkt = "unknown"
+            bucket_counter[bkt] += 1
+        return [
+            {"month": b, "count": c}
+            for b, c in sorted(
+                bucket_counter.items(),
+                key=lambda x: (x[0] == "unknown", x[0]),
+                reverse=True,
+            )
+        ]
+
     def list(
         self,
         month: str = "",
@@ -105,23 +144,9 @@ class WantedService:
         with self._lock:
             movies = list(self._movies)
 
-        # 计算月份桶摘要
-        bucket_counter: Counter = Counter()
-        for m in movies:
-            if m.get("missing_in_remote") and not include_missing:
-                continue
-            bkt = m.get("_bucket") or "unknown"
-            if bkt == "":
-                bkt = "unknown"
-            bucket_counter[bkt] += 1
-        months = [
-            {"month": b, "count": c}
-            for b, c in sorted(
-                bucket_counter.items(),
-                key=lambda x: (x[0] == "unknown", x[0]),
-                reverse=True,
-            )
-        ]
+        # months + missing_in_remote_count 用全集合算（与月份筛选独立）
+        months = self._compute_months_summary(movies, include_missing=include_missing)
+        missing_count = sum(1 for m in movies if m.get("missing_in_remote"))
 
         # 月份筛选
         if month:
@@ -137,10 +162,6 @@ class WantedService:
         size = min(200, max(1, size))
         start = (page - 1) * size
         page_items = movies[start:start + size]
-
-        # 统计整个集合里 missing_in_remote 的总数（不依赖月份筛选）
-        with self._lock:
-            missing_count = sum(1 for m in self._movies if m.get("missing_in_remote"))
 
         return {
             "months": months,

@@ -101,8 +101,7 @@ def register(app: FastAPI) -> None:
     @app.get("/api/wanted/months")
     async def months(request: Request) -> Dict[str, Any]:
         wanted: WantedService = request.app.state.wanted
-        result = wanted.list(month="", page=1, size=1)
-        return {"months": result["months"], "missing_in_remote_count": result["missing_in_remote_count"]}
+        return wanted.list_months(include_missing=True)
 
     @app.get("/api/wanted")
     async def list_wanted(
