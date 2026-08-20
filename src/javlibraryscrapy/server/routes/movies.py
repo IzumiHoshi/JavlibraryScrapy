@@ -16,7 +16,7 @@ def register(app: FastAPI) -> None:
         idx = state.library_index
         out_movies = []
         for m in state.movies:
-            cover = proxied_url(m.get("cover_url"), state.image_proxy)
+            cover = proxied_url(m.get("cover_url"), state)
             lib_match = idx.find_match(m["code"]) if idx else None
             out_movies.append(
                 {

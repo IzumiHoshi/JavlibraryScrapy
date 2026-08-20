@@ -153,8 +153,8 @@ uv run python tests/integration/test_gallery_server_library.py # 离线跑画廊
 - `tests/` — pytest 测试 + 手动调试脚本，按 `unit/` / `integration/` 分目录。`tests/ps1/` 下是 PowerShell 调试脚本。
 - `temp/` — `tests/unit/verify_parsing.py` 的测试夹具：调试 JAVLibrary 解析时把 HTML 响应文件保存到这里。
 - `.claude/` — 本项目的 Claude Code 配置（`settings.json` 启用 `frontend-design` 插件、`settings.local.json` 放行 `Bash(*)`）。添加允许的权限或 hooks 时编辑这里。
-- `.pytest_cache/` — 已过期；没有 pytest 套件。可安全删除。
-- `pyproject.toml` — 默认索引为阿里云 PyPI 镜像，`torch` 从 NJU 镜像拉取（显式 override）。`uv sync` 会使用这些配置；在镜像不可达的网络环境下，可用 `UV_INDEX_URL` 覆盖。运行时依赖包含 `fastapi`/`starlette`/`uvicorn`/`pydantic`/`pydantic-settings`（画廊用）。`[project.scripts]` 暴露 5 个 console_script 入口：`javlibraryscrapy-gallery` / `-export` / `-workflow` / `-move` / `-rename`。
+- `.pytest_cache/` — pytest 跑测试时的本地缓存目录（自动生成），可安全删除；项目里 `tests/` 既有 pytest 套件也有手动调试脚本。
+- `pyproject.toml` — 默认索引为阿里云 PyPI 镜像，`torch` 从 NJU 镜像拉取（显式 override）。`uv sync` 会使用这些配置；在镜像不可达的网络环境下，可用 `UV_INDEX_URL` 覆盖。运行时依赖包含 `fastapi`/`starlette`/`uvicorn`/`pydantic`/`pydantic-settings`（画廊用）。`[project.scripts]` 暴露 5 个 console_script 入口：`javlibraryscrapy-gallery` / `javlibraryscrapy-export` / `javlibraryscrapy-workflow` / `javlibraryscrapy-move` / `javlibraryscrapy-rename`。
 - `docs/archive/` — 历史开发文档（Scrapling 迁移、403 排查、归档的 JAVLibrary-scraper skill 描述在 `docs/archive/SKILL.md`）。`docs/library-feature.md` 是本地库功能的设计文档。`docs/refresh-flows.md` 整理了画廊里 3 个刷新按钮（手动刷新 / 刷新库 / 单部 ↻）的完整工作流程（前端 → API → 后台 → 落盘 → 轮询）。
 
 ## 配置（`.env`）

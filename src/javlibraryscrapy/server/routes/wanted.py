@@ -19,7 +19,6 @@
 from __future__ import annotations
 
 import logging
-import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -27,20 +26,18 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..services.proxy import maybe_proxy_cover
+from ..services.library import CARID_RE
+from ..services.proxy import proxied_url
 from ..services.wanted import WantedService
 
 logger = logging.getLogger("gallery.wanted_routes")
-
-# 与 gallery 其他端点一致的车牌格式
-_CARID_RE = re.compile(r"[A-Z0-9_-]{2,32}")
 
 
 class RefreshBody(BaseModel):
     """POST /api/wanted/refresh 的请求体。body 可空 / 字段可缺。
 
     - 空 body / 非 dict：所有字段走默认（max_pages=None = 整站抓）
-    - ``max_pages <= 0`` 视同未传（保持旧行为「正数才生效」）
+    - ``max_pages <= 0`` 在 handler 里视同未传（保持旧行为「正数才生效」）
     - 多余字段静默忽略
     """
 
@@ -48,8 +45,7 @@ class RefreshBody(BaseModel):
 
     max_pages: Optional[int] = Field(
         default=None,
-        gt=0,
-        description="限制抓取的 Most Wanted 页数；不传 = 抓所有页。",
+        description="限制抓取的 Most Wanted 页数；不传 = 抓所有页。<=0 视同未传。",
     )
 
 
@@ -86,7 +82,9 @@ def register(app: FastAPI) -> None:
         except Exception:
             pass
         payload = RefreshBody.model_validate(body_dict)
-        return wanted.start_refresh(max_pages=payload.max_pages)
+        # 保持旧行为：<=0 视同未传（前端偶尔会传 0 / 负数兜底）
+        max_pages = payload.max_pages if payload.max_pages and payload.max_pages > 0 else None
+        return wanted.start_refresh(max_pages=max_pages)
 
     @app.get("/api/wanted/refresh-status")
     async def refresh_status(request: Request) -> Dict[str, Any]:
@@ -120,7 +118,7 @@ def register(app: FastAPI) -> None:
         )
         # 封面代理：跟随 GalleryState 的 image_proxy 标志（与 /api/movies 共用同一 helper）
         result["items"] = [
-            maybe_proxy_cover(gallery, dict(item))
+            {**item, "cover": proxied_url(item.get("cover_url") or item.get("cover"), gallery)}
             for item in result.get("items", [])
         ]
         return result
@@ -129,7 +127,7 @@ def register(app: FastAPI) -> None:
     async def gallery_images(carid: str, request: Request) -> Dict[str, Any]:
         """列出该车在本地的 cover + samples URL。文件夹不存在返回空集。"""
         carid_norm = carid.strip().upper()
-        if not _CARID_RE.fullmatch(carid_norm):
+        if not CARID_RE.fullmatch(carid_norm):
             raise HTTPException(status_code=400, detail="非法的车牌")
         settings = request.app.state.settings
         mw_root: Optional[Path] = settings.mostwanted_library_root
@@ -168,7 +166,7 @@ def register(app: FastAPI) -> None:
     ):
         """返回 cover.jpg 或 sample_NNN.jpg 的字节流。"""
         carid_norm = carid.strip().upper()
-        if not _CARID_RE.fullmatch(carid_norm):
+        if not CARID_RE.fullmatch(carid_norm):
             raise HTTPException(status_code=400, detail="非法的车牌")
         settings = request.app.state.settings
         mw_root: Optional[Path] = settings.mostwanted_library_root

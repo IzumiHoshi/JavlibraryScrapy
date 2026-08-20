@@ -2,7 +2,7 @@
 
 from .library import GalleryState, load_movies, normalize_path_for_compare
 from .covers import fetch_cover, find_local_cover, open_in_explorer
-from .proxy import maybe_proxy_cover, proxied_url
+from .proxy import proxied_url, COVER_PROXY_PREFIX
 
 __all__ = [
     "GalleryState",
@@ -11,6 +11,6 @@ __all__ = [
     "fetch_cover",
     "find_local_cover",
     "open_in_explorer",
-    "maybe_proxy_cover",
     "proxied_url",
+    "COVER_PROXY_PREFIX",
 ]

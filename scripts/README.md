@@ -4,7 +4,7 @@
 
 > **调用约定：** 所有 CLI 都用模块形式 `uv run python -m javlibraryscrapy.cli.<name>` 启动。
 > 装好包后也可直接用 console_script 入口（见 `pyproject.toml [project.scripts]`）：
-> `javlibraryscrapy-gallery`、`-export`、`-workflow`、`-move`、`-rename`。
+> `javlibraryscrapy-gallery`、`javlibraryscrapy-export`、`javlibraryscrapy-workflow`、`javlibraryscrapy-move`、`javlibraryscrapy-rename`。
 
 ## rename_at_symbol
 
