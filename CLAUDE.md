@@ -71,13 +71,14 @@ uv run python test/test_gallery_server_library.py # 离线跑画廊 + 本地库�
 ### 爬虫（顶层入口）
 
 - **`javbus_scrapling.py`** — `JavbusSpider`：扫描视频目录，提取车牌，通过 `AsyncDynamicSession` 抓取 JAVBus 视频详情页，下载封面，在 `<root>/<CARID> <title>/` 下生成 NFO + poster/fanart。
-  - `parse()` 提取标题、发行日期、制作商/发行商、类别、演员、封面 URL 和磁力链接（`_extract_magnet_link` 中按 HD+字幕 > HD > 标准 优先级）。
+  - `parse()` 提取标题、发行日期、制作商/发行商、类别、演员、封面 URL、**樣品圖像 URL 列表**（`#sample-waterfall a.sample-box[href]`）和磁力链接（`_extract_magnet_link` 中按 HD+字幕 > HD > 标准 优先级）。
+  - **`download_cover()`** 与新增的 **`download_samples()`**：cover 落地为 `<root>/<CARID>.png`；samples 落地为 `<root>/<CARID>_sample_NNN.jpg`（按 URL 顺序编号）。两者都带 JAVBus Referer 头，幂等（已存在跳过）。Caller 负责把临时文件移动到目标目录 —— wanted refresh 的 Phase 3 会把 cover 重命名为 `cover.jpg`、samples 重命名为 `sample_NNN.jpg` 落到 `<MOSTWANTED_LIBRARY_ROOT>/<CARID> <title>/`。
   - **磁链解析鲁棒性**（commit `45e0d9a`）：`_extract_magnet_link` 优先尝试 `a.magnet-link` / `link-magnet` class；若页面里没有这些 class（部分画廊详情页的 HTML 结构），回退到全文正则匹配 `magnet:?xt=urn:btih:...`，避免漏抓；解析过程会写 debug 日志便于追踪。
   - `download_cover()` 使用同步 `requests`（而非 Scrapling session）以便显式设置 `Referer` 头指向视频页面 —— 这是避免 403 的必需操作。封面初次保存到 `root_dir/<car_id>.png`，然后 `process_movie()` 在每个视频子目录中将其重命名为 `fanart.png`。
   - `process_movie()` 被 `workflow.py` 子类化以重定向输出到不同目录（构造后设置 `spider.output_dir = output_path`；子类把封面复制到子目录，而不是原地重命名）。
 
-- **`javlibrary_scrapling.py`** — `JAVLibrarySpider`：爬取 JAVLibrary `vl_mostwanted.php`（或可配置的基础 URL），自动检测总页数，页间休眠 3 秒，导出 `movies.json` + `movies.csv` 到 `output/`。使用 `stealth_mode=True` 和 90 秒超时以通过 Cloudflare 验证。
-- **`scripts/export_mostwanted.py`** — 把 JAVLibrary `movies.json` 导出到本地库。对每部影片建 `<root>/<CARID> <title>/`，写 `movie.nfo`（用 `JavbusSpider.parse()` 拉 JAVBus 详情页元数据填 NFO）+ `poster.jpg`（JAVLibrary 缩略图）+ `fanart.jpg`（JAVBus 横版原图）。复用 `JavbusSpider` 处理 JAVBus 部分，仅覆写 `process_movie` 把 `fanart.png → fanart.jpg`、NFO 改名为 `movie.nfo`、不做 `split_poster_from_fanart`。默认跳过已存在文件夹；排除列表与 `find_car_bus` 一致（`HEYZO/PONDO/CARIB/OKYOHOT`，这些在 JAVBus 上没页面）。配置项 `.env` 的 `MOSTWANTED_LIBRARY_ROOT`，CLI 用 `--library-root` 覆盖。
+- **`javlibrary_scrapling.py`** — `JAVLibrarySpider`：爬取 JAVLibrary `vl_mostwanted.php`（或可配置的基础 URL），自动检测总页数，页间休眠 3 秒，导出 `movies.json` + `movies.csv` 到 `output/`（若 `.env` 的 `MOSTWANTED_LIBRARY_ROOT` 设了则落到该目录下）。使用 `stealth_mode=True` 和 90 秒超时以通过 Cloudflare 验证。
+- **`scripts/export_mostwanted.py`** — 把 JAVLibrary `movies.json` 导出到本地库。对每部影片建 `<root>/<CARID> <title>/`，写 `movie.nfo`（用 `JavbusSpider.parse()` 拉 JAVBus 详情页元数据填 NFO）+ `poster.jpg`（JAVLibrary 缩略图）+ `fanart.jpg`（JAVBus 横版原图）。复用 `JavbusSpider` 处理 JAVBus 部分，仅覆写 `process_movie` 把 `fanart.png → fanart.jpg`、NFO 改名为 `movie.nfo`、不做 `split_poster_from_fanart`。默认跳过已存在文件夹；排除列表与 `find_car_bus` 一致（`HEYZO/PONDO/CARIB/OKYOHOT`，这些在 JAVBus 上没页面）。`--source` / `--library-root` 默认都从 `.env` 的 `MOSTWANTED_LIBRARY_ROOT` 读，未设则退回 `output/`。
 
 两个爬虫都使用 `scrapling.fetchers.AsyncDynamicSession` 进行 JS 渲染。
 
@@ -148,7 +149,7 @@ uv run python test/test_gallery_server_library.py # 离线跑画廊 + 本地库�
 - `.claude/` — 本项目的 Claude Code 配置（`settings.json` 启用 `frontend-design` 插件、`settings.local.json` 放行 `Bash(*)`）。添加允许的权限或 hooks 时编辑这里。
 - `.pytest_cache/` — 已过期；没有 pytest 套件。可安全删除。
 - `pyproject.toml` — 默认索引为阿里云 PyPI 镜像，`torch` 从 NJU 镜像拉取（显式 override）。`uv sync` 会使用这些配置；在镜像不可达的网络环境下，可用 `UV_INDEX_URL` 覆盖。运行时依赖包含 `fastapi`/`starlette`/`uvicorn`/`pydantic`/`pydantic-settings`（画廊用）。
-- `docs/archive/` — 历史开发文档（Scrapling 迁移、403 排查、归档的 JAVLibrary-scraper skill 描述在 `docs/archive/SKILL.md`）。`docs/library-feature.md` 是本地库功能的设计文档。
+- `docs/archive/` — 历史开发文档（Scrapling 迁移、403 排查、归档的 JAVLibrary-scraper skill 描述在 `docs/archive/SKILL.md`）。`docs/library-feature.md` 是本地库功能的设计文档。`docs/refresh-flows.md` 整理了画廊里 3 个刷新按钮（手动刷新 / 刷新库 / 单部 ↻）的完整工作流程（前端 → API → 后台 → 落盘 → 轮询）。
 
 ## 配置（`.env`）
 

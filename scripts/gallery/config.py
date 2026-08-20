@@ -77,6 +77,17 @@ class Settings(BaseSettings):
         description="本地库索引输出路径。",
     )
 
+    # ---- 最想要列表（Most Wanted）----
+    mostwanted_library_root: Optional[Path] = Field(
+        default=None,
+        alias="MOSTWANTED_LIBRARY_ROOT",
+        description=(
+            "JAVLibrary「最想要」列表的数据根目录："
+            "javlibrary_movies.json + 每部影片的 cover/samples 文件夹都放在这里；"
+            "None 表示仍走默认 output/。"
+        ),
+    )
+
     # ---- Scrapling 透传（原服务只透传给 JavbusSpider；这里保留供将来的 env 注入） ----
     scrapling_load_dom: bool = Field(default=True, alias="SCRAPLING_LOAD_DOM")
     scrapling_network_idle: bool = Field(default=True, alias="SCRAPLING_NETWORK_IDLE")

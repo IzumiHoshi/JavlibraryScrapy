@@ -29,10 +29,22 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="影片画廊本地服务器（FastAPI 重构版）",
     )
+    # --data 默认路径：若 .env 的 MOSTWANTED_LIBRARY_ROOT 设了，
+    # 把 javlibrary_movies.json 也放到那里（与每部影片的 cover/samples 同根目录）；
+    # 否则退回 output/javlibrary_movies.json（保持旧行为）。
+    _mw_root = os.getenv("MOSTWANTED_LIBRARY_ROOT", "").strip()
+    _default_data = (
+        str(Path(_mw_root) / "javlibrary_movies.json")
+        if _mw_root
+        else str(ROOT / "output" / "javlibrary_movies.json")
+    )
     p.add_argument(
         "--data",
-        default=str(ROOT / "output" / "javlibrary_movies.json"),
-        help="影片数据文件（JSON 或 CSV，默认 output/javlibrary_movies.json）",
+        default=_default_data,
+        help=(
+            "影片数据文件（JSON 或 CSV，默认 "
+            f"{_default_data}；MOSTWANTED_LIBRARY_ROOT 设了则改为那里）"
+        ),
     )
     p.add_argument(
         "--output-dir",

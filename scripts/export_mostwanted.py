@@ -159,8 +159,16 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     )
     p.add_argument(
         "--source",
-        default=str(ROOT / "output" / "javlibrary_movies.json"),
-        help="JAVLibrary 抓取结果 JSON（默认 output/javlibrary_movies.json）",
+        default=(
+            str(Path(os.getenv("MOSTWANTED_LIBRARY_ROOT", "").strip()) / "javlibrary_movies.json")
+            if os.getenv("MOSTWANTED_LIBRARY_ROOT", "").strip()
+            else str(ROOT / "output" / "javlibrary_movies.json")
+        ),
+        help=(
+            "JAVLibrary 抓取结果 JSON（默认 "
+            "MOSTWANTED_LIBRARY_ROOT/javlibrary_movies.json，未设则退回 "
+            "output/javlibrary_movies.json）"
+        ),
     )
     p.add_argument(
         "--library-root",

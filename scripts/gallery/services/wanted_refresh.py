@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import threading
 import uuid
@@ -78,6 +79,9 @@ class WantedRefreshJob:
     javbus_done: int = 0
     javbus_failed: int = 0
     current_code: Optional[str] = None
+    # 本地库落地（仅在 MOSTWANTED_LIBRARY_ROOT 设了时递增）
+    local_saved: int = 0
+    local_skipped: int = 0
     logs: List[str] = field(default_factory=list)
 
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
@@ -100,6 +104,8 @@ class WantedRefreshJob:
                 "javbus_done": self.javbus_done,
                 "javbus_failed": self.javbus_failed,
                 "current_code": self.current_code,
+                "local_saved": self.local_saved,
+                "local_skipped": self.local_skipped,
                 "logs": list(self.logs),
             }
 
@@ -191,6 +197,93 @@ def merge_wanted(
             entry["missing_in_remote"] = True
             entry["_updated_at"] = datetime.now().isoformat(timespec="seconds")
             result.marked_missing += 1
+
+    return result
+
+
+# --------------------------------------------------------------------------- #
+# 本地库落地（Phase 3 之后）
+# --------------------------------------------------------------------------- #
+def _save_per_movie_folder(
+    spider: "JavbusSpider",
+    info: Dict[str, Any],
+    code: str,
+    root_dir: Path,
+) -> Dict[str, int]:
+    """把单部影片的 cover + samples 落地到 ``<root>/<CARID> <title>/``。
+
+    返回 ``{"cover": 0/1, "samples": N}`` 用于上层统计。
+
+    行为约定：
+      - 文件夹不存在 → 创建
+      - cover.jpg 已存在 → 跳过写入（幂等），但仍清理临时 ``<CARID>.png``
+      - sample_NNN.jpg 已存在 → 跳过写入，清理临时 ``<CARID>_sample_NNN.jpg``
+      - 任何一步失败不抛异常（让 Phase 3 主流程不受影响）
+    """
+    result = {"cover": 0, "samples": 0}
+    title = (info.get("title") or "").strip()
+    if not title:
+        return result
+
+    folder = root_dir / f"{code} {title}"
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        logger.warning(f"建文件夹失败 {folder}: {e}")
+        return result
+
+    # cover
+    cover_raw = info.get("cover")
+    if cover_raw:
+        cover_path = Path(cover_raw) if not isinstance(cover_raw, Path) else cover_raw
+        dest = folder / "cover.jpg"
+        if dest.exists():
+            logger.debug(f"cover.jpg 已存在，跳过：{dest}")
+            try:
+                cover_path.unlink()
+            except OSError:
+                pass
+        else:
+            try:
+                if cover_path.exists():
+                    cover_path.rename(dest)
+                    logger.info(f"已保存 cover.jpg：{code}")
+                    result["cover"] = 1
+                else:
+                    logger.debug(f"cover 临时文件不存在：{cover_path}")
+            except OSError as e:
+                logger.warning(f"移动 cover 失败 {code}: {e}")
+
+    # samples
+    sample_urls = info.get("samples") or []
+    if sample_urls:
+        try:
+            downloaded = spider.download_samples(sample_urls, code)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"调用 download_samples 失败 {code}: {e}")
+            downloaded = []
+
+        for i, src in enumerate(downloaded, start=1):
+            dest = folder / f"sample_{i:03d}.jpg"
+            if dest.exists():
+                try:
+                    src.unlink()
+                except OSError:
+                    pass
+                continue
+            try:
+                if src.exists():
+                    src.rename(dest)
+                    result["samples"] += 1
+            except OSError as e:
+                logger.warning(f"移动樣品 {i} 失败 {code}: {e}")
+
+        # 清理可能残留的 <CARID>_sample_NNN.jpg（download_samples 跳过/失败的）
+        for leftover in spider.root_dir.glob(f"{code}_sample_*.jpg"):
+            try:
+                leftover.unlink()
+            except OSError:
+                pass
 
     return result
 
@@ -303,7 +396,22 @@ def refresh_wanted(
         if result.needs_javbus:
             job._set(phase="fetch_javbus")
             log("开始抓 JavBus 详情…")
-            bus_spider = JavbusSpider(root_dir=data_path.parent)
+
+            # 本地库落地：若 .env 配置了 MOSTWANTED_LIBRARY_ROOT，把 cover/樣品
+            # 落到 <root>/<CARID> <title>/ 下；为空则跳过（保持原行为）。
+            mw_root_str = os.getenv("MOSTWANTED_LIBRARY_ROOT", "").strip()
+            mw_root: Optional[Path] = Path(mw_root_str) if mw_root_str else None
+            if mw_root:
+                log(
+                    f"本地库落地：{mw_root}（每部 → <CARID> <title>/cover.jpg + sample_NNN.jpg）"
+                )
+                # 让 JavbusSpider 把 cover 临时 <CARID>.png 直接落到 mw_root，
+                # 方便 _save_per_movie_folder 直接 rename（避免覆盖 output/）
+                spider_root = mw_root
+            else:
+                spider_root = data_path.parent
+
+            bus_spider = JavbusSpider(root_dir=spider_root)
             bus_spider.proxy_enabled = javbus_proxy is not None
             bus_spider.proxy = javbus_proxy
 
@@ -333,6 +441,25 @@ def refresh_wanted(
                                 entry["_bucket"] = _bucket_for_release_date(entry["release_date"])
                                 entry["_status"] = "ready"
                                 log(f"    ✓ {code} → {entry['_bucket']}（{entry['release_date'][:10]}）")
+                                # 本地库落地
+                                if mw_root:
+                                    try:
+                                        saved = _save_per_movie_folder(
+                                            bus_spider, info, code, mw_root
+                                        )
+                                        if saved["cover"] or saved["samples"]:
+                                            job._set(local_saved=job.local_saved + 1)
+                                            log(
+                                                f"    💾 {code} → cover={saved['cover']}, "
+                                                f"samples={saved['samples']}"
+                                            )
+                                        else:
+                                            job._set(local_skipped=job.local_skipped + 1)
+                                    except Exception as e:  # noqa: BLE001
+                                        logger.warning(
+                                            f"本地库落地异常 {code}: {e}"
+                                        )
+                                        job._set(local_skipped=job.local_skipped + 1)
                             else:
                                 entry["_status"] = "failed"
                                 job._set(javbus_failed=job.javbus_failed + 1)

@@ -98,7 +98,7 @@ uv run python scripts/export_mostwanted.py --skip-javbus
 
 **参数：**
 
-- `--source` JAVLibrary 抓取结果 JSON（默认 `output/javlibrary_movies.json`）
+- `--source` JAVLibrary 抓取结果 JSON（默认 `MOSTWANTED_LIBRARY_ROOT/javlibrary_movies.json`，未设则退回 `output/javlibrary_movies.json`）
 - `--library-root` 本地库根目录（默认读 `.env` 的 `MOSTWANTED_LIBRARY_ROOT`，未设置则报错）
 - `--overwrite` 目标文件夹已存在时仍写入（默认跳过）
 - `--dry-run` 只打印计划，不写文件
