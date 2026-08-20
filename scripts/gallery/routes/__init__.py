@@ -16,6 +16,7 @@ from . import (
     pages as _pages,
     rescan as _rescan,
     scrape as _scrape,
+    wanted_images as _wanted_images,
     wanted_refresh as _wanted_refresh,
 )
 
@@ -27,6 +28,8 @@ def register_routes(app: FastAPI) -> None:
     ``/api/library/rescan``、``/api/library/rescan-status``、``/api/library/status``、
     ``/api/library/warnings`` 之前匹配所有以 ``/api/library/`` 开头的请求。
     因此 rescan.py（精确路径）必须先于 library.py（path-param）注册。
+    wanted_refresh 同样：精确路径 ``/api/wanted/refresh`` 必须在 ``{carid}``
+    path-param 路由（wanted_images.py）之前。
     """
     _pages.register(app)
     _movies.register(app)
@@ -35,4 +38,5 @@ def register_routes(app: FastAPI) -> None:
     _rescan.register(app)        # 先注册精确路径
     _library.register(app)       # 再注册 {carid} path-param
     _wanted_refresh.register(app)
+    _wanted_images.register(app) # 注册在 wanted_refresh 之后（避免与 /refresh 冲突）
     _folder.register(app)
