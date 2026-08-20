@@ -13,9 +13,8 @@ from dotenv import load_dotenv
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# 项目根目录。本文件位于 src/javlibraryscrapy/server/config.py，
-# parents[3] 指向仓库根（src 的上一级），用于加载 .env 等。
-ROOT = Path(__file__).resolve().parents[3]
+# 项目根目录统一在 javlibraryscrapy/_paths.py 算好
+from javlibraryscrapy._paths import REPO_ROOT as ROOT
 
 
 def _load_dotenv_once() -> None:

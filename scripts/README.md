@@ -114,8 +114,6 @@ uv run python src/javlibraryscrapy/cli/export_mostwanted.py --skip-javbus
 
 完整工作流：从下载目录扫描视频，调用 JAVBus 爬虫，输出 NFO 和封面到指定目录。
 
-> 注意：脚本实际位于**项目根目录**，不在 `scripts/` 下。
-
 ```bash
 uv run python src/javlibraryscrapy/cli/workflow.py <下载路径> <中间路径> <输出路径> [--min-size 500] [--preview]
 ```

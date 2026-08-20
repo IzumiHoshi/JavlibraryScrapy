@@ -20,35 +20,19 @@ from __future__ import annotations
 
 import logging
 import re
-import urllib.parse
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 
+from ..services.proxy import maybe_proxy_cover
 from ..services.wanted import WantedService
 
 logger = logging.getLogger("gallery.wanted_routes")
 
 # 与 gallery 其他端点一致的车牌格式
 _CARID_RE = re.compile(r"[A-Z0-9_-]{2,32}")
-
-
-def _maybe_proxy_cover(state: Any, item: Dict[str, Any]) -> Dict[str, Any]:
-    """如果服务启用了 image_proxy，把 cover_url 重写成 /api/cover?url=...
-
-    行为对齐 /api/movies 路由：state.image_proxy 为 True 时改写，否则原样返回。
-    不存在 cover_url / cover 字段时不动。
-    """
-    cover = item.get("cover") or item.get("cover_url")
-    if not cover:
-        return item
-    # state 可能为 None（极小窗口）；None 时不动
-    use_proxy = bool(getattr(state, "image_proxy", False)) if state is not None else False
-    if use_proxy and not cover.startswith("/api/cover?"):
-        item["cover"] = "/api/cover?url=" + urllib.parse.quote(cover, safe="")
-    return item
 
 
 def _find_movie_folder(mw_root: Path, carid: str) -> Optional[Path]:
@@ -121,9 +105,9 @@ def register(app: FastAPI) -> None:
             size=size,
             include_missing=include_missing,
         )
-        # 封面代理：跟随 GalleryState 的 image_proxy 标志
+        # 封面代理：跟随 GalleryState 的 image_proxy 标志（与 /api/movies 共用同一 helper）
         result["items"] = [
-            _maybe_proxy_cover(gallery, dict(item))
+            maybe_proxy_cover(gallery, dict(item))
             for item in result.get("items", [])
         ]
         return result

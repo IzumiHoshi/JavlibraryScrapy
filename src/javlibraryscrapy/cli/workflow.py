@@ -14,11 +14,8 @@ import shutil
 from pathlib import Path
 import sys
 
-# 项目根目录：本文件位于 src/javlibraryscrapy/cli/workflow.py，
-# parents[3] 指向仓库根，用于加载 .env。
-_project_root = Path(__file__).resolve().parents[3]
-
 from dotenv import load_dotenv
+from javlibraryscrapy._paths import REPO_ROOT as _project_root
 from javlibraryscrapy.scraping.javbus import JavbusSpider
 from javlibraryscrapy.utils.car import javbuscar
 

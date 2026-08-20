@@ -33,10 +33,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 from dotenv import load_dotenv
 
-# 项目根目录：本文件位于 src/javlibraryscrapy/cli/export_mostwanted.py，
-# parents[3] 指向仓库根（src 的上一级），用于加载 .env。
-ROOT = Path(__file__).resolve().parents[3]
-
+from javlibraryscrapy._paths import REPO_ROOT as ROOT  # noqa: E402
 from javlibraryscrapy.scraping.javbus import JavbusSpider  # noqa: E402
 from javlibraryscrapy.utils.filesave import write_xml  # noqa: E402
 
@@ -100,7 +97,11 @@ def _download_image(
     proxy: Optional[str],
     timeout: int = 10,
 ) -> bool:
-    """通用图片下载（同步）。"""
+    """通用图片下载（同步）。
+
+    只在走用户配置的本地代理时禁用证书校验（典型 MITM 代理用自签 CA）。
+    直连 CDN（pixhost 等）默认严格校验，避免中间人攻击。
+    """
     if not url:
         return False
     try:
@@ -109,7 +110,7 @@ def _download_image(
             headers=headers,
             timeout=timeout,
             proxies=({"http": proxy, "https": proxy} if proxy else None),
-            verify=False,
+            verify=False if proxy else True,
         )
         r.raise_for_status()
         dest.parent.mkdir(parents=True, exist_ok=True)

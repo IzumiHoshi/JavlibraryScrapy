@@ -34,9 +34,8 @@ from pathlib import Path
 from threading import Event
 from typing import Any, Dict, List, Optional, Tuple
 
-# 项目根目录：本文件位于 src/javlibraryscrapy/library/scanner.py，
-# parents[3] 指向仓库根，用于加载 .env 等。
-ROOT = Path(__file__).resolve().parents[3]
+# 项目根目录：见 javlibraryscrapy/_paths.py
+from javlibraryscrapy._paths import REPO_ROOT as ROOT  # noqa: E402
 
 # 复用现有的车牌提取（注意：find_car_bus 返回的是单个车牌字符串，不是 list）
 from javlibraryscrapy.utils.car import find_car_bus  # noqa: E402

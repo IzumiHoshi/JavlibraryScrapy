@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import urllib.parse
 from typing import Any, Dict
 
 from fastapi import FastAPI, Request
+
+from ..services.proxy import proxied_url
 
 
 def register(app: FastAPI) -> None:
@@ -15,9 +16,7 @@ def register(app: FastAPI) -> None:
         idx = state.library_index
         out_movies = []
         for m in state.movies:
-            cover = m["cover_url"]
-            if cover and state.image_proxy:
-                cover = "/api/cover?url=" + urllib.parse.quote(cover, safe="")
+            cover = proxied_url(m.get("cover_url"), state.image_proxy)
             lib_match = idx.find_match(m["code"]) if idx else None
             out_movies.append(
                 {

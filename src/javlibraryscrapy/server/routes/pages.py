@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-# 本文件位于 src/javlibraryscrapy/server/routes/pages.py，
-# parents[2] 指向 src/javlibraryscrapy/，templates 就在那里。
-TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "gallery.html"
+# 模板在 javlibraryscrapy/templates/gallery.html，统一在 _paths.py 算好
+from javlibraryscrapy._paths import PACKAGE_ROOT
+TEMPLATE_PATH = PACKAGE_ROOT / "templates" / "gallery.html"
 
 
 def register(app: FastAPI) -> None:
