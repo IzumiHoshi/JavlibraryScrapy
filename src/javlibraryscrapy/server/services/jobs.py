@@ -16,8 +16,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
-# 注意：不要在这里 import jobs_runner；jobs_runner 会单向 import jobs 模块，
-# 反向依赖会形成循环。``start_scrape_job`` 是在 ``app.py`` 上下文里被注入的。
+# 注意：jobs_runner 单向 import 本模块（from .jobs import JobLogHandler, ScrapeJob），
+# 顶层反向 ``from .jobs_runner import run_scrape_job`` 会让 jobs_runner 被半初始化的
+# jobs 重新触发 import —— 见 :func:`start_scrape_job` 内的懒加载。
 
 logger = logging.getLogger("gallery.jobs")
 
@@ -266,7 +267,17 @@ def start_scrape_job(
     proxy: Optional[str],
     library_index: Any,
 ) -> threading.Thread:
-    """在后台线程中执行磁力抓取；返回线程对象。"""
+    """在后台线程中执行磁力抓取；返回线程对象。
+
+    ``run_scrape_job`` 定义在 :mod:`jobs_runner`，那里单向 import 本模块
+    （``from .jobs import JobLogHandler, ScrapeJob``）。如果本模块顶层再
+    ``from .jobs_runner import run_scrape_job``，jobs_runner 会被部分
+    初始化的 jobs 重新触发 import，半成品对象传给 Spider 会炸。
+
+    因此 jobs_runner 在函数体内懒加载 —— 调用 start_scrape_job 时两个
+    模块都已完全初始化，避免循环。
+    """
+    from .jobs_runner import run_scrape_job  # noqa: PLC0415  懒加载避免循环
     t = threading.Thread(
         target=run_scrape_job,
         args=(job, output_dir, proxy, library_index),
