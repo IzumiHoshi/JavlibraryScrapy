@@ -621,6 +621,114 @@
     pointer-events: none;
   }
 
+  /* ---------- 多图灯箱（wanted 卡片海报 → cover + samples） ---------- */
+  #gallery-lb {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.92);
+    z-index: 210;
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    cursor: zoom-out;
+  }
+  #gallery-lb.show { display: flex; }
+  #gallery-lb .glb-header {
+    width: 100%;
+    max-width: 1100px;
+    color: rgba(255, 255, 255, 0.85);
+    font: 13px/1.4 ui-monospace, Consolas, monospace;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+    padding: 0 4px;
+  }
+  #gallery-lb .glb-header .glb-close {
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    color: white;
+    border-radius: 6px;
+    padding: 4px 12px;
+    cursor: pointer;
+    font: inherit;
+  }
+  #gallery-lb .glb-header .glb-close:hover { background: rgba(255, 255, 255, 0.1); }
+  #gallery-lb .glb-main {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    position: relative;
+  }
+  #gallery-lb .glb-main img {
+    max-width: 95vw;
+    max-height: 78vh;
+    object-fit: contain;
+    box-shadow: 0 12px 48px rgba(0, 0, 0, 0.7);
+    border-radius: 8px;
+    background: var(--bg);
+  }
+  #gallery-lb .glb-nav {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    background: rgba(0, 0, 0, 0.5);
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    color: white;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    cursor: pointer;
+    font: 22px/1 ui-monospace, Consolas, monospace;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    user-select: none;
+  }
+  #gallery-lb .glb-nav:hover { background: rgba(255, 255, 255, 0.15); }
+  #gallery-lb .glb-nav.prev { left: 12px; }
+  #gallery-lb .glb-nav.next { right: 12px; }
+  #gallery-lb .glb-nav:disabled { opacity: 0.3; cursor: not-allowed; }
+  #gallery-lb .glb-thumbs {
+    margin-top: 12px;
+    max-width: 95vw;
+    overflow-x: auto;
+    overflow-y: hidden;
+    white-space: nowrap;
+    padding: 6px 4px 4px;
+    scrollbar-width: thin;
+  }
+  #gallery-lb .glb-thumbs::-webkit-scrollbar { height: 6px; }
+  #gallery-lb .glb-thumbs::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.3); border-radius: 3px; }
+  #gallery-lb .glb-thumb {
+    display: inline-block;
+    width: 84px;
+    height: 84px;
+    margin-right: 6px;
+    border: 2px solid transparent;
+    border-radius: 4px;
+    overflow: hidden;
+    cursor: pointer;
+    background: var(--bg);
+    vertical-align: middle;
+  }
+  #gallery-lb .glb-thumb img {
+    width: 100%; height: 100%; object-fit: cover;
+  }
+  #gallery-lb .glb-thumb.active {
+    border-color: var(--accent);
+  }
+  #gallery-lb .glb-empty {
+    color: rgba(255, 255, 255, 0.6);
+    font-size: 14px;
+    padding: 40px;
+  }
+
   #toast {
     position: fixed; left: 50%; bottom: 26px; transform: translate(-50%, 20px);
     padding: 9px 16px; border-radius: 9px;
@@ -821,6 +929,18 @@
 
 <div id="tooltip" hidden></div>
 <div id="lightbox" hidden role="dialog" aria-label="查看大图"><img id="lightbox-img" alt=""><div class="lb-caption" id="lightbox-cap"></div></div>
+<div id="gallery-lb" hidden role="dialog" aria-label="查看大图与样图">
+  <div class="glb-header">
+    <span id="glb-title">—</span>
+    <button type="button" class="glb-close" id="glb-close">关闭 ✕</button>
+  </div>
+  <div class="glb-main">
+    <button type="button" class="glb-nav prev" id="glb-prev" aria-label="上一张">‹</button>
+    <img id="glb-img" alt="">
+    <button type="button" class="glb-nav next" id="glb-next" aria-label="下一张">›</button>
+  </div>
+  <div class="glb-thumbs" id="glb-thumbs"></div>
+</div>
 <div id="toast"></div>
 
 <script>
@@ -912,6 +1032,110 @@
   lightboxEl.addEventListener('click', hideLightbox);
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && lightboxEl.classList.contains('show')) hideLightbox();
+  });
+
+  /* ---------- 多图灯箱（wanted 卡片海报 → cover + samples） ---------- */
+  // 全局状态
+  const galleryLbEl = $('gallery-lb');
+  const galleryLbImg = $('glb-img');
+  const galleryLbTitle = $('glb-title');
+  const galleryLbThumbs = $('glb-thumbs');
+  const galleryLbPrev = $('glb-prev');
+  const galleryLbNext = $('glb-next');
+  let galleryImages = [];  // [{ url, label }]
+  let galleryIndex = 0;
+
+  function showGalleryAt(idx) {
+    if (!galleryImages.length) return;
+    galleryIndex = (idx + galleryImages.length) % galleryImages.length;
+    const item = galleryImages[galleryIndex];
+    galleryLbImg.src = item.url;
+    galleryLbImg.alt = item.label || '';
+    // 高亮缩略图 + 滚动到可视区
+    Array.from(galleryLbThumbs.children).forEach((el, i) => {
+      el.classList.toggle('active', i === galleryIndex);
+    });
+    const active = galleryLbThumbs.children[galleryIndex];
+    if (active) {
+      const rect = active.getBoundingClientRect();
+      const tRect = galleryLbThumbs.getBoundingClientRect();
+      if (rect.left < tRect.left || rect.right > tRect.right) {
+        active.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+      }
+    }
+    // 上下张按钮禁用状态（环形时永远不禁用）
+    galleryLbPrev.disabled = false;
+    galleryLbNext.disabled = false;
+  }
+
+  function hideGalleryLb() {
+    galleryLbEl.classList.remove('show');
+    setTimeout(() => {
+      galleryLbEl.hidden = true;
+      galleryLbImg.src = '';
+      galleryImages = [];
+      galleryIndex = 0;
+      galleryLbThumbs.innerHTML = '';
+    }, 180);
+  }
+
+  async function openGalleryLb(carid, title) {
+    galleryLbEl.hidden = false;
+    galleryLbEl.classList.add('show');
+    galleryLbTitle.textContent = `${carid}${title ? ' · ' + title : ''}（加载中…）`;
+    galleryLbImg.src = '';
+    galleryLbThumbs.innerHTML = '<div class="glb-empty">加载中…</div>';
+    try {
+      const r = await fetch(`/api/wanted/${encodeURIComponent(carid)}/gallery-images`);
+      if (!r.ok) throw new Error((await r.json()).error || r.statusText);
+      const data = await r.json();
+      const urls = [];
+      if (data.cover) urls.push({ url: data.cover, label: '封面' });
+      (data.samples || []).forEach((u, i) => urls.push({ url: u, label: `樣品 ${i + 1}` }));
+      if (!urls.length) {
+        galleryLbTitle.textContent = `${carid}${title ? ' · ' + title : ''} — 本地无 cover/樣品`;
+        galleryLbThumbs.innerHTML = '<div class="glb-empty">本地没有 cover.jpg / sample_*.jpg</div>';
+        galleryLbImg.removeAttribute('src');
+        return;
+      }
+      galleryImages = urls;
+      galleryLbTitle.textContent =
+        `${carid}${title ? ' · ' + title : ''}（${urls.length} 张：封面 + ${urls.length - 1} 张樣品）`;
+      galleryLbThumbs.innerHTML = urls.map((it, i) =>
+        `<span class="glb-thumb" data-idx="${i}"><img src="${esc(it.url)}" loading="lazy" alt=""></span>`
+      ).join('');
+      showGalleryAt(0);
+    } catch (e) {
+      galleryLbTitle.textContent = `加载失败：${e.message}`;
+      galleryLbThumbs.innerHTML = '';
+    }
+  }
+
+  $('glb-close').addEventListener('click', hideGalleryLb);
+  galleryLbEl.addEventListener('click', (e) => {
+    // 点击背景关闭；缩略图/按钮自身处理时不冒泡
+    if (e.target === galleryLbEl || e.target.classList.contains('glb-main')) hideGalleryLb();
+  });
+  galleryLbPrev.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (galleryImages.length) showGalleryAt(galleryIndex - 1);
+  });
+  galleryLbNext.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (galleryImages.length) showGalleryAt(galleryIndex + 1);
+  });
+  galleryLbThumbs.addEventListener('click', (e) => {
+    const thumb = e.target.closest('.glb-thumb');
+    if (!thumb) return;
+    e.stopPropagation();
+    const idx = parseInt(thumb.dataset.idx, 10);
+    if (!Number.isNaN(idx)) showGalleryAt(idx);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (!galleryLbEl.classList.contains('show')) return;
+    if (e.key === 'Escape') hideGalleryLb();
+    else if (e.key === 'ArrowLeft') showGalleryAt(galleryIndex - 1);
+    else if (e.key === 'ArrowRight') showGalleryAt(galleryIndex + 1);
   });
 
   function tick(on) { return `<span class="${on ? 'tip-tick' : 'tip-cross'}">${on ? '✓' : '✗'}</span>`; }
@@ -1295,13 +1519,15 @@
     $('grid').addEventListener('click', (e) => {
       if (e.target.closest('a')) return;
       if (e.target.closest('.local-badge')) return;  // badge 自己处理
-      // 点击封面 → 灯箱
+      // 点击封面 → 多图灯箱（wanted 页面：cover + 樣品）
       const cover = e.target.closest('.cover');
       if (cover && cover.src && !cover.classList.contains('broken')) {
         e.stopPropagation();
         e.preventDefault();
         const card = cover.closest('.card');
-        showLightbox(cover.src, card?.dataset.code || '');
+        const code = card?.dataset.code || '';
+        const title = card?.dataset.title || card?.querySelector('.name')?.textContent || '';
+        openGalleryLb(code, title);
         return;
       }
       const card = e.target.closest('.card');
