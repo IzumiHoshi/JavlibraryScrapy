@@ -17,7 +17,6 @@ from __future__ import annotations
 import re
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -85,11 +84,13 @@ def _find_image_url(folder: Path, kind: str, carid_norm: str) -> Optional[str]:
 # 内存保护：``_LIB_SAMPLE_CACHE_MAX`` 之上清掉一半最旧条目（按 checked_at 升序）。
 # 1137 部 + TTL=5s 不会触发上限；防的是长时间运行 + 大量手动 rescan 后
 # folder 路径变化导致的死条目堆积（Sourcery 提的"无 eviction"问题）。
+#
+# Executor 不在模块级创建（Sourcery 提的"import 时创建、永不 shutdown"
+# 问题，会在测试和多 app 实例场景下线程残留）。改在 ``app._lifespan``
+# 里创建并存到 ``app.state.lib_sample_executor``，lifespan teardown 时
+# 调 ``shutdown(wait=True)`` 干净关闭。
 _LIB_SAMPLE_CACHE: Dict[str, Tuple[int, float, float]] = {}
 _LIB_SAMPLE_LOCK = threading.RLock()
-_LIB_SAMPLE_EXECUTOR = ThreadPoolExecutor(
-    max_workers=8, thread_name_prefix="lib-sample-cache"
-)
 _LIB_SAMPLE_VALIDATE_TTL = 5.0
 _LIB_SAMPLE_CACHE_MAX = 2048
 
@@ -180,10 +181,10 @@ def _count_samples_in(folder_str: str) -> int:
     return n
 
 
-def _batch_count_samples(folders: List[str]) -> Dict[str, int]:
+def _batch_count_samples(folders: List[str], request: Request) -> Dict[str, int]:
     """批量：folder → 图片总数（cover/poster/fanart/sample）。
     全部走 ``_count_samples_in``（让 TTL 节流 + mtime 校验生效），
-    并发跑（thread pool）。
+    并发跑（app.state.lib_sample_executor）。
 
     旧实现"只对未命中并发，命中直接返"会让缓存条目永远不被 revalidate
     —— 一旦 cached 命中就锁死值，folder 内容变化也不更新（Sourcery bug_risk）。
@@ -192,8 +193,10 @@ def _batch_count_samples(folders: List[str]) -> Dict[str, int]:
     """
     if not folders:
         return {}
-    # ThreadPoolExecutor.map 保持入参顺序 → dict key 对得上调用方传的 folders
-    counts = list(_LIB_SAMPLE_EXECUTOR.map(_count_samples_in, folders))
+    # executor 在 app.state 上（lifespan 管理生命周期），不在模块级创建。
+    # ThreadPoolExecutor.map 保持入参顺序 → dict key 对得上调用方传的 folders。
+    executor = request.app.state.lib_sample_executor
+    counts = list(executor.map(_count_samples_in, folders))
     return dict(zip(folders, counts))
 
 
@@ -301,7 +304,7 @@ def register(app: FastAPI) -> None:
         # （folder_path → count）。library 的 entry.folder 是绝对路径（UNC /
         # 本地）不需要从某个 root iterdir 找，所以不共用 wanted 的 SampleCountCache
         # （那个绑定 MOSTWANTED_ROOT）。前端用此字段渲染 .sample-badge。
-        image_counts = _batch_count_samples([e.folder for e in page_items])
+        image_counts = _batch_count_samples([e.folder for e in page_items], request)
 
         return {
             "configured": True,

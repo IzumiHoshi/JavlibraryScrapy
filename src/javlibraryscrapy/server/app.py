@@ -77,9 +77,20 @@ def create_gallery_state(
 async def _lifespan(app: FastAPI, state: GalleryState):
     """FastAPI lifespan：启动/停止钩子。
 
-    原 stdlib 服务没有显式 shutdown hook；这里预留给未来（例如清理 asyncio task）。
+    - 启动：创建 ``lib_sample_executor``（8 workers）放到 ``app.state``，
+      供 library routes 的 ``_batch_count_samples`` 并发 glob NFS 用。
+      不放在模块级是为了测试 / 多 app 实例场景下能干净 shutdown。
+    - 停止：``shutdown(wait=True)`` 等所有 in-flight glob 跑完再退。
     """
-    yield
+    from concurrent.futures import ThreadPoolExecutor
+    app.state.lib_sample_executor = ThreadPoolExecutor(
+        max_workers=8, thread_name_prefix="lib-sample-cache"
+    )
+    try:
+        yield
+    finally:
+        # wait=True：让正在跑 NFS glob 的线程跑完，避免半截结果 + 资源泄漏
+        app.state.lib_sample_executor.shutdown(wait=True)
 
 
 def create_app(
