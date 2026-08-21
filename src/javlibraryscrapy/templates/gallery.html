@@ -2301,12 +2301,13 @@
       const badge = m.has_video
         ? ''
         : '<div class="local-badge warn" data-code="' + esc(m.carid) + '" title="此目录下未找到视频文件">无视频</div>';
-      // sample 数量角标：与 wanted 卡片 .sample-badge 一致；服务端
-      // library routes 的 _batch_count_samples（folder→count 轻量缓存）提供
-      // sample_count 字段；命中缓存，未命中并发 glob 一次。
-      const sampleCount = m.sample_count | 0;
-      const sampleBadge = sampleCount > 0
-        ? `<div class="sample-badge" title="本地 sample 圖片數量">${esc(sampleCount)} 張樣品</div>`
+      // 图片总数角标（cover/poster/fanart/sample_NNN.jpg）：与 wanted 卡片
+      // .sample-badge 一致但含义更广。服务端 library routes 的
+      // _batch_count_samples（folder→count 轻量缓存）提供 image_count 字段；
+      // 命中缓存，未命中并发 stat/glob 一次。
+      const imageCount = m.image_count | 0;
+      const sampleBadge = imageCount > 0
+        ? `<div class="sample-badge" title="本地資料夾中的圖片總數（封面+海報+Fanart+樣品）">${esc(imageCount)} 張圖</div>`
         : '';
       const visibleActors = (m.actors || []).slice(0, 2);
       const actorsHtml = visibleActors.length

@@ -105,15 +105,22 @@ def _evict_old_lib_cache() -> None:
 
 
 def _count_samples_in(folder_str: str) -> int:
-    """``folder_str -> sample_*.jpg 数量``，TTL 节流 + mtime 校验 + 缓存。
+    """``folder_str -> 图片总数``（cover + poster + fanart + sample_NNN.jpg），
+    TTL 节流 + mtime 校验 + 缓存。
 
     行为：
-      - 缓存未命中 → glob 一次，写 ``(count, mtime, now)``
+      - 缓存未命中 → glob/stat 一次，写 ``(count, mtime, now)``
       - 缓存命中且 ``now - checked_at < TTL`` → 直接返 count（**不 stat**）
       - 缓存命中但已过 TTL → stat folder：
           - 失败（folder 没了 / 共享断） → 写 ``(0, 0.0, now)`` 返 0
           - mtime 与缓存一致 → 刷 ``checked_at`` 返 count
-          - mtime 变化 → glob 重数 + 写缓存
+          - mtime 变化 → 重数 + 写缓存
+
+    范围说明：原版只数 ``sample_*.jpg``，但用户的 NFS 库里几乎没有 sample
+    文件（poster+fanart 都是直接 copy 进来的），卡片 sample-badge 因此
+    永远不显示。改为数 cover/poster/fanart/sample 总数后徽章才有意义。
+    cover/poster/fanart 各按 ``_IMG_EXTS`` 优先级取一张（与 ``gallery-images``
+    端点行为一致，避免"端点说有这个图但 cache 数 0"的不一致）。
     """
     now = time.monotonic()
     with _LIB_SAMPLE_LOCK:
@@ -137,7 +144,7 @@ def _count_samples_in(folder_str: str) -> int:
                 _LIB_SAMPLE_CACHE[folder_str] = (count, cached_mtime, now)
                 _evict_old_lib_cache()
             return count
-        # mtime 变 → glob 重数（落到下方"未命中"分支）
+        # mtime 变 → 重数（落到下方"未命中"分支）
 
     # 缓存未命中 / TTL 到期且 mtime 变 → 实际数一次
     try:
@@ -147,11 +154,19 @@ def _count_samples_in(folder_str: str) -> int:
                 _LIB_SAMPLE_CACHE[folder_str] = (0, 0.0, now)
                 _evict_old_lib_cache()
             return 0
-        n = sum(1 for _ in folder.glob("sample_*.jpg"))
+        # cover/poster/fanart 各按 _IMG_EXTS 优先级取一张，存在的算 1
+        n = 0
+        for kind in ("cover", "poster", "fanart"):
+            for ext in _IMG_EXTS:
+                if (folder / f"{kind}.{ext}").exists():
+                    n += 1
+                    break
+        # sample_NNN.jpg 数量
+        n += sum(1 for _ in folder.glob("sample_*.jpg"))
         try:
             mtime = folder.stat().st_mtime
         except OSError:
-            # 数完后 mtime 拿不到（极端时序）：用 0.0，下次一定 glob
+            # 数完后 mtime 拿不到（极端时序）：用 0.0，下次一定重数
             mtime = 0.0
     except OSError:
         with _LIB_SAMPLE_LOCK:
@@ -166,7 +181,8 @@ def _count_samples_in(folder_str: str) -> int:
 
 
 def _batch_count_samples(folders: List[str]) -> Dict[str, int]:
-    """批量：全部走 ``_count_samples_in``（让 TTL 节流 + mtime 校验生效），
+    """批量：folder → 图片总数（cover/poster/fanart/sample）。
+    全部走 ``_count_samples_in``（让 TTL 节流 + mtime 校验生效），
     并发跑（thread pool）。
 
     旧实现"只对未命中并发，命中直接返"会让缓存条目永远不被 revalidate
@@ -281,10 +297,11 @@ def register(app: FastAPI) -> None:
         start = (page - 1) * size
         page_items = items[start : start + size]
 
-        # sample 数量：走本模块的轻量缓存（folder_path → count）。library 的
-        # entry.folder 是绝对路径（UNC / 本地）不需要从某个 root iterdir 找，
-        # 所以不共用 wanted 的 SampleCountCache（那个绑定 MOSTWANTED_ROOT）。
-        sample_counts = _batch_count_samples([e.folder for e in page_items])
+        # 图片总数（cover/poster/fanart/sample_NNN.jpg）：走本模块的轻量缓存
+        # （folder_path → count）。library 的 entry.folder 是绝对路径（UNC /
+        # 本地）不需要从某个 root iterdir 找，所以不共用 wanted 的 SampleCountCache
+        # （那个绑定 MOSTWANTED_ROOT）。前端用此字段渲染 .sample-badge。
+        image_counts = _batch_count_samples([e.folder for e in page_items])
 
         return {
             "configured": True,
@@ -312,7 +329,7 @@ def register(app: FastAPI) -> None:
                     "video_count": e.video_count,
                     "total_size_bytes": e.total_size_bytes,
                     "modified": e.modified,
-                    "sample_count": sample_counts.get(e.folder, 0),
+                    "image_count": image_counts.get(e.folder, 0),
                 }
                 for e in page_items
             ],
