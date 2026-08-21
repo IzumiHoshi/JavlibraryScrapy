@@ -129,6 +129,20 @@
   .last-refresh { color: var(--text-faint); font-size: 12px; font-variant-numeric: tabular-nums; }
   .last-refresh.has-fresh { color: var(--ok); }
   .last-refresh.is-stale { color: var(--warn); }
+  .last-refresh.is-running {
+    color: var(--accent);
+    font-weight: 600;
+    font-size: 13px;
+    padding: 2px 8px;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    animation: lr-pulse 1.6s ease-in-out infinite;
+  }
+  @keyframes lr-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+  }
 
   /* 月份导航条 */
   .months-bar {
@@ -447,7 +461,9 @@
   /* ---------- /library 卡片差异 ---------- */
   body.page-library .card .name { -webkit-line-clamp: 3; }
   body.page-library .card { cursor: pointer; }
-  body.page-library .meta-line {
+  /* .meta-line 全局样式：wanted/library 卡片都用（小号灰字 + 行内 icon）。
+     library 页面再覆盖 .icon.on/.off 颜色（library 是 NFO/海报勾选状态色）。 */
+  .meta-line {
     font-size: 11px;
     color: var(--text-faint);
     margin-top: 2px;
@@ -455,7 +471,7 @@
     gap: 8px;
     flex-wrap: wrap;
   }
-  body.page-library .meta-line .icon { color: var(--text-faint); }
+  .meta-line .icon { color: var(--text-faint); }
   body.page-library .meta-line .icon.on { color: var(--ok); }
   body.page-library .meta-line .icon.off { color: var(--err); }
   body.page-library .folder {
@@ -601,6 +617,31 @@
     0%, 100% { opacity: .9; }
     50% { opacity: .55; }
   }
+
+  /* ---------- 单部 JavBus 重抓按钮（/wanted 卡片右上角） ---------- */
+  .refetch-btn {
+    position: absolute;
+    top: 6px; right: 6px;
+    height: 24px;
+    padding: 0 9px;
+    background: rgba(0, 0, 0, 0.55);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    color: #fff;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    line-height: 1;
+    z-index: 2;
+    transition: background .15s, transform .12s;
+  }
+  .refetch-btn:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); transform: scale(1.03); }
+  .refetch-btn:disabled { cursor: not-allowed; opacity: .9; }
+  .refetch-btn.running { background: var(--warn); border-color: var(--warn); animation: pulse 1.4s ease-in-out infinite; }
+  .refetch-btn.done { background: var(--ok); border-color: var(--ok); }
+  .refetch-btn.failed { background: var(--err); border-color: var(--err); }
 
   /* ---------- 灯箱（双页面通用） ---------- */
   #lightbox {
@@ -754,8 +795,13 @@
   }
   #toast.show { opacity: 1; transform: translate(-50%, 0); }
 
-  /* ---------- 手机端 ---------- */
-  @media (max-width: 680px) {
+  /* ---------- 紧凑 / 触屏布局 ----------
+   * 多条件触发（任一命中即走紧凑布局）：
+   *   1. (hover: none) and (pointer: coarse) —— 触屏特征，不依赖宽度
+   *   2. (max-width: 1280px)              —— 桌面模式浏览器把 1280 手机报告为桌面宽度时兜底
+   * 大屏桌面（>1280px + 鼠标）保持原 flex 行为。
+   */
+  @media (max-width: 1280px), (hover: none) and (pointer: coarse) {
     html, body { min-height: 100%; }
     body { overflow-x: hidden; -webkit-tap-highlight-color: transparent; }
     header { padding: calc(10px + env(safe-area-inset-top)) 12px 10px; }
@@ -768,22 +814,59 @@
     .nav-bar { flex-wrap: wrap; }
     .nav-bar a { padding: 8px 12px; flex: 1; text-align: center; }
     .toolbar {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 8px; margin-top: 10px;
+      display: flex; flex-wrap: wrap;
+      gap: 6px; margin-top: 8px;
     }
     input[type="search"] {
-      grid-column: 1 / -1; width: 100%; max-width: none; min-width: 0;
-      min-height: 44px; padding: 10px 12px;
+      flex: 1 1 100%; width: 100%; max-width: none; min-width: 0;
+      min-height: 40px; padding: 9px 12px;
       font-size: 16px;
     }
-    .toolbar button { width: 100%; min-height: 44px; padding: 8px 5px; touch-action: manipulation; }
+    .toolbar button { touch-action: manipulation; }
     .spacer { display: none; }
     .count {
-      grid-column: 1 / -1; text-align: center; padding: 1px 0;
+      order: 2;
+      flex: 0 0 auto;
+      padding: 8px 10px;
+      background: var(--bg-elev);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 13px;
+      min-height: 40px;
+      display: inline-flex;
+      align-items: center;
+      white-space: nowrap;
     }
-    #btn-export { grid-column: span 1; }
-    #btn-scrape { grid-column: span 2; }
+    #btn-scrape {
+      order: 3;
+      flex: 0 0 auto;
+      margin-left: auto;
+      min-height: 40px; padding: 9px 14px;
+      font-size: 14px;
+      white-space: nowrap;
+    }
+    #btn-all, #btn-none, #btn-invert {
+      order: 10;
+      min-height: 32px; padding: 5px 10px;
+      font-size: 12px;
+    }
+    #btn-refresh {
+      order: 20;
+      min-height: 32px; padding: 5px 10px;
+      font-size: 12px;
+      margin-left: auto;
+    }
+    #btn-export {
+      order: 21;
+      min-height: 32px; padding: 5px 10px;
+      font-size: 12px;
+    }
+    #last-refresh {
+      order: 30;
+      flex: 1 1 100%;
+      text-align: center;
+      margin-top: 2px;
+    }
 
     main {
       overflow: visible;
@@ -1059,13 +1142,57 @@
   const galleryLbNext = $('glb-next');
   let galleryImages = [];  // [{ url, label }]
   let galleryIndex = 0;
+  // 图像解码缓存：url → Promise<HTMLImageElement>，避免重复解码同一张图
+  const imgDecodeCache = new Map();
+  // 当前车牌的 gallery-images 请求 Promise（同一车牌重复打开复用）
+  let galleryFetchInflight = null;
+
+  // 预加载 URL（仅写入 imgDecodeCache，不阻塞 UI）
+  function preloadImage(url) {
+    if (!url || imgDecodeCache.has(url)) return imgDecodeCache.get(url);
+    const p = new Promise((resolve, reject) => {
+      const img = new Image();
+      img.decoding = 'async';
+      img.onload = () => { if (img.decode) img.decode().then(() => resolve(img), () => resolve(img)); else resolve(img); };
+      img.onerror = () => reject(new Error('load fail: ' + url));
+      img.src = url;
+    });
+    imgDecodeCache.set(url, p);
+    p.catch(() => imgDecodeCache.delete(url));  // 失败可重试
+    return p;
+  }
+
+  // 预加载相邻图片（±2 张），让翻页无延迟
+  function prefetchAdjacent(idx) {
+    if (!galleryImages.length) return;
+    for (const off of [-2, -1, 1, 2]) {
+      const i = ((idx + off) % galleryImages.length + galleryImages.length) % galleryImages.length;
+      preloadImage(galleryImages[i].url);
+    }
+  }
 
   function showGalleryAt(idx) {
     if (!galleryImages.length) return;
     galleryIndex = (idx + galleryImages.length) % galleryImages.length;
     const item = galleryImages[galleryIndex];
-    galleryLbImg.src = item.url;
-    galleryLbImg.alt = item.label || '';
+    // 异步解码：img.decode() 返回 Promise，等解码完成再显示，避免半透明闪烁
+    // 注意：不要直接 removeAttribute('src')，否则旧图瞬间消失、新图还没回来时一片黑。
+    // 先记下当前 src，如果是同一 URL（已经缓存或就是同一张）就跳过预热，避免闪一下。
+    const prevSrc = galleryLbImg.getAttribute('src') || '';
+    if (prevSrc !== item.url) {
+      // 占位：保留旧图直到新图解码完成（不再 removeAttribute，避免闪烁）
+      galleryLbImg.alt = `加载中：${item.label || ''}`;
+    }
+    preloadImage(item.url).then((img) => {
+      // 期间用户可能已经切到下一张 → 校验 index 一致才赋值
+      if (galleryIndex === ((idx + galleryImages.length) % galleryImages.length)) {
+        galleryLbImg.src = item.url;
+        galleryLbImg.alt = item.label || '';
+      }
+    }).catch(() => {
+      // 失败：保留旧图（coverHint 或上一张），仅改 alt 提示
+      galleryLbImg.alt = `加载失败：${item.label || ''}（已显示上一张）`;
+    });
     // 高亮缩略图 + 滚动到可视区
     Array.from(galleryLbThumbs.children).forEach((el, i) => {
       el.classList.toggle('active', i === galleryIndex);
@@ -1078,9 +1205,10 @@
         active.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
       }
     }
-    // 上下张按钮禁用状态（环形时永远不禁用）
     galleryLbPrev.disabled = false;
     galleryLbNext.disabled = false;
+    // 提前预热相邻图（不阻塞当前显示）
+    prefetchAdjacent(galleryIndex);
   }
 
   function hideGalleryLb() {
@@ -1094,21 +1222,44 @@
     }, 180);
   }
 
-  async function openGalleryLb(carid, title) {
+  // 开放给 openGalleryLb 调用：传入"卡片当前已有的 cover URL"，做到乐观打开
+  async function openGalleryLb(carid, title, options) {
+    options = options || {};
+    const coverHint = options.coverHint || '';  // 卡片上已有的 cover URL（已可能被浏览器缓存）
+
     galleryLbEl.hidden = false;
     galleryLbEl.classList.add('show');
     galleryLbTitle.textContent = `${carid}${title ? ' · ' + title : ''}（加载中…）`;
-    galleryLbImg.src = '';
+    galleryLbImg.removeAttribute('src');
     galleryLbThumbs.innerHTML = '<div class="glb-empty">加载中…</div>';
+
+    // 乐观策略：立刻把卡片上的 cover URL 作为首图显示（浏览器多已缓存，直接秒出）
+    if (coverHint) {
+      galleryLbImg.src = coverHint;
+      galleryLbImg.alt = '封面';
+    }
+
+    // 同一车牌的 inflight 请求复用（避免用户连点多次触发的 N 个并发 fetch）
+    if (!galleryFetchInflight || galleryFetchInflight.carid !== carid) {
+      galleryFetchInflight = {
+        carid,
+        promise: fetch(`/api/wanted/${encodeURIComponent(carid)}/gallery-images`)
+          .then(async (r) => {
+            if (!r.ok) throw new Error((await r.json()).error || r.statusText);
+            return r.json();
+          }),
+      };
+    }
+
     try {
-      const r = await fetch(`/api/wanted/${encodeURIComponent(carid)}/gallery-images`);
-      if (!r.ok) throw new Error((await r.json()).error || r.statusText);
-      const data = await r.json();
+      const data = await galleryFetchInflight.promise;
+      galleryFetchInflight = null;
       const urls = [];
       if (data.cover) urls.push({ url: data.cover, label: '封面' });
       (data.samples || []).forEach((u, i) => urls.push({ url: u, label: `樣品 ${i + 1}` }));
       if (!urls.length) {
-        galleryLbTitle.textContent = `${carid}${title ? ' · ' + title : ''} — 本地无 cover/樣品`;
+        galleryLbTitle.textContent =
+          `${carid}${title ? ' · ' + title : ''} — 本地无 cover/樣品`;
         galleryLbThumbs.innerHTML = '<div class="glb-empty">本地没有 cover.jpg / sample_*.jpg</div>';
         galleryLbImg.removeAttribute('src');
         return;
@@ -1116,12 +1267,21 @@
       galleryImages = urls;
       galleryLbTitle.textContent =
         `${carid}${title ? ' · ' + title : ''}（${urls.length} 张：封面 + ${urls.length - 1} 张樣品）`;
+      // 缩略图懒加载；可见性由 CSS 决定（display:flex 容器内全部可见）
       galleryLbThumbs.innerHTML = urls.map((it, i) =>
-        `<span class="glb-thumb" data-idx="${i}"><img src="${esc(it.url)}" loading="lazy" alt=""></span>`
+        `<span class="glb-thumb" data-idx="${i}"><img src="${esc(it.url)}" loading="lazy" decoding="async" alt=""></span>`
       ).join('');
+      // 缩略图原图也丢进 decode 缓存（用户点缩略图时无延迟）
+      urls.forEach((u) => preloadImage(u.url));
       showGalleryAt(0);
     } catch (e) {
-      galleryLbTitle.textContent = `加载失败：${e.message}`;
+      galleryFetchInflight = null;
+      // 失败时若 coverHint 已经显示了，就保留；否则提示
+      if (!coverHint || !galleryLbImg.src) {
+        galleryLbImg.removeAttribute('src');
+      }
+      galleryLbTitle.textContent =
+        `${carid}${title ? ' · ' + title : ''} — 加载失败：${e.message}`;
       galleryLbThumbs.innerHTML = '';
     }
   }
@@ -1172,6 +1332,7 @@
   /* ============================================================== */
 
   async function initWanted() {
+    $('source').textContent = 'JAVLibrary + JavBus';
     $('toolbar-wanted').style.display = 'flex';
     $('toolbar-library').style.display = 'none';
     $('active-filters').style.display = 'none';
@@ -1251,6 +1412,42 @@
       return '';
     }
 
+    // 单部 JavBus 重抓按钮：
+    //   - 无 release_date（failed / 无日期）→ 必显示（获取日期）
+    //   - 有 release_date 但本地样品图为 0 → 也显示（重下 cover + samples）
+    function refetchBtnHtml(m) {
+      const noDate = !m.release_date;
+      const noSamples = !((m.local_samples|0) > 0);
+      if (!noDate && !noSamples) return '';
+      const title = noDate
+        ? (m._status === 'failed' ? '上次 JavBus 抓取失败，点此重试' : '手动重抓 JavBus 详情（获取 release_date）')
+        : '本地无样品图，点此重抓 JavBus（重下 cover + samples）';
+      return `<button class="refetch-btn" data-code="${esc(m.code)}" title="${esc(title)}">↻ JavBus</button>`;
+    }
+
+    // 单卡片 HTML —— 提取出来供 render() 和 in-place 更新共用。
+    function cardHtml(m) {
+      return `
+        <div class="card${selected.has(m.code) ? ' selected' : ''}${m.local_exists ? ' local-exists' : ''}"
+             data-code="${esc(m.code)}"
+             data-search="${esc((m.code + ' ' + (m.title || '') + ' ' + (m.actors || '')).toLowerCase())}">
+          <input type="checkbox" ${selected.has(m.code) ? 'checked' : ''} tabindex="-1">
+          ${(m.cover || m.cover_url) ? `<img class="cover" src="${esc(m.cover || m.cover_url)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.classList.add('broken')">`
+                    : '<div class="cover"></div>'}
+          ${localBadgeHtml(m)}
+          ${statusBadge(m)}
+          ${refetchBtnHtml(m)}
+          ${(m.local_samples|0) > 0 ? `<div class="sample-badge" title="本地已下载的 sample 圖片數量">${esc(m.local_samples)} 張樣品</div>` : ''}
+          <div class="body">
+            <div class="code">${esc(m.code)}</div>
+            <div class="name">${esc(displayTitle(m))}</div>
+            ${m.release_date ? `<div class="meta-line"><span class="icon">📅 ${esc(m.release_date)}</span></div>` : ''}
+            ${m.actors ? `<div class="meta-line"><span class="icon">👤 ${esc(m.actors.split(' / ').slice(0, 3).join(' · '))}</span></div>` : ''}
+            ${m.javbus_url ? `<div class="card-links"><a href="${esc(m.javbus_url)}" target="_blank" rel="noreferrer">JavBus ↗</a></div>` : ''}
+          </div>
+        </div>`;
+    }
+
     function render() {
       const grid = $('grid');
       if (!movies.length) {
@@ -1260,24 +1457,7 @@
         grid.innerHTML = `<div class="empty">${emptyMsg}</div>`;
         return;
       }
-      grid.innerHTML = movies.map((m) => `
-        <div class="card${selected.has(m.code) ? ' selected' : ''}${m.local_exists ? ' local-exists' : ''}"
-             data-code="${esc(m.code)}"
-             data-search="${esc((m.code + ' ' + (m.title || '') + ' ' + (m.actors || '')).toLowerCase())}">
-          <input type="checkbox" ${selected.has(m.code) ? 'checked' : ''} tabindex="-1">
-          ${(m.cover || m.cover_url) ? `<img class="cover" src="${esc(m.cover || m.cover_url)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.classList.add('broken')">`
-                    : '<div class="cover"></div>'}
-          ${localBadgeHtml(m)}
-          ${statusBadge(m)}
-          ${(m.local_samples|0) > 0 ? `<div class="sample-badge" title="本地已下载的 sample 圖片數量">${esc(m.local_samples)} 張樣品</div>` : ''}
-          <div class="body">
-            <div class="code">${esc(m.code)}</div>
-            <div class="name">${esc(displayTitle(m))}</div>
-            ${m.release_date ? `<div class="meta-line"><span class="icon">📅 ${esc(m.release_date)}</span></div>` : ''}
-            ${m.actors ? `<div class="meta-line"><span class="icon">👤 ${esc(m.actors.split(' / ').slice(0, 3).join(' · '))}</span></div>` : ''}
-            ${m.javbus_url ? `<div class="card-links"><a href="${esc(m.javbus_url)}" target="_blank" rel="noreferrer">JavBus ↗</a></div>` : ''}
-          </div>
-        </div>`).join('');
+      grid.innerHTML = movies.map(cardHtml).join('');
       // 分页
       grid.innerHTML += `
         <div class="pagination">
@@ -1326,17 +1506,49 @@
       });
     }
 
+    // 单卡片 in-place 更新：把 movies 数组里对应 code 的条目替换，
+    // 并用 cardHtml(m) 重渲该 .card 节点。不动其它卡片（灯箱打开时不会闪）。
+    function renderCardInPlace(code) {
+      const m = movies.find((x) => x.code === code);
+      if (!m) return false;
+      const el = document.querySelector(`.card[data-code="${cssEscape(code)}"]`);
+      if (!el) return false;
+      const tmp = document.createElement('div');
+      tmp.innerHTML = cardHtml(m).trim();
+      const fresh = tmp.firstElementChild;
+      el.replaceWith(fresh);
+      applyLocalFilter();  // 重新过滤（data-search 可能变化了）
+      return true;
+    }
+
+    // CSS.escape 兼容（部分老浏览器没有）
+    function cssEscape(s) {
+      if (window.CSS && CSS.escape) return CSS.escape(s);
+      return String(s).replace(/["\\]/g, '\\$&');
+    }
+
     function updateLastRefresh(snapshot) {
       const el = $('last-refresh');
-      if (!snapshot) { el.textContent = ''; return; }
+      if (!snapshot) {
+        el.textContent = '';
+        el.classList.remove('has-fresh', 'is-stale', 'is-running');
+        return;
+      }
       const updated = snapshot.javbus_done + '/' + snapshot.javbus_total;
+      const queue = snapshot.queue_length != null ? snapshot.queue_length
+                     : Math.max(0, (snapshot.javbus_total|0) - (snapshot.javbus_done|0));
       const phase = snapshot.phase;
       const isRun = snapshot.status === 'running';
       el.classList.toggle('has-fresh', !isRun && phase === 'done');
       el.classList.toggle('is-stale', !isRun && phase === 'error');
+      el.classList.toggle('is-running', isRun);
       let label;
       if (isRun) {
-        label = `🔄 ${phaseLabel(phase)}${snapshot.current_code ? ' · ' + snapshot.current_code : ''} (${updated})`;
+        // 抓取中：显示当前车牌 + 进度 + 队列剩余（含当前）
+        // 例：🔄 抓 JavBus 详情 · IPZZ-907 · 5/30 · 队列25
+        const cur = snapshot.current_code ? ` · ${snapshot.current_code}` : '';
+        const qLabel = queue > 0 ? ` · 队列${queue}` : '';
+        label = `🔄 ${phaseLabel(phase)}${cur} · ${updated}${qLabel}`;
       } else {
         label = `上次刷新：${phaseLabel(phase)} · +${snapshot.wanted_added} / 更新 ${snapshot.wanted_updated}`;
       }
@@ -1377,6 +1589,24 @@
         render();
       } catch (e) {
         $('grid').innerHTML = `<div class="empty">加载失败：${esc(e.message)}</div>`;
+      }
+    }
+
+    // 只刷新月份桶摘要（不动 grid）。
+    // 用于：单车抓取后该卡片的 _bucket 跨桶迁移（比如 unknown → 2026-08），
+    // 这时 month chip 上的 count 数字不准，需要重算但不重渲 grid。
+    async function loadMonthsOnly() {
+      try {
+        const res = await fetch('/api/wanted/months');
+        const text = await res.text();
+        if (!res.ok) throw new Error(res.statusText);
+        const data = JSON.parse(text);
+        months = data.months || [];
+        missingCount = data.missing_in_remote_count || missingCount;
+        renderMonths();
+      } catch (e) {
+        // 静默失败：不阻塞用户操作
+        console.warn('loadMonthsOnly failed:', e);
       }
     }
 
@@ -1541,6 +1771,14 @@
     $('grid').addEventListener('click', (e) => {
       if (e.target.closest('a')) return;
       if (e.target.closest('.local-badge')) return;  // badge 自己处理
+      // 点击单部 JavBus 重抓按钮 → 调 /api/wanted/{code}/javbus，成功后刷新当前页
+      const refetchBtn = e.target.closest('.refetch-btn');
+      if (refetchBtn) {
+        e.stopPropagation();
+        e.preventDefault();
+        refetchOneJavbus(refetchBtn);
+        return;
+      }
       // 点击封面 → 多图灯箱（wanted 页面：cover + 樣品）
       const cover = e.target.closest('.cover');
       if (cover && cover.src && !cover.classList.contains('broken')) {
@@ -1549,7 +1787,8 @@
         const card = cover.closest('.card');
         const code = card?.dataset.code || '';
         const title = card?.dataset.title || card?.querySelector('.name')?.textContent || '';
-        openGalleryLb(code, title);
+        // 乐观打开：把卡片上的 cover URL 直接当首图（浏览器大概率已缓存这张图）
+        openGalleryLb(code, title, { coverHint: cover.src });
         return;
       }
       const card = e.target.closest('.card');
@@ -1558,6 +1797,181 @@
       const willSelect = e.target.matches('input[type="checkbox"]')
         ? e.target.checked : !selected.has(code);
       setSelected(code, willSelect); refreshCount();
+    });
+
+    // 单部 JavBus 重抓：阻塞同步调用（5-45 秒），完成后 in-place 更新该卡片，
+    // 不重渲整个网格 —— 灯箱打开时不会闪到背后卡片。
+    // 服务器响应里 data.movie 是更新后的完整条目（成功或失败但已存在）。
+    //   - 成功：release_date/bucket/_status 全部刷新；按钮变 "✓ 已抓取" 后消失（如果不再需要）
+    //   - 失败：仅 _status 变 failed；按钮短暂显示失败再回到 "↻ JavBus"
+    //   - 异常（response 没 movie 字段）：fallback 到 load() 全表刷新
+    //
+    // 移动端坑：
+    //   - 单次 fetch 可能 30-60s 没响应，浏览器/网络可能 timeout 后静默杀掉；
+    //   - 后台标签页会被暂停，恢复后状态可能错位；
+    //   - 用户切走再回来时按钮可能仍卡在 "⏳ 抓取…"。
+    // 因此：
+    //   1) 按钮文字每秒刷新一次显示已等待时间（"⏳ 抓取 30s"）；
+    //   2) AbortController 5 分钟硬超时，到时间客户端主动放弃并标记失败；
+    //   3) visibilitychange 切回前台时检查所有 running 按钮，超过 90s 的强制标记失败并刷新；
+    //   4) pagehide 时 abort 所有 in-flight，避免后台挂着空 fetch。
+    const REFETCH_TIMEOUT_MS = 5 * 60 * 1000;   // 5 分钟硬超时
+    const REFETCH_STUCK_MS    = 90 * 1000;      // > 90s 仍 running 视为卡住
+    const refetchControllers = new Map();        // code -> AbortController（支持取消）
+
+    function resetRefetchBtn(btn, status /* 'failed'|'done'|... */) {
+      const code = btn.dataset.code || '';
+      refetchControllers.delete(code);
+      // 注意：renderCardInPlace 已经把 btn 节点从 DOM 替换掉了，
+      // 这里直接操作的 btn 可能已经 detached。需要找到新卡片上的按钮（如果还在）。
+      const liveBtn = document.querySelector(`.refetch-btn[data-code="${cssEscape(code)}"]`) || btn;
+      liveBtn.disabled = false;
+      liveBtn.classList.remove('running', 'done', 'failed');
+      delete liveBtn.dataset.startedAt;
+      if (status === 'failed') {
+        liveBtn.classList.add('failed');
+        liveBtn.textContent = '✗ 失败';
+        setTimeout(() => {
+          if (liveBtn.classList.contains('failed')) {
+            liveBtn.classList.remove('failed');
+            liveBtn.textContent = '↻ JavBus';
+          }
+        }, 3000);
+      } else {
+        liveBtn.textContent = '↻ JavBus';
+      }
+    }
+
+    // 启动一个 1s 定时器，把按钮文字更新成 "⏳ 抓取 Ns"，并在超时或完成后停止。
+    function startRefetchTick(btn, controller, startedAt) {
+      const code = btn.dataset.code || '';
+      const tick = setInterval(() => {
+        if (controller.signal.aborted) { clearInterval(tick); return; }
+        const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+        btn.textContent = `⏳ 抓取 ${elapsed}s`;
+        // 超过阈值：主动 abort + 标记失败（防止浏览器静默杀掉后按钮永远卡住）
+        if (Date.now() - startedAt > REFETCH_TIMEOUT_MS) {
+          controller.abort(new Error('timeout'));
+        }
+      }, 1000);
+      // 让 cleanup 函数能停掉 tick
+      controller.signal.addEventListener('abort', () => clearInterval(tick), { once: true });
+    }
+
+    async function refetchOneJavbus(btn) {
+      const code = btn.dataset.code || '';
+      if (!code) return;
+      if (btn.disabled) return;  // 已经在跑
+      btn.disabled = true;
+      btn.classList.remove('done', 'failed');
+      btn.classList.add('running');
+      const startedAt = Date.now();
+      btn.dataset.startedAt = String(startedAt);
+      btn.textContent = '⏳ 抓取…';
+
+      const controller = new AbortController();
+      refetchControllers.set(code, controller);
+      startRefetchTick(btn, controller, startedAt);
+
+      try {
+        const res = await fetch(`/api/wanted/${encodeURIComponent(code)}/javbus`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+          signal: controller.signal,
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (data.ok) {
+          toast(`${code} → ${data.bucket}（${data.release_date || ''}）`);
+          if (data.movie) {
+            // 抓取成功 → 本地刚落了 cover + samples，
+            // 必须重新读磁盘才能拿到最新的 local_samples 计数（data.movie 没有这个字段）。
+            // 不更新的话：卡片 sample-badge 不显示，"↻ JavBus"按钮也会残留
+            // （refetchBtnHtml 判断 !noSamples 才隐藏按钮）。
+            // gallery-images 走 NFS thread pool 读盘，单次 < 50ms，不阻塞 UI。
+            try {
+              const gr = await fetch(`/api/wanted/${encodeURIComponent(code)}/gallery-images`);
+              if (gr.ok) {
+                const gd = await gr.json();
+                data.movie.local_samples = (gd.samples || []).length;
+              }
+            } catch (e) {
+              // 拿不到就保持 data.movie.local_samples=0/旧值，至少不影响主流程
+              console.warn(`refresh local_samples failed for ${code}:`, e);
+            }
+            const oldBucket = (movies.find((x) => x.code === code) || {})._bucket;
+            const i = movies.findIndex((x) => x.code === code);
+            if (i >= 0) movies[i] = data.movie;
+            if (oldBucket !== data.movie._bucket) {
+              await loadMonthsOnly();
+            } else {
+              renderCardInPlace(code);
+            }
+          } else {
+            await load();
+          }
+          // 成功后：按钮瞬时变绿再消失（如果 refetchBtnHtml 返回 ''）。
+          // refetchBtnHtml 的判断已通过 renderCardInPlace 反映到新 DOM。
+          // 当前 btn 节点已被 replaceWith 替换掉，无需再 reset。
+          refetchControllers.delete(code);
+        } else {
+          toast(`${code} 抓取失败：${data.error || '未知错误'}`, true);
+          if (data.movie) {
+            const i = movies.findIndex((x) => x.code === code);
+            if (i >= 0) movies[i] = data.movie;
+            renderCardInPlace(code);
+          } else {
+            await load();
+          }
+          resetRefetchBtn(btn, 'failed');
+        }
+      } catch (e) {
+        // abort / 网络失败 / 超时都走这里
+        const isAbort = e && (e.name === 'AbortError' || controller.signal.aborted);
+        if (isAbort && e.message && e.message !== 'timeout') {
+          // 用户主动切换页面（pagehide）触发的 abort，不算失败
+          // 但要把按钮状态收尾，否则下次回来还是 "running"
+          btn.classList.remove('running', 'done', 'failed');
+          btn.textContent = '↻ JavBus';
+          btn.disabled = false;
+          refetchControllers.delete(code);
+        } else {
+          toast(`${code} ${isAbort ? '抓取超时（>5min）' : '请求失败：' + e.message}`, true);
+          resetRefetchBtn(btn, 'failed');
+          // 失败后顺手 load 一次（让 UI 跟服务端实际状态对齐 —— 万一后端已完成但前端没收到响应）
+          await load();
+        }
+      }
+    }
+
+    // ---------- 移动端防御：切走/切回/卸载 ----------
+    // 切走（后台标签/锁屏）：abort 所有 in-flight，避免浏览器静默杀掉后 fetch 永远不返回
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) return;
+      // 回到前台：检查是否有按钮卡在 running 超过 90s，是的话强制 abort + 触发 reload 对齐服务端
+      let hasStuck = false;
+      for (const [code, ctrl] of refetchControllers.entries()) {
+        const btn = document.querySelector(`.refetch-btn[data-code="${cssEscape(code)}"]`);
+        if (!btn || !btn.classList.contains('running')) {
+          refetchControllers.delete(code);
+          continue;
+        }
+        const sinceMs = Date.now() - Number(btn.dataset.startedAt || Date.now());
+        if (sinceMs > REFETCH_STUCK_MS) {
+          ctrl.abort(new Error('stuck-on-resume'));
+          resetRefetchBtn(btn, 'failed');
+          hasStuck = true;
+        }
+      }
+      if (hasStuck) load();  // 对齐服务端真实状态
+    });
+
+    window.addEventListener('pagehide', () => {
+      for (const ctrl of refetchControllers.values()) {
+        try { ctrl.abort(new Error('pagehide')); } catch {}
+      }
+      refetchControllers.clear();
     });
 
     /* ---------- badge hover → tooltip ---------- */

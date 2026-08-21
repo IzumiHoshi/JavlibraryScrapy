@@ -31,8 +31,47 @@ from .jobs import RescanQueue, ScrapeJob
 logger = logging.getLogger("gallery.library")
 
 # 车牌正则（与原服务一致）：用于 URL 拼接安全
+# - CARID_RE：宽松版，只做"非空 + 安全字符"校验（用于 URL 拼接、JSON 已有条目读取）
+# - STRICT_CARID_RE：严格版，要求标准的 JAV 格式 "字母-数字"（如 IPZZ-907）
 CARID_RE = re.compile(r"[A-Z0-9_-]{2,32}")
+STRICT_CARID_RE = re.compile(r"^[A-Z]+[-_][0-9]+$")
 MAX_CODES_PER_JOB = 300
+
+
+def normalize_carid(code: str) -> Optional[str]:
+    """把用户输入的车牌规范化成 ``字母[-_]数字`` 标准格式。
+
+    处理：
+      - ``ipzz907`` / ``IPZZ907`` （无分隔符）→ ``IPZZ-907``
+      - ``IPZZ_907`` → ``IPZZ-907``（下下划统一为减号）
+      - ``ipzz-907`` → ``IPZZ-907``（大写化）
+
+    拆分规则：找到字母与数字的边界，在边界处插入 ``-``。
+    这覆盖了绝大多数 JAV 车牌（``[A-Z]+-[0-9]+``），
+    对非 JAV 风格的输入（纯字母、纯数字、带奇怪后缀）返回 None。
+
+    返回 None 时调用方应回 400 拒绝。
+    """
+    if not code:
+        return None
+    s = code.strip().upper()
+    if not s:
+        return None
+    # 已有分隔符（- 或 _）：把 _ 统一成 -，然后走严格校验
+    if "-" in s or "_" in s:
+        s = s.replace("_", "-")
+        return s if STRICT_CARID_RE.match(s) else None
+    # 无分隔符：在字母/数字边界插入 -（找第一个数字出现的位置）
+    m = re.search(r"\d", s)
+    if not m:
+        return None  # 纯字母
+    i = m.start()
+    if i == 0:
+        return None  # 纯数字
+    if i == len(s):
+        return None  # 不可能，但防御一下
+    candidate = s[:i] + "-" + s[i:]
+    return candidate if STRICT_CARID_RE.match(candidate) else None
 
 
 def normalize_path_for_compare(p: str) -> str:
