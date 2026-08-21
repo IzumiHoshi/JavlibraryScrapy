@@ -18,16 +18,19 @@
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import logging
 import re
+import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..services.library import CARID_RE
+from ..services.library import CARID_RE, normalize_carid
 from ..services.proxy import proxied_url
 from ..services.sample_cache import get_sample_cache
 from ..services.wanted import WantedService
@@ -38,19 +41,29 @@ logger = logging.getLogger("gallery.wanted_routes")
 _SAMPLE_IDX_RE = re.compile(r"sample_(\d+)\.jpg")
 
 
+# 硬限制：Most Wanted 刷新最多覆盖前 2 页（约 40 部）。
+# 原因：
+#   1. 全站 ≈ 500 部一轮刷新耗时 30 分钟以上，性价比低；
+#   2. 头部以外的车牌在 JavBus 上大量 404，没有 release_date 进不了任何月份桶；
+#   3. 用户明确要求"只跑前两页"。
+# 任何来源（前端表单 / API 直接调用 / CLI 脚本）都会被截断到这个上限。
+DEFAULT_MAX_PAGES = 2
+MAX_PAGES_HARD_CAP = 2
+
+
 class RefreshBody(BaseModel):
     """POST /api/wanted/refresh 的请求体。body 可空 / 字段可缺。
 
-    - 空 body / 非 dict：所有字段走默认（max_pages=None = 整站抓）
-    - ``max_pages <= 0`` 在 handler 里视同未传（保持旧行为「正数才生效」）
+    - 空 body / 非 dict：所有字段走默认（max_pages=2，只抓前 2 页）
+    - ``max_pages <= 0`` 在 handler 里视同未传（保留旧行为「正数才生效」）
     - 多余字段静默忽略
     """
 
     model_config = ConfigDict(extra="ignore")
 
     max_pages: Optional[int] = Field(
-        default=None,
-        description="限制抓取的 Most Wanted 页数；不传 = 抓所有页。<=0 视同未传。",
+        default=2,
+        description="限制抓取的 Most Wanted 页数；不传/<=0 = 默认只抓前 2 页。Most Wanted 头部热度最高，2 页 ≈ 40 部足以覆盖日常需要。",
     )
 
 
@@ -58,17 +71,47 @@ def _find_movie_folder(mw_root: Path, carid: str) -> Optional[Path]:
     """在 ``mw_root`` 下找到第一个 ``<CARID> <title>/`` 文件夹（大小写不敏感）。
 
     不依赖 wanted service 内存状态，避免启动期 / 重新加载间隙读到旧 title。
+
+    性能：
+        - 内存缓存 ``{carid: (path, expires_at)}``，TTL = 60 秒
+        - 命中即返回（避免每次灯箱打开都 iterdir NFS / SMB 几百毫秒）
+        - 缓存"未找到"也记，避免失败的车牌被反复扫
     """
     if not mw_root.exists() or not mw_root.is_dir():
         return None
-    prefix = carid.upper() + " "
+
+    carid_u = carid.upper()
+    now = time.monotonic()
+    cached = _FOLDER_CACHE.get((mw_root, carid_u))
+    if cached is not None and cached[1] > now:
+        return cached[0]  # 可能为 None（负缓存），由调用方处理
+
+    prefix = carid_u + " "
+    found: Optional[Path] = None
     try:
         for entry in mw_root.iterdir():
             if entry.is_dir() and entry.name.upper().startswith(prefix):
-                return entry
+                found = entry
+                break  # 第一个匹配即可，无需全部扫
     except OSError as e:
         logger.warning(f"无法枚举 {mw_root}: {e}")
-    return None
+
+    _FOLDER_CACHE[(mw_root, carid_u)] = (found, now + _FOLDER_CACHE_TTL)
+    # 防内存膨胀：超过上限时清掉一半最早的条目
+    if len(_FOLDER_CACHE) > _FOLDER_CACHE_MAX:
+        try:
+            items = sorted(_FOLDER_CACHE.items(), key=lambda kv: kv[1][1])
+            for k, _ in items[: len(items) // 2]:
+                _FOLDER_CACHE.pop(k, None)
+        except Exception:
+            _FOLDER_CACHE.clear()
+    return found
+
+
+# (mw_root, carid) → (folder_path or None, expires_at_monotonic)
+_FOLDER_CACHE: Dict[Any, Tuple[Optional[Path], float]] = {}
+_FOLDER_CACHE_TTL = 60.0
+_FOLDER_CACHE_MAX = 2048
 
 
 def register(app: FastAPI) -> None:
@@ -78,7 +121,7 @@ def register(app: FastAPI) -> None:
     @app.post("/api/wanted/refresh")
     async def refresh(request: Request) -> Dict[str, Any]:
         wanted: WantedService = request.app.state.wanted
-        # body 是可选的：空 body / 非 JSON / 非 dict 都按 max_pages=None 处理
+        # body 是可选的：空 body / 非 JSON / 非 dict 都按 max_pages=DEFAULT 处理
         body_dict: Dict[str, Any] = {}
         try:
             raw = await request.json()
@@ -87,19 +130,95 @@ def register(app: FastAPI) -> None:
         except Exception:
             pass
         payload = RefreshBody.model_validate(body_dict)
-        # 保持旧行为：<=0 视同未传（前端偶尔会传 0 / 负数兜底）
-        max_pages = payload.max_pages if payload.max_pages and payload.max_pages > 0 else None
+        # 硬限制：max_pages 最多 MAX_PAGES_HARD_CAP 页。
+        # <=0 / 缺省 → DEFAULT_MAX_PAGES；>CAP → 截断到 CAP；<=CAP → 保留原值。
+        if not payload.max_pages or payload.max_pages <= 0:
+            requested = DEFAULT_MAX_PAGES
+        else:
+            requested = payload.max_pages
+        max_pages = min(requested, MAX_PAGES_HARD_CAP)
         # 把 cache 透传给后台线程，落盘后回填（避免下次 /api/wanted 扫 NFS）
         cache = getattr(request.app.state, "sample_cache", None) or get_sample_cache()
         return wanted.start_refresh(max_pages=max_pages, sample_cache=cache)
 
     @app.get("/api/wanted/refresh-status")
-    async def refresh_status(request: Request) -> Dict[str, Any]:
+    def refresh_status(request: Request) -> Dict[str, Any]:
         wanted: WantedService = request.app.state.wanted
         snap = wanted.get_refresh_status()
         if snap is None:
             return {"status": "idle"}
         return snap
+
+    @app.post("/api/wanted/{carid}/javbus")
+    async def fetch_one_javbus(carid: str, request: Request) -> Dict[str, Any]:
+        """手动单车 JavBus 重抓。
+
+        用途：之前 JavBus 404 / 失败的某个车牌，用户手动触发重抓；
+        也会自动写回 JSON（成功 → ready + 月份桶；失败 → failed + unknown）。
+
+        body 可选 ``{"title"?: str, "cover_url"?: str}``：
+        - 如果车牌不在 JSON 中，会先用 body 里的 title/cover_url 建一条最小记录
+          再抓 JavBus（成功时 JavBus 的 title/cover 会覆盖传入值）；
+        - 如果车牌已在 JSON，body 字段被忽略（已存在的 title/cover 不被覆盖）。
+
+        返回 ``WantedService.fetch_one_javbus`` 的 dict：
+        ``{"code", "ok", "status_code", "error", "bucket", "release_date",
+        "title", "created", "saved"}``。失败时 HTTP 200（语义层面失败），
+        让前端能拿到 error 字段；非法车牌 → 400。
+        """
+        carid_norm = carid.strip().upper()
+        if not CARID_RE.fullmatch(carid_norm):
+            raise HTTPException(status_code=400, detail="非法的车牌")
+
+        # 兼容用户输入 "ipzz907" 这种漏写 "-" 的写法：自动插入分隔符。
+        # 不做这一步的话 JavBus 会返回 404，表现为"抓取失败 http=404"，
+        # 但实际上车牌是合法的（JAVLibrary JSON 里也是 IPZZ-907）。
+        normalized = normalize_carid(carid_norm)
+        if not normalized:
+            raise HTTPException(
+                status_code=400,
+                detail=f"非法的车牌：{carid!r}（应为 字母-数字 格式，如 IPZZ-907）",
+            )
+        if normalized != carid_norm:
+            logger.info(f"车牌 {carid_norm} 自动规范化 → {normalized}")
+            carid_norm = normalized
+
+        body_dict: Dict[str, Any] = {}
+        try:
+            raw = await request.json()
+            if isinstance(raw, dict):
+                body_dict = raw
+        except Exception:
+            pass
+
+        wanted: WantedService = request.app.state.wanted
+        settings = request.app.state.settings
+        mw_root = getattr(settings, "mostwanted_library_root", None)
+        cache = getattr(request.app.state, "sample_cache", None) or get_sample_cache()
+
+        # 单点抓取在 asyncio 线程池里跑，避免阻塞 uvicorn 事件循环。
+        # 否则用户点 A 车刷新后立刻点 B 车封面，B 的 lightbox 请求会被卡住（直到 A 抓完）。
+        # 原 fetch_one_javbus 内部用 ThreadPoolExecutor 跑 asyncio.run（避开 event-loop 冲突），
+        # 但那个 ThreadPoolExecutor 是子线程池，调用方（事件循环线程）依然被 future.result 阻塞。
+        # 这里用 asyncio.to_thread 把整个同步调用搬到 asyncio 默认线程池，
+        # 事件循环本身只 await 不阻塞，其它请求（lightbox、图片代理）可以并行处理。
+        # fetch_one_javbus 是 keyword-only 参数，所以必须用 functools.partial 包装。
+        result = await asyncio.to_thread(
+            functools.partial(
+                wanted.fetch_one_javbus,
+                carid_norm,
+                title=(body_dict.get("title") or "").strip() or None,
+                cover_url=(body_dict.get("cover_url") or "").strip() or None,
+                mw_root=Path(mw_root) if mw_root else None,
+                sample_cache=cache,
+            )
+        )
+        logger.info(
+            f"单车 JavBus 重抓 {carid_norm}: ok={result.get('ok')} "
+            f"status={result.get('status_code')} error={result.get('error')} "
+            f"bucket={result.get('bucket')}"
+        )
+        return result
 
     @app.get("/api/wanted/months")
     async def months(request: Request) -> Dict[str, Any]:
@@ -142,8 +261,12 @@ def register(app: FastAPI) -> None:
         return result
 
     @app.get("/api/wanted/{carid}/gallery-images")
-    async def gallery_images(carid: str, request: Request) -> Dict[str, Any]:
-        """列出该车在本地的 cover + samples URL。文件夹不存在返回空集。"""
+    def gallery_images(carid: str, request: Request) -> Dict[str, Any]:
+        """列出该车在本地的 cover + samples URL。文件夹不存在返回空集。
+
+        用 ``def`` 而非 ``async def``：路由内做 NFS sync I/O（folder glob / exists），
+        FastAPI 会自动放到 thread pool 跑，避免在 scrape 进行时阻塞 event loop。
+        """
         carid_norm = carid.strip().upper()
         if not CARID_RE.fullmatch(carid_norm):
             raise HTTPException(status_code=400, detail="非法的车牌")
@@ -188,13 +311,17 @@ def register(app: FastAPI) -> None:
         }
 
     @app.get("/api/wanted/{carid}/image")
-    async def serve_image(
+    def serve_image(
         carid: str,
         request: Request,
         type: str = Query(..., pattern="^(cover|sample)$"),
         idx: int = Query(1, ge=1, le=999),
     ):
-        """返回 cover.jpg 或 sample_NNN.jpg 的字节流。"""
+        """返回 cover.jpg 或 sample_NNN.jpg 的字节流。
+
+        用 ``def`` 而非 ``async def``：FileResponse 是 sync I/O，scrape 进行时
+        在 thread pool 里跑可以避免阻塞 event loop。
+        """
         carid_norm = carid.strip().upper()
         if not CARID_RE.fullmatch(carid_norm):
             raise HTTPException(status_code=400, detail="非法的车牌")
@@ -215,4 +342,10 @@ def register(app: FastAPI) -> None:
         if not target.exists():
             raise HTTPException(status_code=404, detail=f"文件不存在：{target.name}")
 
-        return FileResponse(target, media_type="image/jpeg")
+        # cover.jpg / sample_NNN.jpg 文件名稳定 + 内容不变 → 浏览器可永久缓存
+        # （无 ETag/Last-Modified 也行，文件名已经隐含版本信息）
+        return FileResponse(
+            target,
+            media_type="image/jpeg",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
