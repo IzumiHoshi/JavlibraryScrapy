@@ -1540,6 +1540,8 @@
     let movies = [];
     let months = [];
     let missingCount = 0;
+    let total = 0;       // 服务端返回的全集总数（受 month/q 过滤）
+    let pages = 1;       // ceil(total / size)，用于分页按钮 disabled 控制
     let selected = new Set();
     let pollTimer = null;
     let jobId = null;
@@ -1549,7 +1551,7 @@
     const params = new URLSearchParams(location.search);
     let month = params.get('month') || '';
     let page = Math.max(1, parseInt(params.get('page') || '1', 10) || 1);
-    const size = 60;
+    const size = 100;
     let q = '';  // 本地搜索（不写 URL，避免 URL 混乱）
 
     function updateUrl() {
@@ -1670,16 +1672,16 @@
         return;
       }
       grid.innerHTML = movies.map(cardHtml).join('');
-      // 分页
+      // 分页：显示真实 total（受 month/q 过滤的全集总数），下一页在最后一页禁用
       grid.innerHTML += `
         <div class="pagination">
           <button id="pg-prev" ${page <= 1 ? 'disabled' : ''}>上一页</button>
-          <span class="info">第 ${page} 页 · 共 ${movies.length} 部</span>
-          <button id="pg-next">下一页</button>
+          <span class="info">第 ${page} / ${pages} 页 · 共 ${total} 部</span>
+          <button id="pg-next" ${page >= pages ? 'disabled' : ''}>下一页</button>
         </div>`;
-      $('total').textContent = movies.length;
+      $('total').textContent = total;
       $('pg-prev')?.addEventListener('click', () => { if (page > 1) { page--; load(); } });
-      $('pg-next')?.addEventListener('click', () => { page++; load(); });
+      $('pg-next')?.addEventListener('click', () => { if (page < pages) { page++; load(); } });
       refreshCount();
       applyLocalFilter();
     }
@@ -1770,6 +1772,8 @@
         movies = data.items || [];
         months = data.months || [];
         missingCount = data.missing_in_remote_count || 0;
+        total = data.total || 0;
+        pages = Math.max(1, Math.ceil(total / size));
         monthPicker.render();
         render();
       } catch (e) {
