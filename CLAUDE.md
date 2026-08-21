@@ -56,6 +56,9 @@ uv run python -m javlibraryscrapy.cli.move_videos <source> <destination> [--min-
 # 去除文件名中的 "@site.com@" 前缀
 uv run python -m javlibraryscrapy.cli.rename_at_symbol <path> [--preview]
 
+# 恢复 wanted JSON（NFS folder → JSON）：若 javlibrary_movies.json 丢失/回滚，用 NFS 上现存的电影 folder 反推数据
+uv run python scripts/restore_wanted_from_folders.py [--dry-run] [--mw-root Z:/JAV/MostWanted] [--json output/javlibrary_movies.json]
+
 # 调试辅助脚本（手动脚本，不是 pytest；tests/ 里 .py 是 Python，.ps1 是 PowerShell 辅助）
 uv run pytest tests/unit/                 # 单元测试
 uv run pytest tests/integration/          # 集成测试（启动子进程画廊服务）
@@ -147,7 +150,7 @@ uv run python tests/integration/test_gallery_server_library.py # 离线跑画廊
 
 ## 仓库布局（精选）
 
-- `output/` — `cli/workflow.py` 结果和 JAVLibrary `movies.json`/`movies.csv` 的默认目的地。仓库中已存在（可能是历史运行产物）。画廊的磁力结果也写在这里（`magnets.json` v2 含 `local_skip`、`magnets_links.txt`），封面缓存在 `output/.cover_cache/`（已 gitignore），本地库索引 `output/library_index.json`（已 gitignore），画廊后台运行 PID 在 `output/.gallery_server.pid`、日志在 `output/.gallery_server.log`。
+- `output/` — `cli/workflow.py` 结果和 JAVLibrary `movies.json`/`movies.csv` 的默认目的地。仓库中已存在（可能是历史运行产物）。画廊的磁力结果也写在这里（`magnets.json` v2 含 `local_skip`、`magnets_links.txt`），封面缓存在 `output/.cover_cache/`（已 gitignore），本地库索引 `output/library_index.json`（已 gitignore），画廊后台运行 PID 在 `output/.gallery_server.pid`、日志在 `output/.gallery_server.log`。**⚠️ 整个 `output/` 在 `.gitignore` 里**，包括 `javlibrary_movies.json` —— 任何 `git rm`/`git reset`/分支回滚都会丢数据。若被误删，用 `scripts/restore_wanted_from_folders.py` 从 NFS `<MOSTWANTED_LIBRARY_ROOT>` 上的 `<CODE> <title>/` folder 反推；release_date 会留空，下次 `refresh_wanted` 自动补回。
 - `src/javlibraryscrapy/` — 主包（见上方架构一节），按 `scraping/`、`library/`、`cli/`、`server/`、`utils/`、`templates/` 分子包。
 - `src/javlibraryscrapy/templates/gallery.html` — 单文件模板，承载 `/wanted` + `/library` 双路由 + 海报灯箱 + 顶部导航。模板从磁盘实时读取，不需要重启服务。
 - `tests/` — pytest 测试 + 手动调试脚本，按 `unit/` / `integration/` 分目录。`tests/ps1/` 下是 PowerShell 调试脚本。
