@@ -32,6 +32,39 @@ from ..services.library import CARID_RE
 # 常量会让 wanted.py 变成 "public API"，代价大于复用收益。
 _SAMPLE_IDX_RE = re.compile(r"sample_(\d+)\.jpg")
 
+# 图库端点的扩展名优先级（cover/poster/fanart 各自按这个顺序找第一个存在的）
+_IMG_EXTS = ("jpg", "png", "jpeg", "webp")
+_MEDIA_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
+
+
+def _empty_gallery_payload() -> Dict[str, Any]:
+    """gallery-images 在 root 未配置 / entry 缺失 / folder 不存在时共用。"""
+    return {
+        "cover": None,
+        "poster": None,
+        "fanart": None,
+        "samples": [],
+        "folder_exists": False,
+    }
+
+
+def _find_image_url(folder: Path, kind: str, carid_norm: str) -> Optional[str]:
+    """在 ``folder`` 下找 ``{kind}.{jpg,png,jpeg,webp}`` 第一张存在的图，返回
+    image endpoint URL；都不存在返回 None。
+
+    kind ∈ {"cover", "poster", "fanart"}。
+    """
+    for ext in _IMG_EXTS:
+        p = folder / f"{kind}.{ext}"
+        if p.exists():
+            return f"/api/library/{carid_norm}/image?type={kind}"
+    return None
+
 
 # ---- library 端 sample 数量轻量缓存 ------------------------------------- #
 # 与 wanted 的 ``SampleCountCache``（绑定 MOSTWANTED_LIBRARY_ROOT）不同：
@@ -246,11 +279,13 @@ def register(app: FastAPI) -> None:
 
     @app.get("/api/library/{carid}/gallery-images")
     def gallery_images(carid: str, request: Request) -> Dict[str, Any]:
-        """列出该车在本地库下的 sample_*.jpg URL。cover 由前端用 localCoverUrl
-        单独传入（沿用现有 /api/local-cover 路径，避免此处返回相对路径还要
-        客户端再拼一遍）。
+        """列出该车在本地库下的所有图 URL：cover / poster / fanart / sample_*.jpg。
 
-        字段格式与 wanted 的 gallery-images 完全一致，前端 openGalleryLb 共用。
+        返回 cover/poster/fanart 三个单图 URL（null = 文件不存在）+ samples 数组。
+        前端 openGalleryLb 把它们拼成一张图片列表（按 cover → poster → fanart →
+        samples 顺序）。wanted 端只用到 cover + samples 两字段，本接口兼容
+        （多出来的 poster/fanart 是 null 或省略）。
+
         ``def`` 而非 ``async def``：glob 是 sync I/O，让 FastAPI 放到 thread pool。
         """
         carid_norm = carid.strip().upper()
@@ -258,14 +293,19 @@ def register(app: FastAPI) -> None:
             raise HTTPException(status_code=400, detail="非法的车牌")
         state = request.app.state.gallery
         if state.library_root is None:
-            return {"cover": None, "samples": [], "folder_exists": False}
+            return _empty_gallery_payload()
         entry = state.library_index.get(carid_norm)
         if entry is None:
-            return {"cover": None, "samples": [], "folder_exists": False}
+            return _empty_gallery_payload()
 
         folder = Path(entry.folder)
         if not folder.exists():
-            return {"cover": None, "samples": [], "folder_exists": False}
+            return _empty_gallery_payload()
+
+        # 找到 cover / poster / fanart 各一张（按优先级 .jpg > .png > .jpeg）。
+        cover_url = _find_image_url(folder, "cover", carid_norm)
+        poster_url = _find_image_url(folder, "poster", carid_norm)
+        fanart_url = _find_image_url(folder, "fanart", carid_norm)
 
         sample_paths = sorted(
             folder.glob("sample_*.jpg"),
@@ -285,7 +325,9 @@ def register(app: FastAPI) -> None:
             )
 
         return {
-            "cover": None,  # 见 docstring：cover 由前端 localCoverUrl 提供
+            "cover": cover_url,
+            "poster": poster_url,
+            "fanart": fanart_url,
             "samples": samples,
             "folder_exists": True,
             "folder_name": folder.name,
@@ -295,10 +337,14 @@ def register(app: FastAPI) -> None:
     def serve_image(
         carid: str,
         request: Request,
-        type: str = Query(..., pattern="^(cover|sample)$"),
+        type: str = Query(..., pattern="^(cover|poster|fanart|sample)$"),
         idx: int = Query(1, ge=1, le=999),
     ):
-        """返回 cover.jpg 或 sample_NNN.jpg 字节流（与 wanted 对称）。"""
+        """返回 cover/poster/fanart/sample 字节流。
+
+        ``cover`` ``poster`` ``fanart`` 各自按 ``{name}.jpg`` ``.png`` ``.jpeg``
+        优先级找第一张存在的；不存在 → 404。``sample`` 走 ``sample_NNN.jpg``。
+        """
         carid_norm = carid.strip().upper()
         if not CARID_RE.fullmatch(carid_norm):
             raise HTTPException(status_code=400, detail="非法的车牌")
@@ -312,17 +358,26 @@ def register(app: FastAPI) -> None:
         if not folder.exists():
             raise HTTPException(status_code=404, detail=f"文件夹不存在：{folder}")
 
-        if type == "cover":
-            target = folder / "cover.jpg"
-        else:  # sample
+        if type == "sample":
             target = folder / f"sample_{idx:03d}.jpg"
+        else:
+            # cover / poster / fanart：按 .jpg → .png → .jpeg 顺序找第一个存在
+            for ext in _IMG_EXTS:
+                target = folder / f"{type}.{ext}"
+                if target.exists():
+                    break
+            else:
+                raise HTTPException(
+                    status_code=404, detail=f"文件不存在：{type}.*"
+                )
 
-        if not target.exists():
-            raise HTTPException(status_code=404, detail=f"文件不存在：{target.name}")
+        # media_type 按实际扩展名决定（cover 也可能是 png）
+        suffix = target.suffix.lower()
+        media_type = _MEDIA_TYPES.get(suffix, "application/octet-stream")
 
         return FileResponse(
             target,
-            media_type="image/jpeg",
+            media_type=media_type,
             headers={"Cache-Control": "public, max-age=31536000, immutable"},
         )
 

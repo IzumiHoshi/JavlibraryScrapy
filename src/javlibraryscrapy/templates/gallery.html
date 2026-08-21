@@ -1433,19 +1433,26 @@
     try {
       const data = await galleryFetchInflight.promise;
       galleryFetchInflight = null;
+      // 拼装图片列表：cover → poster → fanart → sample_*.jpg。
+      // wanted 端 gallery-images 只有 cover + samples 两字段（旧版兼容），
+      // 新版 library 端还会带 poster/fanart。统一在 helper 内处理。
       const urls = [];
       if (data.cover) urls.push({ url: data.cover, label: '封面' });
+      if (data.poster) urls.push({ url: data.poster, label: '海报' });
+      if (data.fanart) urls.push({ url: data.fanart, label: 'Fanart' });
       (data.samples || []).forEach((u, i) => urls.push({ url: u, label: `樣品 ${i + 1}` }));
       if (!urls.length) {
         galleryLbTitle.textContent =
-          `${carid}${title ? ' · ' + title : ''} — 本地无 cover/樣品`;
-        galleryLbThumbs.innerHTML = '<div class="glb-empty">本地没有 cover.jpg / sample_*.jpg</div>';
+          `${carid}${title ? ' · ' + title : ''} — 本地无图`;
+        galleryLbThumbs.innerHTML = '<div class="glb-empty">本地没有图片</div>';
         galleryLbImg.removeAttribute('src');
         return;
       }
       galleryImages = urls;
+      // 标题里只展示实际存在的类型（samples 数算"样品"）。
+      const summary = urls.map((u) => u.label).join('、');
       galleryLbTitle.textContent =
-        `${carid}${title ? ' · ' + title : ''}（${urls.length} 张：封面 + ${urls.length - 1} 张樣品）`;
+        `${carid}${title ? ' · ' + title : ''}（${urls.length} 张：${summary}）`;
       // 缩略图懒加载；可见性由 CSS 决定（display:flex 容器内全部可见）
       galleryLbThumbs.innerHTML = urls.map((it, i) =>
         `<span class="glb-thumb" data-idx="${i}"><img src="${esc(it.url)}" loading="lazy" decoding="async" alt=""></span>`
