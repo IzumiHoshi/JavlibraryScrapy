@@ -144,32 +144,6 @@
     50% { opacity: 0.6; }
   }
 
-  /* 月份导航条 */
-  .months-bar {
-    display: flex; flex-wrap: wrap; gap: 6px;
-    padding: 8px 18px; background: var(--bg-elev);
-    border-bottom: 1px solid var(--border);
-    align-items: center;
-  }
-  .months-bar .label { color: var(--text-faint); font-size: 12px; margin-right: 4px; }
-  .months-bar .chip {
-    padding: 4px 10px; border-radius: 999px;
-    background: var(--card); border: 1px solid var(--border);
-    color: var(--text-dim); font-size: 12.5px; cursor: pointer;
-    transition: background .15s, border-color .15s, color .15s;
-    font-variant-numeric: tabular-nums;
-  }
-  .months-bar .chip:hover { background: var(--card-hover); color: var(--text); }
-  .months-bar .chip.active {
-    background: var(--accent-soft); border-color: var(--accent);
-    color: var(--accent); font-weight: 600;
-  }
-  .months-bar .chip.unknown { font-style: italic; }
-  .months-bar .chip .count {
-    color: var(--text-faint); margin-left: 6px; font-size: 11.5px;
-  }
-  .months-bar .chip.active .count { color: var(--accent); opacity: .7; }
-
   /* ---------- 当前筛选（/library） ---------- */
   .active-filters {
     display: flex; flex-wrap: wrap; gap: 6px;
@@ -943,9 +917,27 @@
     <a href="/library" id="nav-library">本地库</a>
   </nav>
 
-  <!-- /wanted 工具栏：月份导航 + 搜索 + 抓取 + 刷新 -->
+  <!-- /wanted 工具栏：月份筛选 + 搜索 + 抓取 + 刷新 -->
   <div class="toolbar" id="toolbar-wanted" style="display:none">
     <input type="search" id="search" placeholder="搜索车牌或标题…" autocomplete="off">
+    <div class="month-picker-wrap">
+      <button id="btn-w-month" class="month-trigger" type="button" title="按发行月份筛选">
+        <span id="w-month-trigger-label">全部月份</span>
+        <span class="caret">▾</span>
+      </button>
+      <div class="month-popup" id="w-month-popup" hidden role="dialog" aria-label="按月份筛选">
+        <div class="month-popup-head">
+          <button class="icon-btn" id="w-year-prev" type="button" title="上一年">‹</button>
+          <span class="year-display" id="w-year-display">— 年</span>
+          <button class="icon-btn" id="w-year-next" type="button" title="下一年">›</button>
+        </div>
+        <div class="month-grid" id="w-month-grid"></div>
+        <div class="month-popup-foot">
+          <button class="chip-btn" id="w-month-unknown" type="button">未知月份 <span class="count">0</span></button>
+          <button class="chip-btn" id="w-month-clear" type="button">清除筛选</button>
+        </div>
+      </div>
+    </div>
     <button id="btn-all">全选</button>
     <button id="btn-none">清空</button>
     <button id="btn-invert">反选</button>
@@ -956,9 +948,6 @@
     <button id="btn-export">导出 code</button>
     <button id="btn-scrape" class="primary">抓取选中的磁力</button>
   </div>
-
-  <!-- /wanted 月份导航条（动态填充） -->
-  <div class="months-bar" id="months-bar" hidden></div>
 
   <!-- /library 工具栏 -->
   <div class="toolbar" id="toolbar-library" style="display:none">
@@ -1069,6 +1058,166 @@
     el.classList.add('show');
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => el.classList.remove('show'), 2200);
+  }
+
+  /* ---------- 通用：月份选择器（/wanted 和 /library 共用）----------
+   * 用法：调用 setupMonthPicker({...}) 拿到 { render, openPopup, closePopup }
+   * 所有 id 都通过 opts 传入，避免 /wanted 与 /library 两套实例 DOM id 冲突。
+   *
+   * 数据流：
+   *   getMonths() -> [{ month: "YYYY-MM"|"unknown", count: N }]
+   *   getMonth()  -> 当前选中的月份键（"" / "YYYY-MM" / "unknown"）
+   *   setMonth(v) -> 写入新月份键（页面自己的 state 变量）
+   *   onChange(v) -> 选择完成后回调（页面自己的 load() / updateUrl() 等）
+   */
+  function parseMonthsData(months) {
+    const years = new Map();
+    let unknown = 0;
+    for (const m of months) {
+      if (m.month === 'unknown') { unknown = m.count; continue; }
+      const parts = m.month.split('-');
+      if (parts.length !== 2) continue;
+      const y = parseInt(parts[0], 10);
+      const mo = parseInt(parts[1], 10);
+      if (!y || !mo) continue;
+      if (!years.has(y)) years.set(y, new Map());
+      years.get(y).set(mo, m.count);
+    }
+    return { years, unknown };
+  }
+
+  /* 全局注册表：避免每个 setupMonthPicker() 都挂一对 document click/keydown 监听
+   *（多次调用会堆叠 handler）。改为模块级 Set 跟踪所有 popupId；
+   * document 上 click/keydown 各只挂一次，内部遍历 Set 决定关哪个 popup。
+   */
+  const _monthPickerPopups = new Set();
+  let _monthPickerDocBound = false;
+  function _ensureMonthPickerDocHandlers() {
+    if (_monthPickerDocBound) return;
+    _monthPickerDocBound = true;
+    document.addEventListener('click', (e) => {
+      for (const p of _monthPickerPopups) {
+        const popup = $(p.popupId);
+        if (!popup || popup.hidden) continue;
+        if (e.target.closest(`#${p.popupId}`) || e.target.closest(`#${p.triggerId}`)) continue;
+        popup.hidden = true;
+        break;  // 同时只有一个 popup 是开的
+      }
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      for (const p of _monthPickerPopups) {
+        const popup = $(p.popupId);
+        if (popup && !popup.hidden) { popup.hidden = true; break; }
+      }
+    });
+  }
+
+  function setupMonthPicker(opts) {
+    const {
+      triggerId, popupId, yearPrevId, yearNextId, yearDisplayId,
+      gridId, unknownId, clearId, triggerLabelId,
+      getMonths, getMonth, setMonth, onChange,
+    } = opts;
+    _ensureMonthPickerDocHandlers();
+    _monthPickerPopups.add({ popupId, triggerId });
+    let popupYear = 0;
+
+    function render() {
+      const months = getMonths();
+      const { years, unknown } = parseMonthsData(months);
+      const yearList = [...years.keys()].sort((a, b) => a - b);
+      const month = getMonth();
+
+      // popupYear 默认跟 selected month 的年份走（首次进入弹层定位）；
+      // label 里的年份始终用 selected month 解析出的真值，不跟 popupYear
+      // （否则用户切年后 label 跟实际选中的月份对不上）。
+      if (month && month !== 'unknown') {
+        const y = parseInt(month.slice(0, 4), 10);
+        if (y) popupYear = y;
+      }
+      if (!popupYear || (yearList.length && !yearList.includes(popupYear))) {
+        popupYear = yearList.length ? yearList[yearList.length - 1] : new Date().getFullYear();
+      }
+
+      let label;
+      if (month === 'unknown') label = '未知月份';
+      else if (month) {
+        // label 年份用 selected month 解析（不用 popupYear），
+        // 避免 year-next 切年后 label 显示错误的年份
+        const labelYear = parseInt(month.slice(0, 4), 10);
+        const labelMonth = parseInt(month.slice(5, 7), 10);
+        label = `${labelYear} 年 ${labelMonth} 月`;
+      }
+      else label = '全部月份';
+      $(triggerLabelId).textContent = label;
+      $(triggerId).classList.toggle('active', !!month);
+
+      $(yearDisplayId).textContent = `${popupYear} 年`;
+      $(yearPrevId).disabled = yearList.length > 0 && popupYear <= yearList[0];
+      $(yearNextId).disabled = yearList.length > 0 && popupYear >= yearList[yearList.length - 1];
+
+      const grid = $(gridId);
+      grid.innerHTML = '';
+      for (let m = 1; m <= 12; m++) {
+        const count = years.get(popupYear)?.get(m) || 0;
+        const key = `${popupYear}-${String(m).padStart(2, '0')}`;
+        const cell = document.createElement('button');
+        cell.type = 'button';
+        cell.className = 'month-cell';
+        const isActive = month === key;
+        if (isActive) cell.classList.add('active');
+        if (count === 0) cell.classList.add('empty');
+        cell.disabled = count === 0 && !isActive;
+        cell.innerHTML = `<span class="month-num">${m}月</span><span class="month-count${count === 0 ? ' empty' : ''}">${count || ''}</span>`;
+        cell.addEventListener('click', () => {
+          setMonth(key);
+          closePopup();
+          onChange(key);
+        });
+        grid.appendChild(cell);
+      }
+
+      const unkBtn = $(unknownId);
+      unkBtn.classList.toggle('active', month === 'unknown');
+      unkBtn.querySelector('.count').textContent = unknown || '';
+      unkBtn.disabled = unknown === 0 && month !== 'unknown';
+      $(clearId).disabled = !month;
+    }
+
+    function openPopup() { $(popupId).hidden = false; render(); }
+    function closePopup() { $(popupId).hidden = true; }
+
+    $(triggerId).addEventListener('click', (e) => {
+      e.stopPropagation();
+      if ($(popupId).hidden) openPopup();
+      else closePopup();
+    });
+    $(yearPrevId).addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (popupYear > 0) { popupYear--; render(); }
+    });
+    $(yearNextId).addEventListener('click', (e) => {
+      e.stopPropagation();
+      popupYear++;
+      render();
+    });
+    $(unknownId).addEventListener('click', (e) => {
+      e.stopPropagation();
+      setMonth('unknown');
+      closePopup();
+      onChange('unknown');
+    });
+    $(clearId).addEventListener('click', (e) => {
+      e.stopPropagation();
+      setMonth('');
+      closePopup();
+      onChange('');
+    });
+    // document click/keydown 由模块级 _ensureMonthPickerDocHandlers() 统一处理（singleton），
+    // 这里不再重复挂监听。
+
+    return { render, openPopup, closePopup };
   }
 
   /* ---------- 通用：本地库元数据缓存（tooltip 用）---------- */
@@ -1388,6 +1537,23 @@
       saveSelection();
     }
 
+    // 月份选择器：与 /library 共用 setupMonthPicker，id 用 w- 前缀避免冲突
+    const monthPicker = setupMonthPicker({
+      triggerId: 'btn-w-month',
+      popupId: 'w-month-popup',
+      yearPrevId: 'w-year-prev',
+      yearNextId: 'w-year-next',
+      yearDisplayId: 'w-year-display',
+      gridId: 'w-month-grid',
+      unknownId: 'w-month-unknown',
+      clearId: 'w-month-clear',
+      triggerLabelId: 'w-month-trigger-label',
+      getMonths: () => months,
+      getMonth: () => month,
+      setMonth: (v) => { month = v; },
+      onChange: () => { page = 1; updateUrl(); load(); },
+    });
+
     function displayTitle(m) {
       const t = m.title || '';
       const stripped = t.replace(new RegExp('^' + m.code.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&') + '\\s*', 'i'), '');
@@ -1470,33 +1636,6 @@
       $('pg-next')?.addEventListener('click', () => { page++; load(); });
       refreshCount();
       applyLocalFilter();
-    }
-
-    function renderMonths() {
-      const bar = $('months-bar');
-      if (!months.length) { bar.hidden = true; return; }
-      bar.hidden = false;
-      // 全部 = 第一个 chip（month=''）
-      const allChip = `<span class="chip ${month === '' ? 'active' : ''}" data-month="">
-        全部<span class="count">${sumMonthCounts()}</span></span>`;
-      const monthChips = months.map(m => {
-        const isUnknown = m.month === 'unknown';
-        return `<span class="chip ${isUnknown ? 'unknown' : ''} ${month === m.month ? 'active' : ''}" data-month="${esc(m.month)}">
-          ${esc(m.month)}<span class="count">${m.count}</span></span>`;
-      }).join('');
-      bar.innerHTML = `<span class="label">按发行月份：</span>${allChip}${monthChips}`;
-      bar.querySelectorAll('.chip').forEach(chip => {
-        chip.addEventListener('click', () => {
-          month = chip.dataset.month;
-          page = 1;
-          updateUrl();
-          load();
-        });
-      });
-    }
-
-    function sumMonthCounts() {
-      return months.reduce((s, m) => s + m.count, 0);
     }
 
     function applyLocalFilter() {
@@ -1585,7 +1724,7 @@
         movies = data.items || [];
         months = data.months || [];
         missingCount = data.missing_in_remote_count || 0;
-        renderMonths();
+        monthPicker.render();
         render();
       } catch (e) {
         $('grid').innerHTML = `<div class="empty">加载失败：${esc(e.message)}</div>`;
@@ -1603,7 +1742,7 @@
         const data = JSON.parse(text);
         months = data.months || [];
         missingCount = data.missing_in_remote_count || missingCount;
-        renderMonths();
+        monthPicker.render();
       } catch (e) {
         // 静默失败：不阻塞用户操作
         console.warn('loadMonthsOnly failed:', e);
@@ -2058,7 +2197,23 @@
     let months = [];
     let total = 0;
     let pages = 1;
-    let popupYear = null;  // 月份选择器当前展示的年份（懒初始化）
+
+    // 月份选择器（与 /wanted 共用 setupMonthPicker）
+    const monthPicker = setupMonthPicker({
+      triggerId: 'btn-month',
+      popupId: 'month-popup',
+      yearPrevId: 'year-prev',
+      yearNextId: 'year-next',
+      yearDisplayId: 'year-display',
+      gridId: 'month-grid',
+      unknownId: 'month-unknown',
+      clearId: 'month-clear',
+      triggerLabelId: 'month-trigger-label',
+      getMonths: () => months,
+      getMonth: () => month,
+      setMonth: (v) => { month = v; },
+      onChange: () => { page = 1; updateUrl(); load(); },
+    });
 
     $('lib-search').value = q;
     $('lib-sort').value = sort;
@@ -2072,89 +2227,6 @@
       if (actor) p.set('actor', actor);
       const qs = p.toString();
       history.replaceState(null, '', qs ? `?${qs}` : location.pathname);
-    }
-
-    function parseMonthsData() {
-      // 把 months payload 按年聚合；unknown 单独保留
-      const years = new Map();
-      let unknown = 0;
-      for (const m of months) {
-        if (m.month === 'unknown') { unknown = m.count; continue; }
-        const parts = m.month.split('-');
-        if (parts.length !== 2) continue;
-        const y = parseInt(parts[0], 10);
-        const mo = parseInt(parts[1], 10);
-        if (!y || !mo) continue;
-        if (!years.has(y)) years.set(y, new Map());
-        years.get(y).set(mo, m.count);
-      }
-      return { years, unknown };
-    }
-
-    function openMonthPopup() {
-      $('month-popup').hidden = false;
-      renderMonthPicker();
-    }
-    function closeMonthPopup() {
-      $('month-popup').hidden = true;
-    }
-
-    function renderMonthPicker() {
-      const { years, unknown } = parseMonthsData();
-      const yearList = [...years.keys()].sort((a, b) => a - b);
-
-      // 决定弹层里展示的年份
-      if (month && month !== 'unknown') {
-        const y = parseInt(month.slice(0, 4), 10);
-        if (y) popupYear = y;
-      }
-      if (!popupYear || (yearList.length && !yearList.includes(popupYear))) {
-        popupYear = yearList.length ? yearList[yearList.length - 1] : new Date().getFullYear();
-      }
-
-      // 触发按钮 label
-      let label;
-      if (month === 'unknown') label = '未知月份';
-      else if (month) label = `${popupYear} 年 ${parseInt(month.slice(5, 7), 10)} 月`;
-      else label = '全部月份';
-      $('month-trigger-label').textContent = label;
-      $('btn-month').classList.toggle('active', !!month);
-
-      // 年份导航
-      $('year-display').textContent = `${popupYear} 年`;
-      $('year-prev').disabled = yearList.length > 0 && popupYear <= yearList[0];
-      $('year-next').disabled = yearList.length > 0 && popupYear >= yearList[yearList.length - 1];
-
-      // 12 月网格
-      const grid = $('month-grid');
-      grid.innerHTML = '';
-      for (let m = 1; m <= 12; m++) {
-        const count = years.get(popupYear)?.get(m) || 0;
-        const key = `${popupYear}-${String(m).padStart(2, '0')}`;
-        const cell = document.createElement('button');
-        cell.type = 'button';
-        cell.className = 'month-cell';
-        const isActive = month === key;
-        if (isActive) cell.classList.add('active');
-        if (count === 0) cell.classList.add('empty');
-        cell.disabled = count === 0 && !isActive;
-        cell.innerHTML = `<span class="month-num">${m}月</span><span class="month-count${count === 0 ? ' empty' : ''}">${count || ''}</span>`;
-        cell.addEventListener('click', () => {
-          month = key;
-          page = 1;
-          closeMonthPopup();
-          updateUrl();
-          load();
-        });
-        grid.appendChild(cell);
-      }
-
-      // 未知月份 + 清除
-      const unkBtn = $('month-unknown');
-      unkBtn.classList.toggle('active', month === 'unknown');
-      unkBtn.querySelector('.count').textContent = unknown || '';
-      unkBtn.disabled = unknown === 0 && month !== 'unknown';
-      $('month-clear').disabled = !month;
     }
 
     function renderActiveFilters() {
@@ -2307,7 +2379,7 @@
         months = data.months || [];
         total = data.total;
         pages = Math.max(1, Math.ceil(total / data.size));
-        renderMonthPicker();
+        monthPicker.render();
         renderActiveFilters();
         render();
         loadStatus();
@@ -2323,47 +2395,6 @@
       searchTimer = setTimeout(() => { q = e.target.value; page = 1; load(); }, 250);
     });
     $('lib-sort').addEventListener('change', (e) => { sort = e.target.value; page = 1; load(); });
-
-    /* ---------- 月份选择器 ---------- */
-    $('btn-month').addEventListener('click', (e) => {
-      e.stopPropagation();
-      if ($('month-popup').hidden) openMonthPopup();
-      else closeMonthPopup();
-    });
-    $('year-prev').addEventListener('click', (e) => {
-      e.stopPropagation();
-      popupYear--;
-      renderMonthPicker();
-    });
-    $('year-next').addEventListener('click', (e) => {
-      e.stopPropagation();
-      popupYear++;
-      renderMonthPicker();
-    });
-    $('month-unknown').addEventListener('click', (e) => {
-      e.stopPropagation();
-      month = 'unknown';
-      page = 1;
-      closeMonthPopup();
-      updateUrl();
-      load();
-    });
-    $('month-clear').addEventListener('click', (e) => {
-      e.stopPropagation();
-      month = '';
-      page = 1;
-      closeMonthPopup();
-      updateUrl();
-      load();
-    });
-    document.addEventListener('click', (e) => {
-      if ($('month-popup').hidden) return;
-      if (e.target.closest('#month-popup') || e.target.closest('#btn-month')) return;
-      closeMonthPopup();
-    });
-    document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && !$('month-popup').hidden) closeMonthPopup();
-    });
 
     $('btn-lib-rescan').addEventListener('click', async () => {
       $('btn-lib-rescan').disabled = true;
