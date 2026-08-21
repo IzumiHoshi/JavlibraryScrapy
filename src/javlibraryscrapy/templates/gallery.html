@@ -574,10 +574,10 @@
   .pagination button { padding: 5px 10px; }
   .pagination .info { align-self: center; padding: 0 10px; }
 
-  /* ---------- 单部刷新按钮（/library 卡片左上角） ---------- */
+  /* ---------- 单部刷新按钮（/library 卡片右上角，与 wanted .refetch-btn 对称）---------- */
   .rescan-btn {
     position: absolute;
-    top: 6px; left: 6px;
+    top: 6px; right: 6px;
     width: 30px; height: 30px;
     padding: 0;
     background: rgba(0, 0, 0, 0.55);
@@ -590,7 +590,9 @@
     justify-content: center;
     font-size: 15px;
     line-height: 1;
-    z-index: 2;
+    /* z-index 3：盖在右上角的 .local-badge.warn（无视频）上。wanted 那边
+       同样位置是 .local-badge（"本地已有"绿徽章），由 .refetch-btn z-index:3 盖着。 */
+    z-index: 3;
     transition: background .15s, transform .12s;
   }
   .rescan-btn:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); transform: scale(1.05); }
@@ -603,26 +605,28 @@
     50% { opacity: .55; }
   }
 
-  /* ---------- 单部 JavBus 重抓按钮（/wanted 卡片右上角） ---------- */
+  /* ---------- 单部 JavBus 重抓按钮（/wanted 卡片右上角） ----------
+   * 与 .rescan-btn 同位置、同样式（圆形图标），保证两页面卡片右上角视觉一致。
+   * 状态文案通过 title tooltip 表达（hover 鼠标可见），按钮上只留图标。 */
   .refetch-btn {
     position: absolute;
     top: 6px; right: 6px;
-    height: 24px;
-    padding: 0 9px;
+    width: 30px; height: 30px;
+    padding: 0;
     background: rgba(0, 0, 0, 0.55);
     border: 1px solid var(--border);
-    border-radius: 12px;
+    border-radius: 50%;
     color: #fff;
     cursor: pointer;
     display: flex;
     align-items: center;
-    gap: 4px;
-    font-size: 11px;
+    justify-content: center;
+    font-size: 15px;
     line-height: 1;
-    z-index: 2;
+    z-index: 3;
     transition: background .15s, transform .12s;
   }
-  .refetch-btn:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); transform: scale(1.03); }
+  .refetch-btn:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); transform: scale(1.05); }
   .refetch-btn:disabled { cursor: not-allowed; opacity: .9; }
   .refetch-btn.running { background: var(--warn); border-color: var(--warn); animation: pulse 1.4s ease-in-out infinite; }
   .refetch-btn.done { background: var(--ok); border-color: var(--ok); }
@@ -1630,7 +1634,7 @@
       const title = noDate
         ? (m._status === 'failed' ? '上次 JavBus 抓取失败，点此重试' : '手动重抓 JavBus 详情（获取 release_date）')
         : '本地无样品图，点此重抓 JavBus（重下 cover + samples）';
-      return `<button class="refetch-btn" data-code="${esc(m.code)}" title="${esc(title)}">↻ JavBus</button>`;
+      return `<button class="refetch-btn" data-code="${esc(m.code)}" title="${esc(title)}">↻</button>`;
     }
 
     // 单卡片 HTML —— 提取出来供 render() 和 in-place 更新共用。
@@ -1984,7 +1988,7 @@
     // 不重渲整个网格 —— 灯箱打开时不会闪到背后卡片。
     // 服务器响应里 data.movie 是更新后的完整条目（成功或失败但已存在）。
     //   - 成功：release_date/bucket/_status 全部刷新；按钮变 "✓ 已抓取" 后消失（如果不再需要）
-    //   - 失败：仅 _status 变 failed；按钮短暂显示失败再回到 "↻ JavBus"
+    //   - 失败：仅 _status 变 failed；按钮短暂显示 ✗ 再回到 ↻
     //   - 异常（response 没 movie 字段）：fallback 到 load() 全表刷新
     //
     // 移动端坑：
@@ -2011,31 +2015,28 @@
       delete liveBtn.dataset.startedAt;
       if (status === 'failed') {
         liveBtn.classList.add('failed');
-        liveBtn.textContent = '✗ 失败';
+        liveBtn.textContent = '✗';
         setTimeout(() => {
           if (liveBtn.classList.contains('failed')) {
             liveBtn.classList.remove('failed');
-            liveBtn.textContent = '↻ JavBus';
+            liveBtn.textContent = '↻';
           }
         }, 3000);
       } else {
-        liveBtn.textContent = '↻ JavBus';
+        liveBtn.textContent = '↻';
       }
     }
 
-    // 启动一个 1s 定时器，把按钮文字更新成 "⏳ 抓取 Ns"，并在超时或完成后停止。
+    // 启动一个超时监控定时器：到 REFETCH_TIMEOUT_MS 主动 abort + 标记失败。
+    // 按钮只显示图标（↻），无文字 —— running 状态由 .refetch-btn.running 的
+    // pulse CSS 动画表达。title tooltip 由 refetchBtnHtml 根据状态更新。
     function startRefetchTick(btn, controller, startedAt) {
-      const code = btn.dataset.code || '';
       const tick = setInterval(() => {
         if (controller.signal.aborted) { clearInterval(tick); return; }
-        const elapsed = Math.floor((Date.now() - startedAt) / 1000);
-        btn.textContent = `⏳ 抓取 ${elapsed}s`;
-        // 超过阈值：主动 abort + 标记失败（防止浏览器静默杀掉后按钮永远卡住）
         if (Date.now() - startedAt > REFETCH_TIMEOUT_MS) {
           controller.abort(new Error('timeout'));
         }
       }, 1000);
-      // 让 cleanup 函数能停掉 tick
       controller.signal.addEventListener('abort', () => clearInterval(tick), { once: true });
     }
 
@@ -2048,7 +2049,8 @@
       btn.classList.add('running');
       const startedAt = Date.now();
       btn.dataset.startedAt = String(startedAt);
-      btn.textContent = '⏳ 抓取…';
+      // 保持 ↻ 图标（pulse 动画表达"抓取中"），不显示文字
+      btn.textContent = '↻';
 
       const controller = new AbortController();
       refetchControllers.set(code, controller);
@@ -2068,7 +2070,7 @@
           if (data.movie) {
             // 抓取成功 → 本地刚落了 cover + samples，
             // 必须重新读磁盘才能拿到最新的 local_samples 计数（data.movie 没有这个字段）。
-            // 不更新的话：卡片 sample-badge 不显示，"↻ JavBus"按钮也会残留
+            // 不更新的话：卡片 sample-badge 不显示，"↻"按钮也会残留
             // （refetchBtnHtml 判断 !noSamples 才隐藏按钮）。
             // gallery-images 走 NFS thread pool 读盘，单次 < 50ms，不阻塞 UI。
             try {
@@ -2114,7 +2116,7 @@
           // 用户主动切换页面（pagehide）触发的 abort，不算失败
           // 但要把按钮状态收尾，否则下次回来还是 "running"
           btn.classList.remove('running', 'done', 'failed');
-          btn.textContent = '↻ JavBus';
+          btn.textContent = '↻';
           btn.disabled = false;
           refetchControllers.delete(code);
         } else {
