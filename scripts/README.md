@@ -130,3 +130,21 @@ uv run python -m javlibraryscrapy.cli.workflow <下载路径> <中间路径> <�
 3. 生成 NFO 文件和封面图片到输出目录
 
 使用 `--preview` 可预览找到的文件列表，不执行爬取。
+
+## restore_wanted_from_folders
+
+⚠️ **只在 wanted JSON 误删/回滚后用**。`output/javlibrary_movies.json` 不进 git（`output/` 整个被 gitignore）；若被 `git reset` 或分支切换弄丢，NFS 上 `<MOSTWANTED_LIBRARY_ROOT>/<CODE> <title>/` folder 仍在，本脚本可反推 JSON。
+
+```bash
+uv run python scripts/restore_wanted_from_folders.py [--dry-run]
+uv run python scripts/restore_wanted_from_folders.py --mw-root "Z:\\JAV\\MostWanted"
+uv run python scripts/restore_wanted_from_folders.py --json "D:\\backup\\javlibrary_movies.json"
+```
+
+**行为：**
+- 扫 `mw_root` 下所有 `<CODE> <title>/` folder
+- 已存在于 JSON 的 code 跳过（保留最新抓取数据）
+- 不存在的 code 写入 JSON，标记 `_restored_from_folder=true`、`_bucket=unknown`、`missing_in_remote=true`
+- `release_date` 留空（NFS mtime 不可信），下次 `refresh_wanted` 触发时 `merge_wanted` 会看到空 → 自动加进 `needs_javbus` → 重抓补回真实日期
+
+**何时不需要跑：** JSON 正常、`refresh_wanted` 也正常补 unknown 时不需要动这个脚本。

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import socket
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
@@ -114,6 +115,18 @@ def create_app(
     # 之后刷新任务会用 cache.put() 回填，避免下次扫描 NFS。
     from javlibraryscrapy.server.services.sample_cache import get_sample_cache
     sample_cache = get_sample_cache(mw_root=settings.mostwanted_library_root)
+
+    # P1：后台预热 sample cache —— 把 wanted 列表里的前 N 个 code 的 sample 数扫掉，
+    # 让首次 /api/wanted 不必触发 NFS cold start（NFS 单目录 glob 几百 ms~几 s）。
+    # 用 daemon 线程，不阻塞启动；失败也不影响服务可用。
+    def _prewarm() -> None:
+        try:
+            codes = wanted.iter_codes()
+            sample_cache.prewarm(codes[:120])
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"sample cache prewarm 失败：{e}")
+
+    threading.Thread(target=_prewarm, daemon=True, name="sample-cache-prewarm").start()
 
     app = FastAPI(
         title="JAV Gallery",
