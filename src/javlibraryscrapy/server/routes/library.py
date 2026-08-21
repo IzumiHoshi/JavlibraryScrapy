@@ -42,13 +42,18 @@ _MEDIA_TYPES = {
 
 
 def _empty_gallery_payload() -> Dict[str, Any]:
-    """gallery-images 在 root 未配置 / entry 缺失 / folder 不存在时共用。"""
+    """gallery-images 在 root 未配置 / entry 缺失 / folder 不存在时共用。
+
+    schema 与成功响应保持完全一致（含 ``folder_name`` 字段为 None），
+    避免前端需要分别处理两种 shape（Sourcery round-4 feedback）。
+    """
     return {
         "cover": None,
         "poster": None,
         "fanart": None,
         "samples": [],
         "folder_exists": False,
+        "folder_name": None,
     }
 
 
@@ -194,8 +199,12 @@ def _batch_count_samples(folders: List[str], request: Request) -> Dict[str, int]
     if not folders:
         return {}
     # executor 在 app.state 上（lifespan 管理生命周期），不在模块级创建。
+    # 防御性 fallback：测试 / 不用 lifespan 的 app factory 可能没初始化
+    # executor，此时顺序执行（不开新线程池，避免测试间状态泄漏）。
+    executor = getattr(request.app.state, "lib_sample_executor", None)
+    if executor is None:
+        return {f: _count_samples_in(f) for f in folders}
     # ThreadPoolExecutor.map 保持入参顺序 → dict key 对得上调用方传的 folders。
-    executor = request.app.state.lib_sample_executor
     counts = list(executor.map(_count_samples_in, folders))
     return dict(zip(folders, counts))
 
@@ -406,7 +415,11 @@ def register(app: FastAPI) -> None:
         carid: str,
         request: Request,
         type: str = Query(..., pattern="^(cover|poster|fanart|sample)$"),
-        idx: int = Query(1, ge=1, le=999),
+        # 没有 le=999 上限：_SAMPLE_IDX_RE / glob 都允许任意位数；
+        # 之前 cap 在 999 会让 gallery-images 列出 sample_1000.jpg 缩略图
+        # 但 image endpoint 返 422。去掉上限后 ``sample_{idx:03d}.jpg`` 格式
+        # Python 会自动扩展宽度（``f"{1000:03d}" == "1000"``）。
+        idx: int = Query(1, ge=1),
     ):
         """返回 cover/poster/fanart/sample 字节流。
 
