@@ -1086,12 +1086,41 @@
     return { years, unknown };
   }
 
+  /* 全局注册表：避免每个 setupMonthPicker() 都挂一对 document click/keydown 监听
+   *（多次调用会堆叠 handler）。改为模块级 Set 跟踪所有 popupId；
+   * document 上 click/keydown 各只挂一次，内部遍历 Set 决定关哪个 popup。
+   */
+  const _monthPickerPopups = new Set();
+  let _monthPickerDocBound = false;
+  function _ensureMonthPickerDocHandlers() {
+    if (_monthPickerDocBound) return;
+    _monthPickerDocBound = true;
+    document.addEventListener('click', (e) => {
+      for (const p of _monthPickerPopups) {
+        const popup = $(p.popupId);
+        if (!popup || popup.hidden) continue;
+        if (e.target.closest(`#${p.popupId}`) || e.target.closest(`#${p.triggerId}`)) continue;
+        popup.hidden = true;
+        break;  // 同时只有一个 popup 是开的
+      }
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      for (const p of _monthPickerPopups) {
+        const popup = $(p.popupId);
+        if (popup && !popup.hidden) { popup.hidden = true; break; }
+      }
+    });
+  }
+
   function setupMonthPicker(opts) {
     const {
       triggerId, popupId, yearPrevId, yearNextId, yearDisplayId,
       gridId, unknownId, clearId, triggerLabelId,
       getMonths, getMonth, setMonth, onChange,
     } = opts;
+    _ensureMonthPickerDocHandlers();
+    _monthPickerPopups.add({ popupId, triggerId });
     let popupYear = 0;
 
     function render() {
@@ -1100,6 +1129,9 @@
       const yearList = [...years.keys()].sort((a, b) => a - b);
       const month = getMonth();
 
+      // popupYear 默认跟 selected month 的年份走（首次进入弹层定位）；
+      // label 里的年份始终用 selected month 解析出的真值，不跟 popupYear
+      // （否则用户切年后 label 跟实际选中的月份对不上）。
       if (month && month !== 'unknown') {
         const y = parseInt(month.slice(0, 4), 10);
         if (y) popupYear = y;
@@ -1110,7 +1142,13 @@
 
       let label;
       if (month === 'unknown') label = '未知月份';
-      else if (month) label = `${popupYear} 年 ${parseInt(month.slice(5, 7), 10)} 月`;
+      else if (month) {
+        // label 年份用 selected month 解析（不用 popupYear），
+        // 避免 year-next 切年后 label 显示错误的年份
+        const labelYear = parseInt(month.slice(0, 4), 10);
+        const labelMonth = parseInt(month.slice(5, 7), 10);
+        label = `${labelYear} 年 ${labelMonth} 月`;
+      }
       else label = '全部月份';
       $(triggerLabelId).textContent = label;
       $(triggerId).classList.toggle('active', !!month);
@@ -1176,14 +1214,8 @@
       closePopup();
       onChange('');
     });
-    document.addEventListener('click', (e) => {
-      if ($(popupId).hidden) return;
-      if (e.target.closest(`#${popupId}`) || e.target.closest(`#${triggerId}`)) return;
-      closePopup();
-    });
-    document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && !$(popupId).hidden) closePopup();
-    });
+    // document click/keydown 由模块级 _ensureMonthPickerDocHandlers() 统一处理（singleton），
+    // 这里不再重复挂监听。
 
     return { render, openPopup, closePopup };
   }
