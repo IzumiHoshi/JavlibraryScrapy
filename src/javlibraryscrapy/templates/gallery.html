@@ -1551,7 +1551,7 @@
     const params = new URLSearchParams(location.search);
     let month = params.get('month') || '';
     let page = Math.max(1, parseInt(params.get('page') || '1', 10) || 1);
-    const size = 100;
+    const size = 60;
     let q = '';  // 本地搜索（不写 URL，避免 URL 混乱）
 
     function updateUrl() {
