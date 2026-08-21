@@ -126,6 +126,17 @@
   .spacer { flex: 1; }
   .count { color: var(--text-dim); font-size: 13px; font-variant-numeric: tabular-nums; }
   .count b { color: var(--accent); font-size: 15px; }
+  /* lib-status 分段：路径独立 span + title 提示；desktop 阶段 32em 上限避免溢出 toolbar */
+  #lib-status .ls-sep { margin: 0 4px; opacity: 0.4; }
+  #lib-status .ls-label { opacity: 0.65; margin-right: 2px; }
+  #lib-status .ls-path {
+    display: inline-block;
+    max-width: 32em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: bottom;
+    white-space: nowrap;
+  }
   .last-refresh { color: var(--text-faint); font-size: 12px; font-variant-numeric: tabular-nums; }
   .last-refresh.has-fresh { color: var(--ok); }
   .last-refresh.is-stale { color: var(--warn); }
@@ -811,7 +822,23 @@
       align-items: center;
       white-space: nowrap;
     }
-    #btn-scrape {
+    /* lib-status 是 lib-toolbar 唯一的 .count；长 UNC 路径在 1280px 屏幕会
+     溢出 toolbar。让整段允许换行 + 路径段允许字符级断行（断字符比断单词
+     更适合 "\\192.168.0.47\团队文件-..." 这类路径；分段里有完整 title
+     提示原始值）。 */
+  #lib-status {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    max-width: 100%;
+  }
+  #lib-status .ls-path {
+    display: inline;
+    max-width: none;
+    white-space: normal;
+    word-break: break-all;
+  }
+
+  #btn-scrape {
       order: 3;
       flex: 0 0 auto;
       margin-left: auto;
@@ -1375,6 +1402,9 @@
   async function openGalleryLb(carid, title, options) {
     options = options || {};
     const coverHint = options.coverHint || '';  // 卡片上已有的 cover URL（已可能被浏览器缓存）
+    // 不同页面的 gallery-images 端点路径不同（wanted → /api/wanted/...，
+    // library → /api/library/...）。让调用方传完整 URL，保持 helper 单一来源。
+    const imagesUrl = options.imagesUrl || `/api/wanted/${encodeURIComponent(carid)}/gallery-images`;
 
     galleryLbEl.hidden = false;
     galleryLbEl.classList.add('show');
@@ -1392,7 +1422,7 @@
     if (!galleryFetchInflight || galleryFetchInflight.carid !== carid) {
       galleryFetchInflight = {
         carid,
-        promise: fetch(`/api/wanted/${encodeURIComponent(carid)}/gallery-images`)
+        promise: fetch(imagesUrl)
           .then(async (r) => {
             if (!r.ok) throw new Error((await r.json()).error || r.statusText);
             return r.json();
@@ -2259,6 +2289,13 @@
       const badge = m.has_video
         ? ''
         : '<div class="local-badge warn" data-code="' + esc(m.carid) + '" title="此目录下未找到视频文件">无视频</div>';
+      // sample 数量角标：与 wanted 卡片 .sample-badge 一致；服务端
+      // library routes 的 _batch_count_samples（folder→count 轻量缓存）提供
+      // sample_count 字段；命中缓存，未命中并发 glob 一次。
+      const sampleCount = m.sample_count | 0;
+      const sampleBadge = sampleCount > 0
+        ? `<div class="sample-badge" title="本地 sample 圖片數量">${esc(sampleCount)} 張樣品</div>`
+        : '';
       const visibleActors = (m.actors || []).slice(0, 2);
       const actorsHtml = visibleActors.length
         ? visibleActors.map(a =>
@@ -2277,6 +2314,7 @@
           <img class="cover" src="${esc(localCoverUrl(m.folder))}" alt="" loading="lazy"
                referrerpolicy="no-referrer" onerror="this.classList.add('broken')">
           ${badge}
+          ${sampleBadge}
           <div class="body">
             <div class="code">${esc(m.carid)}</div>
             <div class="name">${esc(m.title || '(无标题)')}</div>
@@ -2312,6 +2350,32 @@
       $('pg-next')?.addEventListener('click', () => { if (page < pages) { page++; load(); } });
     }
 
+    // 渲染顶部 stats。分段结构：路径独立 span + title 属性，让窄屏 CSS 可以
+    // 单独对路径段做截断/换行而不影响 "共 X 部" / "上次扫描" 段。
+    // textContent 一锅端 → 1280px 屏幕上长 UNC 路径会溢出 toolbar。
+    function renderLibStatusHtml(data) {
+      const segs = [];
+      segs.push(`共 <b>${data.movies_count}</b> 部`);
+      if (data.root) {
+        segs.push(
+          `<span class="ls-label">根</span>` +
+          `<span class="ls-path" title="${esc(data.root)}">${esc(data.root)}</span>`
+        );
+      }
+      if (data.scanned_at) {
+        segs.push(`上次扫描 ${data.scanned_at.replace('T', ' ').slice(0, 16)}`);
+      }
+      return segs.join('<span class="ls-sep">·</span>');
+    }
+    // 扫描中/扫描失败用独立分段：路径 + 当前目录都单独 span，方便窄屏换行。
+    function renderLibScanningHtml(data) {
+      const cur = data.current_folder ? data.current_folder.split(/[\\/]/).pop() : '';
+      return [
+        `正在扫描 <b>${data.scanned}</b>/${data.total_estimate}`,
+        `<span class="ls-path" title="${esc(data.current_folder || '')}">${esc(cur || '…')}</span>`,
+      ].join('<span class="ls-sep">·</span>');
+    }
+
     async function loadStatus() {
       try {
         const res = await fetch('/api/library/status');
@@ -2323,10 +2387,8 @@
           $('lib-status').textContent = '未配置';
           return;
         }
-        let text = `共 ${data.movies_count} 部 · 根 ${data.root}`;
-        if (data.scanned_at) text += ` · 上次扫描 ${data.scanned_at.replace('T', ' ').slice(0, 16)}`;
         if (data.is_running) {
-          text = `正在扫描 ${data.scanned}/${data.total_estimate}（${data.current_folder.split(/[\\\\/]/).pop()}）…`;
+          $('lib-status').innerHTML = renderLibScanningHtml(data);
           $('btn-lib-rescan').disabled = true;
         } else {
           $('btn-lib-rescan').disabled = false;
@@ -2335,8 +2397,10 @@
             $('banner').className = 'banner error';
             $('banner').textContent = `扫描失败：${data.error}`;
           }
+          // 分段渲染：路径单独 span + title，窄屏 CSS 可单独截断/换行；
+          // textContent 一锅端会让长 UNC 路径在 1280px 屏幕溢出 toolbar。
+          $('lib-status').innerHTML = renderLibStatusHtml(data);
         }
-        $('lib-status').textContent = text;
       } catch (e) {
         $('lib-status').textContent = '状态获取失败';
       }
@@ -2441,13 +2505,19 @@
         }
         return;
       }
-      // 2) 封面 → 灯箱
+      // 2) 封面 → 灯箱（与 wanted 一致：cover + 全部样品多图浏览）
       const cover = e.target.closest('.cover');
       if (cover && cover.src && !cover.classList.contains('broken')) {
         e.stopPropagation();
         e.preventDefault();
         const card = cover.closest('.card');
-        showLightbox(cover.src, card?.dataset.code || '');
+        const code = card?.dataset.code || '';
+        const title = card?.dataset.title || card?.querySelector('.name')?.textContent || '';
+        // 乐观打开：把卡片上的 cover URL 直接当首图（浏览器大概率已缓存）
+        openGalleryLb(code, title, {
+          coverHint: cover.src,
+          imagesUrl: `/api/library/${encodeURIComponent(code)}/gallery-images`,
+        });
       }
       // 3) 演员标签 → 按演员筛选
       const actorTag = e.target.closest('.actor-tag');

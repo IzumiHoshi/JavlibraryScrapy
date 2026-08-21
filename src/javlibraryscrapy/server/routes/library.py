@@ -1,9 +1,12 @@
 """本地库 API：
 
-GET  /api/library              —— 列表（分页/搜索/排序）
-GET  /api/library/status       —— 扫描状态
-GET  /api/library/warnings     —— 重复车牌 / 无 NFO 汇总
-GET  /api/library/{carid}      —— 单部详情
+GET  /api/library                              —— 列表（分页/搜索/排序）
+GET  /api/library/status                       —— 扫描状态
+GET  /api/library/warnings                     —— 重复车牌 / 无 NFO 汇总
+GET  /api/library/{carid}/gallery-images       —— 该车在 LIBRARY_ROOT 下的
+                                                    sample_*.jpg URL（与 wanted 对称）
+GET  /api/library/{carid}/image?type=cover|sample&idx=N —— 单张图片字节流
+GET  /api/library/{carid}                      —— 单部详情
 
 注册顺序：具体路径必须在 ``/api/library/{carid}`` 之前注册，否则 FastAPI
 会把 "status"/"warnings" 当成 ``carid`` 参数（与原服务 stdlib 路由的行为一致）。
@@ -11,11 +14,90 @@ GET  /api/library/{carid}      —— 单部详情
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+import re
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse
 
 from ..services.library import CARID_RE
+
+
+# 复用 wanted 的 sample 编号提取规则（必须保持一致，否则 sample_10.jpg 排在
+# sample_2.jpg 前面的 bug 会复现）。从 wanted.py 镜像一份：跨 routes 共享
+# 常量会让 wanted.py 变成 "public API"，代价大于复用收益。
+_SAMPLE_IDX_RE = re.compile(r"sample_(\d+)\.jpg")
+
+
+# ---- library 端 sample 数量轻量缓存 ------------------------------------- #
+# 与 wanted 的 ``SampleCountCache``（绑定 MOSTWANTED_LIBRARY_ROOT）不同：
+# library 端的 entry.folder 已经是绝对路径（UNC 或本地），不需要从某个 root
+# iterdir 找，所以这里用更直接的 ``folder_path -> (count, mtime)`` 缓存。
+#
+# 并发安全：RLock 守护；线程池并发 glob（跟 wanted 同样 8 workers）。
+# 失效：folder mtime 变化 → 重扫；folder 不存在 → 缓存为 0 不再问。
+_LIB_SAMPLE_CACHE: Dict[str, Tuple[int, float]] = {}
+_LIB_SAMPLE_LOCK = threading.RLock()
+_LIB_SAMPLE_EXECUTOR = ThreadPoolExecutor(
+    max_workers=8, thread_name_prefix="lib-sample-cache"
+)
+_LIB_SAMPLE_VALIDATE_TTL = 5.0  # 同 wanted 的 _VALIDATE_TTL 节流
+
+
+def _count_samples_in(folder_str: str) -> int:
+    """``folder_str -> sample_*.jpg 数量``，含 mtime 失效 + 缓存。"""
+    with _LIB_SAMPLE_LOCK:
+        cached = _LIB_SAMPLE_CACHE.get(folder_str)
+    if cached is not None:
+        count, cached_mtime = cached
+        # mtime 节流：5s 内不重复 stat
+        try:
+            cur_mtime = Path(folder_str).stat().st_mtime
+            if cur_mtime == cached_mtime:
+                return count
+        except OSError:
+            # folder 突然不可访问：返回旧值（不刷 0，避免误判）
+            return count
+    # 未命中 / mtime 变 → glob 一次
+    try:
+        folder = Path(folder_str)
+        if not folder.exists() or not folder.is_dir():
+            n = 0
+            mtime = 0.0
+        else:
+            n = sum(1 for _ in folder.glob("sample_*.jpg"))
+            try:
+                mtime = folder.stat().st_mtime
+            except OSError:
+                mtime = 0.0
+    except OSError:
+        return 0
+    with _LIB_SAMPLE_LOCK:
+        _LIB_SAMPLE_CACHE[folder_str] = (n, mtime)
+    return n
+
+
+def _batch_count_samples(folders: List[str]) -> Dict[str, int]:
+    """批量：未命中缓存的并发 glob（thread pool），命中直接返。"""
+    result: Dict[str, int] = {}
+    to_scan: List[str] = []
+    with _LIB_SAMPLE_LOCK:
+        for f in folders:
+            if f not in _LIB_SAMPLE_CACHE:
+                to_scan.append(f)
+    if to_scan:
+        # ThreadPoolExecutor.map 按入参顺序返回，但我们要的是 dict
+        scanned = list(_LIB_SAMPLE_EXECUTOR.map(_count_samples_in, to_scan))
+        # _count_samples_in 内部已经写入缓存，结果从缓存读
+    with _LIB_SAMPLE_LOCK:
+        for f in folders:
+            v = _LIB_SAMPLE_CACHE.get(f)
+            result[f] = v[0] if v else 0
+    return result
 
 
 def register(app: FastAPI) -> None:
@@ -118,6 +200,11 @@ def register(app: FastAPI) -> None:
         start = (page - 1) * size
         page_items = items[start : start + size]
 
+        # sample 数量：走本模块的轻量缓存（folder_path → count）。library 的
+        # entry.folder 是绝对路径（UNC / 本地）不需要从某个 root iterdir 找，
+        # 所以不共用 wanted 的 SampleCountCache（那个绑定 MOSTWANTED_ROOT）。
+        sample_counts = _batch_count_samples([e.folder for e in page_items])
+
         return {
             "configured": True,
             "root": str(state.library_root),
@@ -144,11 +231,103 @@ def register(app: FastAPI) -> None:
                     "video_count": e.video_count,
                     "total_size_bytes": e.total_size_bytes,
                     "modified": e.modified,
+                    "sample_count": sample_counts.get(e.folder, 0),
                 }
                 for e in page_items
             ],
         }
 
+    # ---- gallery-images / image 字节流（与 wanted 对称） ----
+    # wanted 那边用 ``_find_movie_folder`` iterdir NFS 找；library 这边有
+    # 内存索引 ``state.library_index.get(carid).folder``，直接查表即可，
+    # 既不扫盘也不缓存。folder 不存在（用户拔了 NFS）返回空集，不 500。
+    # 必须在 ``/api/library/{carid}`` 之前注册 —— FastAPI 按声明顺序匹配，
+    # 否则 ``{carid}`` 会吞掉 ``/gallery-images`` 后缀。
+
+    @app.get("/api/library/{carid}/gallery-images")
+    def gallery_images(carid: str, request: Request) -> Dict[str, Any]:
+        """列出该车在本地库下的 sample_*.jpg URL。cover 由前端用 localCoverUrl
+        单独传入（沿用现有 /api/local-cover 路径，避免此处返回相对路径还要
+        客户端再拼一遍）。
+
+        字段格式与 wanted 的 gallery-images 完全一致，前端 openGalleryLb 共用。
+        ``def`` 而非 ``async def``：glob 是 sync I/O，让 FastAPI 放到 thread pool。
+        """
+        carid_norm = carid.strip().upper()
+        if not CARID_RE.fullmatch(carid_norm):
+            raise HTTPException(status_code=400, detail="非法的车牌")
+        state = request.app.state.gallery
+        if state.library_root is None:
+            return {"cover": None, "samples": [], "folder_exists": False}
+        entry = state.library_index.get(carid_norm)
+        if entry is None:
+            return {"cover": None, "samples": [], "folder_exists": False}
+
+        folder = Path(entry.folder)
+        if not folder.exists():
+            return {"cover": None, "samples": [], "folder_exists": False}
+
+        sample_paths = sorted(
+            folder.glob("sample_*.jpg"),
+            # 按数字 idx 排序而非文件名（sample_10.jpg 不能排在 sample_2.jpg 前面）
+            key=lambda p: int(_SAMPLE_IDX_RE.match(p.name).group(1))
+            if _SAMPLE_IDX_RE.match(p.name)
+            else 0,
+        )
+        samples: List[str] = []
+        for p in sample_paths:
+            m = _SAMPLE_IDX_RE.match(p.name)
+            if not m:
+                continue
+            idx = int(m.group(1))
+            samples.append(
+                f"/api/library/{carid_norm}/image?type=sample&idx={idx}"
+            )
+
+        return {
+            "cover": None,  # 见 docstring：cover 由前端 localCoverUrl 提供
+            "samples": samples,
+            "folder_exists": True,
+            "folder_name": folder.name,
+        }
+
+    @app.get("/api/library/{carid}/image")
+    def serve_image(
+        carid: str,
+        request: Request,
+        type: str = Query(..., pattern="^(cover|sample)$"),
+        idx: int = Query(1, ge=1, le=999),
+    ):
+        """返回 cover.jpg 或 sample_NNN.jpg 字节流（与 wanted 对称）。"""
+        carid_norm = carid.strip().upper()
+        if not CARID_RE.fullmatch(carid_norm):
+            raise HTTPException(status_code=400, detail="非法的车牌")
+        state = request.app.state.gallery
+        if state.library_root is None:
+            raise HTTPException(status_code=503, detail="未配置 LIBRARY_ROOT")
+        entry = state.library_index.get(carid_norm)
+        if entry is None:
+            raise HTTPException(status_code=404, detail=f"未找到 {carid_norm} 的本地条目")
+        folder = Path(entry.folder)
+        if not folder.exists():
+            raise HTTPException(status_code=404, detail=f"文件夹不存在：{folder}")
+
+        if type == "cover":
+            target = folder / "cover.jpg"
+        else:  # sample
+            target = folder / f"sample_{idx:03d}.jpg"
+
+        if not target.exists():
+            raise HTTPException(status_code=404, detail=f"文件不存在：{target.name}")
+
+        return FileResponse(
+            target,
+            media_type="image/jpeg",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
+
+    # 必须在 ``/api/library/{carid}/gallery-images`` 和 ``/image`` 之后注册。
+    # path-param 路由会吞掉子路径后缀（FastAPI 按声明顺序 first-match wins）。
     @app.get("/api/library/{carid}")
     async def library_detail(carid: str, request: Request) -> Dict[str, Any]:
         state = request.app.state.gallery
