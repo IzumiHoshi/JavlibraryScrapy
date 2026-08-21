@@ -1418,9 +1418,14 @@
       galleryLbImg.alt = '封面';
     }
 
-    // 同一车牌的 inflight 请求复用（避免用户连点多次触发的 N 个并发 fetch）
-    if (!galleryFetchInflight || galleryFetchInflight.carid !== carid) {
+    // 同一 (carid, imagesUrl) 组合的 inflight 请求复用（避免用户连点触发 N 个并发 fetch）。
+    // 必须把 imagesUrl 也带进 key：同一车牌在 wanted 页和 library 页指向不同端点
+    // （/api/wanted/.../gallery-images vs /api/library/.../gallery-images），如果
+    // 只用 carid 缓存会拿到对方的响应。
+    const inflightKey = `${carid}::${imagesUrl}`;
+    if (!galleryFetchInflight || galleryFetchInflight.key !== inflightKey) {
       galleryFetchInflight = {
+        key: inflightKey,
         carid,
         promise: fetch(imagesUrl)
           .then(async (r) => {

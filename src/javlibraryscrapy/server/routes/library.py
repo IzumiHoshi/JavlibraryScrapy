@@ -81,12 +81,27 @@ def _find_image_url(folder: Path, kind: str, carid_norm: str) -> Optional[str]:
 # 所有读路径都走 ``_count_samples_in``（包括批量），让 TTL/mtime 校验生效。
 # ``_LIB_SAMPLE_VALIDATE_TTL = 5.0``：跟 wanted 的 ``_VALIDATE_TTL`` 一致，
 # 用户手动增删样本后最多 5s 内反映到 UI。
+#
+# 内存保护：``_LIB_SAMPLE_CACHE_MAX`` 之上清掉一半最旧条目（按 checked_at 升序）。
+# 1137 部 + TTL=5s 不会触发上限；防的是长时间运行 + 大量手动 rescan 后
+# folder 路径变化导致的死条目堆积（Sourcery 提的"无 eviction"问题）。
 _LIB_SAMPLE_CACHE: Dict[str, Tuple[int, float, float]] = {}
 _LIB_SAMPLE_LOCK = threading.RLock()
 _LIB_SAMPLE_EXECUTOR = ThreadPoolExecutor(
     max_workers=8, thread_name_prefix="lib-sample-cache"
 )
 _LIB_SAMPLE_VALIDATE_TTL = 5.0
+_LIB_SAMPLE_CACHE_MAX = 2048
+
+
+def _evict_old_lib_cache() -> None:
+    """缓存超过 ``_LIB_SAMPLE_CACHE_MAX`` 时清掉一半最旧（按 checked_at 升序）。"""
+    if len(_LIB_SAMPLE_CACHE) <= _LIB_SAMPLE_CACHE_MAX:
+        return
+    sorted_items = sorted(_LIB_SAMPLE_CACHE.items(), key=lambda kv: kv[1][2])
+    drop_count = len(_LIB_SAMPLE_CACHE) // 2
+    for k, _ in sorted_items[:drop_count]:
+        _LIB_SAMPLE_CACHE.pop(k, None)
 
 
 def _count_samples_in(folder_str: str) -> int:
@@ -114,11 +129,13 @@ def _count_samples_in(folder_str: str) -> int:
             # folder 不可访问：显式缓存为 0，下次 TTL 之内直接返 0
             with _LIB_SAMPLE_LOCK:
                 _LIB_SAMPLE_CACHE[folder_str] = (0, 0.0, now)
+                _evict_old_lib_cache()
             return 0
         if cur_mtime == cached_mtime:
             # mtime 没变 → 刷 checked_at，跳过 glob
             with _LIB_SAMPLE_LOCK:
                 _LIB_SAMPLE_CACHE[folder_str] = (count, cached_mtime, now)
+                _evict_old_lib_cache()
             return count
         # mtime 变 → glob 重数（落到下方"未命中"分支）
 
@@ -128,6 +145,7 @@ def _count_samples_in(folder_str: str) -> int:
         if not folder.exists() or not folder.is_dir():
             with _LIB_SAMPLE_LOCK:
                 _LIB_SAMPLE_CACHE[folder_str] = (0, 0.0, now)
+                _evict_old_lib_cache()
             return 0
         n = sum(1 for _ in folder.glob("sample_*.jpg"))
         try:
@@ -138,10 +156,12 @@ def _count_samples_in(folder_str: str) -> int:
     except OSError:
         with _LIB_SAMPLE_LOCK:
             _LIB_SAMPLE_CACHE[folder_str] = (0, 0.0, now)
+            _evict_old_lib_cache()
         return 0
 
     with _LIB_SAMPLE_LOCK:
         _LIB_SAMPLE_CACHE[folder_str] = (n, mtime, now)
+        _evict_old_lib_cache()
     return n
 
 
@@ -388,6 +408,10 @@ def register(app: FastAPI) -> None:
 
         if type == "sample":
             target = folder / f"sample_{idx:03d}.jpg"
+            if not target.exists():
+                raise HTTPException(
+                    status_code=404, detail=f"文件不存在：sample_{idx:03d}.jpg"
+                )
         else:
             # cover / poster / fanart：按 .jpg → .png → .jpeg 顺序找第一个存在
             for ext in _IMG_EXTS:
@@ -406,7 +430,9 @@ def register(app: FastAPI) -> None:
         return FileResponse(
             target,
             media_type=media_type,
-            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+            # 1 天：cover.jpg 经常会被重新抓图替换；immutable 太长会让用户
+            # 看不到新图（CDN/浏览器强缓存命中后不会重新请求）。
+            headers={"Cache-Control": "public, max-age=86400"},
         )
 
     # 必须在 ``/api/library/{carid}/gallery-images`` 和 ``/image`` 之后注册。
