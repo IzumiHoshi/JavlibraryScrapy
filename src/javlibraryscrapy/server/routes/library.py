@@ -69,68 +69,96 @@ def _find_image_url(folder: Path, kind: str, carid_norm: str) -> Optional[str]:
 # ---- library 端 sample 数量轻量缓存 ------------------------------------- #
 # 与 wanted 的 ``SampleCountCache``（绑定 MOSTWANTED_LIBRARY_ROOT）不同：
 # library 端的 entry.folder 已经是绝对路径（UNC 或本地），不需要从某个 root
-# iterdir 找，所以这里用更直接的 ``folder_path -> (count, mtime)`` 缓存。
+# iterdir 找，所以这里用更直接的 ``folder_path -> (count, mtime, checked_at)`` 缓存。
 #
 # 并发安全：RLock 守护；线程池并发 glob（跟 wanted 同样 8 workers）。
-# 失效：folder mtime 变化 → 重扫；folder 不存在 → 缓存为 0 不再问。
-_LIB_SAMPLE_CACHE: Dict[str, Tuple[int, float]] = {}
+# 失效：
+#   - 距上次 stat < TTL 秒 → 直接返缓存 count（避免每次请求都 stat NFS）
+#   - 距上次 stat >= TTL 秒 → 重新 stat，比对 mtime；变化则 glob 重数
+#   - folder 不存在 / stat 失败 → 写 ``(0, 0.0, now)`` 缓存，下次直接返 0
+#     （Sourcery review 修正：之前 OSError 时静默返回旧值，会让"用户拔了 NFS"
+#     这种真实失效状态永远 stale）
+# 所有读路径都走 ``_count_samples_in``（包括批量），让 TTL/mtime 校验生效。
+# ``_LIB_SAMPLE_VALIDATE_TTL = 5.0``：跟 wanted 的 ``_VALIDATE_TTL`` 一致，
+# 用户手动增删样本后最多 5s 内反映到 UI。
+_LIB_SAMPLE_CACHE: Dict[str, Tuple[int, float, float]] = {}
 _LIB_SAMPLE_LOCK = threading.RLock()
 _LIB_SAMPLE_EXECUTOR = ThreadPoolExecutor(
     max_workers=8, thread_name_prefix="lib-sample-cache"
 )
-_LIB_SAMPLE_VALIDATE_TTL = 5.0  # 同 wanted 的 _VALIDATE_TTL 节流
+_LIB_SAMPLE_VALIDATE_TTL = 5.0
 
 
 def _count_samples_in(folder_str: str) -> int:
-    """``folder_str -> sample_*.jpg 数量``，含 mtime 失效 + 缓存。"""
+    """``folder_str -> sample_*.jpg 数量``，TTL 节流 + mtime 校验 + 缓存。
+
+    行为：
+      - 缓存未命中 → glob 一次，写 ``(count, mtime, now)``
+      - 缓存命中且 ``now - checked_at < TTL`` → 直接返 count（**不 stat**）
+      - 缓存命中但已过 TTL → stat folder：
+          - 失败（folder 没了 / 共享断） → 写 ``(0, 0.0, now)`` 返 0
+          - mtime 与缓存一致 → 刷 ``checked_at`` 返 count
+          - mtime 变化 → glob 重数 + 写缓存
+    """
+    now = time.monotonic()
     with _LIB_SAMPLE_LOCK:
         cached = _LIB_SAMPLE_CACHE.get(folder_str)
     if cached is not None:
-        count, cached_mtime = cached
-        # mtime 节流：5s 内不重复 stat
+        count, cached_mtime, checked_at = cached
+        if now - checked_at < _LIB_SAMPLE_VALIDATE_TTL:
+            return count
+        # TTL 到期 → 重新 stat 校验 mtime
         try:
             cur_mtime = Path(folder_str).stat().st_mtime
-            if cur_mtime == cached_mtime:
-                return count
         except OSError:
-            # folder 突然不可访问：返回旧值（不刷 0，避免误判）
+            # folder 不可访问：显式缓存为 0，下次 TTL 之内直接返 0
+            with _LIB_SAMPLE_LOCK:
+                _LIB_SAMPLE_CACHE[folder_str] = (0, 0.0, now)
+            return 0
+        if cur_mtime == cached_mtime:
+            # mtime 没变 → 刷 checked_at，跳过 glob
+            with _LIB_SAMPLE_LOCK:
+                _LIB_SAMPLE_CACHE[folder_str] = (count, cached_mtime, now)
             return count
-    # 未命中 / mtime 变 → glob 一次
+        # mtime 变 → glob 重数（落到下方"未命中"分支）
+
+    # 缓存未命中 / TTL 到期且 mtime 变 → 实际数一次
     try:
         folder = Path(folder_str)
         if not folder.exists() or not folder.is_dir():
-            n = 0
+            with _LIB_SAMPLE_LOCK:
+                _LIB_SAMPLE_CACHE[folder_str] = (0, 0.0, now)
+            return 0
+        n = sum(1 for _ in folder.glob("sample_*.jpg"))
+        try:
+            mtime = folder.stat().st_mtime
+        except OSError:
+            # 数完后 mtime 拿不到（极端时序）：用 0.0，下次一定 glob
             mtime = 0.0
-        else:
-            n = sum(1 for _ in folder.glob("sample_*.jpg"))
-            try:
-                mtime = folder.stat().st_mtime
-            except OSError:
-                mtime = 0.0
     except OSError:
+        with _LIB_SAMPLE_LOCK:
+            _LIB_SAMPLE_CACHE[folder_str] = (0, 0.0, now)
         return 0
+
     with _LIB_SAMPLE_LOCK:
-        _LIB_SAMPLE_CACHE[folder_str] = (n, mtime)
+        _LIB_SAMPLE_CACHE[folder_str] = (n, mtime, now)
     return n
 
 
 def _batch_count_samples(folders: List[str]) -> Dict[str, int]:
-    """批量：未命中缓存的并发 glob（thread pool），命中直接返。"""
-    result: Dict[str, int] = {}
-    to_scan: List[str] = []
-    with _LIB_SAMPLE_LOCK:
-        for f in folders:
-            if f not in _LIB_SAMPLE_CACHE:
-                to_scan.append(f)
-    if to_scan:
-        # ThreadPoolExecutor.map 按入参顺序返回，但我们要的是 dict
-        scanned = list(_LIB_SAMPLE_EXECUTOR.map(_count_samples_in, to_scan))
-        # _count_samples_in 内部已经写入缓存，结果从缓存读
-    with _LIB_SAMPLE_LOCK:
-        for f in folders:
-            v = _LIB_SAMPLE_CACHE.get(f)
-            result[f] = v[0] if v else 0
-    return result
+    """批量：全部走 ``_count_samples_in``（让 TTL 节流 + mtime 校验生效），
+    并发跑（thread pool）。
+
+    旧实现"只对未命中并发，命中直接返"会让缓存条目永远不被 revalidate
+    —— 一旦 cached 命中就锁死值，folder 内容变化也不更新（Sourcery bug_risk）。
+    所有读路径统一走 ``_count_samples_in``，命中且未过 TTL 时它直接返缓存，
+    开销 < 1µs；过 TTL 才 stat/glob。
+    """
+    if not folders:
+        return {}
+    # ThreadPoolExecutor.map 保持入参顺序 → dict key 对得上调用方传的 folders
+    counts = list(_LIB_SAMPLE_EXECUTOR.map(_count_samples_in, folders))
+    return dict(zip(folders, counts))
 
 
 def register(app: FastAPI) -> None:
