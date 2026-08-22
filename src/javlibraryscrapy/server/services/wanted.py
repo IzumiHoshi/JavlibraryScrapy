@@ -331,6 +331,7 @@ class WantedService:
                     "title": (title or "").strip(),
                     "cover_url": (cover_url or "").strip(),
                     "release_date": "",
+                    "magnet": "",
                     "_status": "pending",
                     "_bucket": "unknown",
                     "_seen_at": datetime.now().isoformat(timespec="seconds"),
@@ -346,6 +347,7 @@ class WantedService:
                 existing["producer"] = (info.get("producer") or "").strip()
                 existing["publisher"] = (info.get("publisher") or "").strip()
                 existing["category"] = (info.get("category") or "").strip()
+                existing["magnet"] = (info.get("magnet") or "").strip()
                 # title 优先用 JavBus 返回的（通常更准），回退到 caller 传值
                 info_title = (info.get("title") or "").strip()
                 if info_title:

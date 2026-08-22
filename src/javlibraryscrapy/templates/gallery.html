@@ -1779,6 +1779,7 @@
             ${m.release_date ? `<div class="meta-line"><span class="icon">📅 ${esc(m.release_date)}</span></div>` : ''}
             ${m.actors ? `<div class="meta-line"><span class="icon">👤 ${esc(m.actors.split(' / ').slice(0, 3).join(' · '))}</span></div>` : ''}
             ${m.javbus_url ? `<div class="card-links"><a href="${esc(m.javbus_url)}" target="_blank" rel="noreferrer">JavBus ↗</a></div>` : ''}
+            ${m.magnet ? `<div class="card-magnet"><span class="icon" title="磁力已抓取（wanted refresh 时一并保存，无需再点抓磁力）">🧲</span><button class="r-copy" data-magnet="${esc(m.magnet)}" title="复制磁力链接">复制</button></div>` : ''}
           </div>
         </div>`;
     }
@@ -2083,6 +2084,14 @@
     $('grid').addEventListener('click', (e) => {
       if (e.target.closest('a')) return;
       if (e.target.closest('.local-badge')) return;  // badge 自己处理
+      // 点击卡片里的「复制」按钮 → 复制磁力链接，不触发卡片选中
+      const copyBtn = e.target.closest('.r-copy');
+      if (copyBtn) {
+        e.stopPropagation();
+        e.preventDefault();
+        copyText(copyBtn.dataset.magnet, '已复制磁力链接');
+        return;
+      }
       // 点击单部 JavBus 重抓按钮 → 调 /api/wanted/{code}/javbus，成功后刷新当前页
       const refetchBtn = e.target.closest('.refetch-btn');
       if (refetchBtn) {

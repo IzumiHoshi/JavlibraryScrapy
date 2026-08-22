@@ -190,6 +190,7 @@ class WantedMovieSummary(_CompatModel):
     producer: str = ""
     publisher: str = ""
     category: str = ""
+    magnet: str = Field(default="", description="JavBus 抓取时一并持久化的磁力链接；空串 = 未抓到或未抓过")
     bucket: str = Field(default="unknown", alias="_bucket")
     status: str = Field(default="pending", alias="_status")
     seen_at: str = Field(default="", alias="_seen_at")

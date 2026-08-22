@@ -172,6 +172,7 @@ def merge_wanted(
                 "title": (r.get("title") or "").strip(),
                 "cover_url": (r.get("cover_url") or "").strip(),
                 "release_date": "",           # 等待 JavBus 抓
+                "magnet": "",                 # 等待 JavBus 抓（与 release_date 同一调用；后续 scrape 不必再跑 JavBus）
                 "_status": "pending",         # pending → ready / failed
                 "_bucket": "unknown",
                 "_seen_at": datetime.now().isoformat(timespec="seconds"),
@@ -513,9 +514,10 @@ def refresh_wanted(
                                 entry["producer"] = (info.get("producer") or "").strip()
                                 entry["publisher"] = (info.get("publisher") or "").strip()
                                 entry["category"] = (info.get("category") or "").strip()
+                                entry["magnet"] = (info.get("magnet") or "").strip()
                                 entry["_bucket"] = _bucket_for_release_date(entry["release_date"])
                                 entry["_status"] = "ready"
-                                log(f"    ✓ {code} → {entry['_bucket']}（{entry['release_date'][:10]}）")
+                                log(f"    ✓ {code} → {entry['_bucket']}（{entry['release_date'][:10]}，magnet={'✓' if entry['magnet'] else '无'}）")
                                 # 本地库落地
                                 if mw_root:
                                     try:
