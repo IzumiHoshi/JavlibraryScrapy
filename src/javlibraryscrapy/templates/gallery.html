@@ -1040,6 +1040,7 @@
   </div>
   <div class="panel-foot">
     <button id="btn-copy-all">复制全部磁力</button>
+    <button id="btn-send-zspace" disabled title="极空间未配置">📥 发送到NAS</button>
     <button id="btn-retry" disabled>重试失败项</button>
     <div class="outputs" id="outputs"></div>
   </div>
@@ -2201,6 +2202,66 @@
       if (!links.length) return toast('暂无磁力链接');
       copyText(links.join('\n'), `已复制 ${links.length} 条磁力链接`);
     });
+
+    /* ---------- 极空间 NAS 集成 ----------
+     * 拉取 /api/zspace/status 决定按钮是否启用；点击后弹路径输入（默认 = status.default_download_path），
+     * POST lastItems 里的 magnet 到 /api/zspace/submit，结果以 toast + 控制台 warn 给出。 */
+    let zspaceStatus = null;
+    async function loadZspaceStatus() {
+      try {
+        const res = await fetch('/api/zspace/status');
+        if (!res.ok) throw new Error(res.statusText);
+        zspaceStatus = await res.json();
+      } catch {
+        zspaceStatus = { configured: false };
+      }
+      const btn = $('btn-send-zspace');
+      btn.disabled = !zspaceStatus.configured;
+      btn.title = zspaceStatus.configured
+        ? `发送到极空间 ${zspaceStatus.host || ''}（默认 ${zspaceStatus.default_download_path}）`
+        : '极空间未配置（.env 需 ZSPACE_ENABLED + ZSPACE_HOST/USER/PASSWORD）';
+    }
+    async function sendToZspace() {
+      const items = lastItems
+        .filter((it) => it.magnet)
+        .map((it) => ({ code: it.code, magnet: it.magnet }));
+      if (!items.length) return toast('暂无磁力链接可发送');
+      if (!zspaceStatus || !zspaceStatus.configured) return toast('极空间未配置');
+      // prompt 在桌面 + 移动浏览器都可用，路径对话框比自定义 overlay 更稳。
+      const path = window.prompt(
+        `极空间下载目录（/pool/my/data/.../）`,
+        zspaceStatus.default_download_path || ''
+      );
+      if (path === null) return;  // 用户取消
+      const download_path = path.trim();
+      if (!download_path) return toast('下载目录不能为空');
+
+      const btn = $('btn-send-zspace');
+      btn.disabled = true;
+      btn.textContent = '📥 发送中…';
+      try {
+        const res = await fetch('/api/zspace/submit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items, download_path }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || data.error || res.statusText);
+        const failed = (data.results || []).filter((r) => !r.ok);
+        if (failed.length) {
+          console.warn('zspace 部分提交失败：', failed);
+          toast(`已提交 ${data.total} 条，成功 ${data.ok_count}，失败 ${failed.length}（详情见 console）`, true);
+        } else {
+          toast(`已提交 ${data.total} 条磁力到 ${data.download_path}`);
+        }
+      } catch (e) {
+        toast('发送失败：' + e.message, true);
+      } finally {
+        btn.textContent = '📥 发送到NAS';
+        btn.disabled = !zspaceStatus || !zspaceStatus.configured;
+      }
+    }
+    $('btn-send-zspace').addEventListener('click', sendToZspace);
     $('btn-refresh').addEventListener('click', startRefresh);
     $('results').addEventListener('click', (e) => {
       const btn = e.target.closest('.r-copy');
@@ -2212,6 +2273,8 @@
     /* ---------- 启动 ---------- */
     loadSelection();
     await load();
+    // 拉极空间配置状态（决定「📥 发送到NAS」按钮是否启用）
+    await loadZspaceStatus();
     // 启动时轮询一次刷新状态（如果后台正在跑）
     try {
       const r = await fetch('/api/wanted/refresh-status');

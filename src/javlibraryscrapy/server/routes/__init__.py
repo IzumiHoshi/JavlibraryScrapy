@@ -17,6 +17,7 @@ from . import (
     rescan as _rescan,
     scrape as _scrape,
     wanted as _wanted,
+    zspace as _zspace,
 )
 
 
@@ -37,3 +38,4 @@ def register_routes(app: FastAPI) -> None:
     _library.register(app)       # 再注册 {carid} path-param
     _wanted.register(app)        # 精确路径 + {carid} 都在同一个文件里
     _folder.register(app)
+    _zspace.register(app)        # /api/zspace/* — 极空间 NAS 集成
