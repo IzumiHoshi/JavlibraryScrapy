@@ -124,13 +124,22 @@ def register(app: FastAPI) -> None:
     async def update_config(body: ConfigBody, request: Request) -> Dict[str, Any]:
         """更新配置并落盘。返回更新后的配置（密码遮蔽）。
 
-        空 password 字段视为"保持原值"（避免 UI 提交时把已存密码意外清掉）。
+        空 password 字段视为"保持原值"（避免 UI 提交时把已存密码意外清掉）；
+        落盘失败时返回 500 + 可读 detail（不再静默 log 后假装成功）。
         """
         store = _get_store(request)
         # Pydantic 把没传的字段填 None，这里 only-include-非None 让 patch dict 干净
         patch = {k: v for k, v in body.model_dump(exclude_none=False).items() if v is not None}
         # 但 password 的 None/空 处理逻辑在 store.update 里（empty = keep）
-        cfg = store.update(patch)
+        try:
+            cfg = store.update(patch)
+        except OSError as e:
+            # 落盘失败 —— 不能让前端以为配置保存成功了（Sourcery #1）
+            logger.exception("zspace 配置落盘失败")
+            raise HTTPException(
+                status_code=500,
+                detail=f"无法写入配置文件：{e}",
+            )
         # 改完配置让 client 下次调用时重建（_ensure_client 会自动检测）
         return cfg.to_dict(mask_password=True)
 

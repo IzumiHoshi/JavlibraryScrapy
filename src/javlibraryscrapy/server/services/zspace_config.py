@@ -49,7 +49,7 @@ class ZSpaceConfig:
     download_path: str = "/sata14/my/data/zvideo/JAV"
 
     def is_configured(self) -> bool:
-        """启用 + 4 个必填字段都非空才算"配置完成"（routes/zspace 503 守门用）。"""
+        """启用 + 3 个必填字段都非空才算"配置完成"（device_id 可选；routes/zspace 503 守门用）。"""
         return bool(
             self.enabled
             and self.host
@@ -109,16 +109,19 @@ class ZSpaceConfigStore:
         """部分更新（POST /api/zspace/config 用）。空字符串视同 None。
 
         - 空 password 视为"保持原值"，避免误清空
+        - password 取遮蔽值 ``"********"``（GET 返回的占位符）也视同"保持原值"，
+          防止 API 客户端读到遮蔽值后 POST 回来把密码覆盖成 8 个星号
         - 其它空字符串视同 None
         """
+        _MASK = "********"
         with self._lock:
             cur = asdict(self._config)
             for k, v in patch.items():
                 if k not in cur:
                     continue
                 if k == "password":
-                    # 空 password = 不修改；非空 = 更新（"*****" 也是有效替换）
-                    if isinstance(v, str) and v == "":
+                    # 空 password 或遮蔽值 = 不修改
+                    if isinstance(v, str) and v in ("", _MASK):
                         continue
                     cur[k] = v
                 elif isinstance(v, str) and v.strip() == "":
@@ -154,16 +157,23 @@ class ZSpaceConfigStore:
     def _save_locked(self) -> None:
         """写入磁盘。必须在 self._lock 持有时调用。
 
-        原子写：先写 .tmp 再 rename，避免写到一半进程被杀导致 JSON 损坏。
+        原子写：先写 .tmp 再 rename。失败时清理半成品 .tmp 并传播 OSError，
+        让路由层能把"未持久化"的事实反映给用户（之前是静默 log + 返回成功，
+        配置只活在内存里，重启就丢 —— Sourcery review flag）。
         """
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self._path.with_suffix(self._path.suffix + ".tmp")
         try:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self._path.with_suffix(self._path.suffix + ".tmp")
             tmp.write_text(
                 json.dumps(self._config.to_dict(mask_password=False),
                            ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
             os.replace(tmp, self._path)
-        except OSError as e:
-            logger.error(f"写 {self._path} 失败：{e}")
+        except OSError:
+            # 清理半成品 tmp（避免下次再写时撞到旧文件；同时不污染 output/）
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            raise
