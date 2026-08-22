@@ -241,4 +241,6 @@ def register(app: FastAPI) -> None:
         try:
             return await client.list_downloads()
         except ZSpaceError as e:
+            # ZSpaceClient 已把 httpx 网络错误 / 解析错误 / 登录错误统一包装成 ZSpaceError，
+            # 这里再统一映射成 502 让前端拿到 NAS 失败详情。
             raise HTTPException(status_code=502, detail=str(e))

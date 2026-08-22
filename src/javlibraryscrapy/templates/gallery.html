@@ -2017,6 +2017,8 @@
       const running = job.status === 'running';
       $('btn-scrape').disabled = running || selected.size === 0;
       $('btn-scrape').textContent = running ? '抓取中…' : '抓取选中的磁力';
+      // Scrape 进行中禁用「📥 发送到NAS」：避免把上一次 job 的 lastItems 误当作新结果提交
+      $('btn-send-zspace').disabled = running || !zspaceStatus || !zspaceStatus.configured;
       return running;
     }
 
@@ -2370,7 +2372,14 @@
         const failed = (data.results || []).filter((r) => !r.ok);
         if (failed.length) {
           console.warn('zspace 部分提交失败：', failed);
-          toast(`已提交 ${data.total} 条，成功 ${data.ok_count}，失败 ${failed.length}（详情见 console）`, true);
+          // 把 NAS 业务码 + msg 直接显示在 toast（最多 3 条避免截屏塞爆），用户不用开 console 也能定位字段名问题
+          const sample = failed.slice(0, 3).map((r) => {
+            const code = r.status_code ? ` [${r.status_code}]` : '';
+            const msg = r.msg ? `: ${r.msg}` : (r.error ? `: ${r.error}` : '');
+            return `${r.code}${code}${msg}`;
+          }).join('；');
+          const more = failed.length > 3 ? `；…还有 ${failed.length - 3} 条` : '';
+          toast(`提交 ${data.total} 条，成功 ${data.ok_count}，失败 ${failed.length}：${sample}${more}`, true);
         } else {
           toast(`已提交 ${data.total} 条磁力到 ${data.download_path}`);
         }

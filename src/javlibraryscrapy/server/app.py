@@ -80,7 +80,8 @@ async def _lifespan(app: FastAPI, state: GalleryState):
     - 启动：创建 ``lib_sample_executor``（8 workers）放到 ``app.state``，
       供 library routes 的 ``_batch_count_samples`` 并发 glob NFS 用。
       不放在模块级是为了测试 / 多 app 实例场景下能干净 shutdown。
-    - 停止：``shutdown(wait=True)`` 等所有 in-flight glob 跑完再退。
+    - 停止：``shutdown(wait=True)`` 等所有 in-flight glob 跑完再退；
+      关掉 zspace 的 httpx 客户端（如果被用过的话）让连接池释放。
     """
     from concurrent.futures import ThreadPoolExecutor
     app.state.lib_sample_executor = ThreadPoolExecutor(
@@ -91,6 +92,13 @@ async def _lifespan(app: FastAPI, state: GalleryState):
     finally:
         # wait=True：让正在跑 NFS glob 的线程跑完，避免半截结果 + 资源泄漏
         app.state.lib_sample_executor.shutdown(wait=True)
+        # zspace httpx 客户端（懒加载，可能从未创建）：有就 aclose，没就跳过
+        zspace = getattr(app.state, "zspace", None)
+        if zspace is not None:
+            try:
+                await zspace.aclose()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def create_app(

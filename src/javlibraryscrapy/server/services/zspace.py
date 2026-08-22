@@ -23,6 +23,8 @@ import logging
 import os
 from typing import Any, Callable, Dict, Optional
 
+import httpx
+
 from .zspace_config import ZSpaceConfig
 
 logger = logging.getLogger("gallery.zspace")
@@ -117,6 +119,10 @@ class ZSpaceClient:
         except RuntimeError as e:
             # 登录失败 / N001414（设备未验证）等。包装成 ZSpaceError 方便上层定位。
             raise ZSpaceError(str(e)) from e
+        except (httpx.HTTPError, ValueError) as e:
+            # 网络层失败（连接拒绝 / 超时 / 非 JSON 响应）也包装成 ZSpaceError，
+            # 让上层统一处理，不要让 httpx 异常逃出本类。
+            raise ZSpaceError(f"{type(e).__name__}: {e}") from e
 
     async def list_downloads(self) -> Dict[str, Any]:
         """列出当前 NAS 下载任务（POST ``/downloader/list`` body ``{}``）。"""
@@ -125,6 +131,8 @@ class ZSpaceClient:
             return await nas.post("/downloader/list", {})
         except RuntimeError as e:
             raise ZSpaceError(str(e)) from e
+        except (httpx.HTTPError, ValueError) as e:
+            raise ZSpaceError(f"{type(e).__name__}: {e}") from e
 
     async def aclose(self) -> None:
         """关闭 vendored httpx 客户端（lifespan 退出时调用）。"""
