@@ -34,7 +34,9 @@ class NasClient:
 
     async def _ensure_client(self):
         if self._client is None:
-            self._client = httpx.AsyncClient(timeout=15)
+            # vendored patch: 局域网 NAS 不走系统代理（trust_env=True 会读
+            # HTTP_PROXY/系统 IE 代理，撞到爬虫代理后 NAS 内网连接全失败）。
+            self._client = httpx.AsyncClient(timeout=15, trust_env=False)
 
     async def _maybe_relogin(self, response_data: dict) -> bool:
         """检测 N001208（token 失效），加锁串行重登，返回是否重登过。
