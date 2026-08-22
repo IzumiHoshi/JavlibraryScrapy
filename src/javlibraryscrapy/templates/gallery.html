@@ -126,6 +126,17 @@
   .spacer { flex: 1; }
   .count { color: var(--text-dim); font-size: 13px; font-variant-numeric: tabular-nums; }
   .count b { color: var(--accent); font-size: 15px; }
+  /* lib-status 分段：路径独立 span + title 提示；desktop 阶段 32em 上限避免溢出 toolbar */
+  #lib-status .ls-sep { margin: 0 4px; opacity: 0.4; }
+  #lib-status .ls-label { opacity: 0.65; margin-right: 2px; }
+  #lib-status .ls-path {
+    display: inline-block;
+    max-width: 32em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: bottom;
+    white-space: nowrap;
+  }
   .last-refresh { color: var(--text-faint); font-size: 12px; font-variant-numeric: tabular-nums; }
   .last-refresh.has-fresh { color: var(--ok); }
   .last-refresh.is-stale { color: var(--warn); }
@@ -563,10 +574,10 @@
   .pagination button { padding: 5px 10px; }
   .pagination .info { align-self: center; padding: 0 10px; }
 
-  /* ---------- 单部刷新按钮（/library 卡片左上角） ---------- */
+  /* ---------- 单部刷新按钮（/library 卡片右上角，与 wanted .refetch-btn 对称）---------- */
   .rescan-btn {
     position: absolute;
-    top: 6px; left: 6px;
+    top: 6px; right: 6px;
     width: 30px; height: 30px;
     padding: 0;
     background: rgba(0, 0, 0, 0.55);
@@ -579,7 +590,9 @@
     justify-content: center;
     font-size: 15px;
     line-height: 1;
-    z-index: 2;
+    /* z-index 3：盖在右上角的 .local-badge.warn（无视频）上。wanted 那边
+       同样位置是 .local-badge（"本地已有"绿徽章），由 .refetch-btn z-index:3 盖着。 */
+    z-index: 3;
     transition: background .15s, transform .12s;
   }
   .rescan-btn:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); transform: scale(1.05); }
@@ -592,26 +605,28 @@
     50% { opacity: .55; }
   }
 
-  /* ---------- 单部 JavBus 重抓按钮（/wanted 卡片右上角） ---------- */
+  /* ---------- 单部 JavBus 重抓按钮（/wanted 卡片右上角） ----------
+   * 与 .rescan-btn 同位置、同样式（圆形图标），保证两页面卡片右上角视觉一致。
+   * 状态文案通过 title tooltip 表达（hover 鼠标可见），按钮上只留图标。 */
   .refetch-btn {
     position: absolute;
     top: 6px; right: 6px;
-    height: 24px;
-    padding: 0 9px;
+    width: 30px; height: 30px;
+    padding: 0;
     background: rgba(0, 0, 0, 0.55);
     border: 1px solid var(--border);
-    border-radius: 12px;
+    border-radius: 50%;
     color: #fff;
     cursor: pointer;
     display: flex;
     align-items: center;
-    gap: 4px;
-    font-size: 11px;
+    justify-content: center;
+    font-size: 15px;
     line-height: 1;
-    z-index: 2;
+    z-index: 3;
     transition: background .15s, transform .12s;
   }
-  .refetch-btn:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); transform: scale(1.03); }
+  .refetch-btn:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); transform: scale(1.05); }
   .refetch-btn:disabled { cursor: not-allowed; opacity: .9; }
   .refetch-btn.running { background: var(--warn); border-color: var(--warn); animation: pulse 1.4s ease-in-out infinite; }
   .refetch-btn.done { background: var(--ok); border-color: var(--ok); }
@@ -811,7 +826,23 @@
       align-items: center;
       white-space: nowrap;
     }
-    #btn-scrape {
+    /* lib-status 是 lib-toolbar 唯一的 .count；长 UNC 路径在 1280px 屏幕会
+     溢出 toolbar。让整段允许换行 + 路径段允许字符级断行（断字符比断单词
+     更适合 "\\192.168.0.47\团队文件-..." 这类路径；分段里有完整 title
+     提示原始值）。 */
+  #lib-status {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    max-width: 100%;
+  }
+  #lib-status .ls-path {
+    display: inline;
+    max-width: none;
+    white-space: normal;
+    word-break: break-all;
+  }
+
+  #btn-scrape {
       order: 3;
       flex: 0 0 auto;
       margin-left: auto;
@@ -1375,6 +1406,9 @@
   async function openGalleryLb(carid, title, options) {
     options = options || {};
     const coverHint = options.coverHint || '';  // 卡片上已有的 cover URL（已可能被浏览器缓存）
+    // 不同页面的 gallery-images 端点路径不同（wanted → /api/wanted/...，
+    // library → /api/library/...）。让调用方传完整 URL，保持 helper 单一来源。
+    const imagesUrl = options.imagesUrl || `/api/wanted/${encodeURIComponent(carid)}/gallery-images`;
 
     galleryLbEl.hidden = false;
     galleryLbEl.classList.add('show');
@@ -1388,11 +1422,16 @@
       galleryLbImg.alt = '封面';
     }
 
-    // 同一车牌的 inflight 请求复用（避免用户连点多次触发的 N 个并发 fetch）
-    if (!galleryFetchInflight || galleryFetchInflight.carid !== carid) {
+    // 同一 (carid, imagesUrl) 组合的 inflight 请求复用（避免用户连点触发 N 个并发 fetch）。
+    // 必须把 imagesUrl 也带进 key：同一车牌在 wanted 页和 library 页指向不同端点
+    // （/api/wanted/.../gallery-images vs /api/library/.../gallery-images），如果
+    // 只用 carid 缓存会拿到对方的响应。
+    const inflightKey = `${carid}::${imagesUrl}`;
+    if (!galleryFetchInflight || galleryFetchInflight.key !== inflightKey) {
       galleryFetchInflight = {
+        key: inflightKey,
         carid,
-        promise: fetch(`/api/wanted/${encodeURIComponent(carid)}/gallery-images`)
+        promise: fetch(imagesUrl)
           .then(async (r) => {
             if (!r.ok) throw new Error((await r.json()).error || r.statusText);
             return r.json();
@@ -1403,19 +1442,26 @@
     try {
       const data = await galleryFetchInflight.promise;
       galleryFetchInflight = null;
+      // 拼装图片列表：cover → poster → fanart → sample_*.jpg。
+      // wanted 端 gallery-images 只有 cover + samples 两字段（旧版兼容），
+      // 新版 library 端还会带 poster/fanart。统一在 helper 内处理。
       const urls = [];
       if (data.cover) urls.push({ url: data.cover, label: '封面' });
+      if (data.poster) urls.push({ url: data.poster, label: '海报' });
+      if (data.fanart) urls.push({ url: data.fanart, label: 'Fanart' });
       (data.samples || []).forEach((u, i) => urls.push({ url: u, label: `樣品 ${i + 1}` }));
       if (!urls.length) {
         galleryLbTitle.textContent =
-          `${carid}${title ? ' · ' + title : ''} — 本地无 cover/樣品`;
-        galleryLbThumbs.innerHTML = '<div class="glb-empty">本地没有 cover.jpg / sample_*.jpg</div>';
+          `${carid}${title ? ' · ' + title : ''} — 本地无图`;
+        galleryLbThumbs.innerHTML = '<div class="glb-empty">本地没有图片</div>';
         galleryLbImg.removeAttribute('src');
         return;
       }
       galleryImages = urls;
+      // 标题里只展示实际存在的类型（samples 数算"样品"）。
+      const summary = urls.map((u) => u.label).join('、');
       galleryLbTitle.textContent =
-        `${carid}${title ? ' · ' + title : ''}（${urls.length} 张：封面 + ${urls.length - 1} 张樣品）`;
+        `${carid}${title ? ' · ' + title : ''}（${urls.length} 张：${summary}）`;
       // 缩略图懒加载；可见性由 CSS 决定（display:flex 容器内全部可见）
       galleryLbThumbs.innerHTML = urls.map((it, i) =>
         `<span class="glb-thumb" data-idx="${i}"><img src="${esc(it.url)}" loading="lazy" decoding="async" alt=""></span>`
@@ -1494,6 +1540,8 @@
     let movies = [];
     let months = [];
     let missingCount = 0;
+    let total = 0;       // 服务端返回的全集总数（受 month/q 过滤）
+    let pages = 1;       // ceil(total / size)，用于分页按钮 disabled 控制
     let selected = new Set();
     let pollTimer = null;
     let jobId = null;
@@ -1588,7 +1636,7 @@
       const title = noDate
         ? (m._status === 'failed' ? '上次 JavBus 抓取失败，点此重试' : '手动重抓 JavBus 详情（获取 release_date）')
         : '本地无样品图，点此重抓 JavBus（重下 cover + samples）';
-      return `<button class="refetch-btn" data-code="${esc(m.code)}" title="${esc(title)}">↻ JavBus</button>`;
+      return `<button class="refetch-btn" data-code="${esc(m.code)}" title="${esc(title)}">↻</button>`;
     }
 
     // 单卡片 HTML —— 提取出来供 render() 和 in-place 更新共用。
@@ -1624,16 +1672,16 @@
         return;
       }
       grid.innerHTML = movies.map(cardHtml).join('');
-      // 分页
+      // 分页：显示真实 total（受 month/q 过滤的全集总数），下一页在最后一页禁用
       grid.innerHTML += `
         <div class="pagination">
           <button id="pg-prev" ${page <= 1 ? 'disabled' : ''}>上一页</button>
-          <span class="info">第 ${page} 页 · 共 ${movies.length} 部</span>
-          <button id="pg-next">下一页</button>
+          <span class="info">第 ${page} / ${pages} 页 · 共 ${total} 部</span>
+          <button id="pg-next" ${page >= pages ? 'disabled' : ''}>下一页</button>
         </div>`;
-      $('total').textContent = movies.length;
+      $('total').textContent = total;
       $('pg-prev')?.addEventListener('click', () => { if (page > 1) { page--; load(); } });
-      $('pg-next')?.addEventListener('click', () => { page++; load(); });
+      $('pg-next')?.addEventListener('click', () => { if (page < pages) { page++; load(); } });
       refreshCount();
       applyLocalFilter();
     }
@@ -1724,6 +1772,8 @@
         movies = data.items || [];
         months = data.months || [];
         missingCount = data.missing_in_remote_count || 0;
+        total = data.total || 0;
+        pages = Math.max(1, Math.ceil(total / size));
         monthPicker.render();
         render();
       } catch (e) {
@@ -1942,7 +1992,7 @@
     // 不重渲整个网格 —— 灯箱打开时不会闪到背后卡片。
     // 服务器响应里 data.movie 是更新后的完整条目（成功或失败但已存在）。
     //   - 成功：release_date/bucket/_status 全部刷新；按钮变 "✓ 已抓取" 后消失（如果不再需要）
-    //   - 失败：仅 _status 变 failed；按钮短暂显示失败再回到 "↻ JavBus"
+    //   - 失败：仅 _status 变 failed；按钮短暂显示 ✗ 再回到 ↻
     //   - 异常（response 没 movie 字段）：fallback 到 load() 全表刷新
     //
     // 移动端坑：
@@ -1969,31 +2019,28 @@
       delete liveBtn.dataset.startedAt;
       if (status === 'failed') {
         liveBtn.classList.add('failed');
-        liveBtn.textContent = '✗ 失败';
+        liveBtn.textContent = '✗';
         setTimeout(() => {
           if (liveBtn.classList.contains('failed')) {
             liveBtn.classList.remove('failed');
-            liveBtn.textContent = '↻ JavBus';
+            liveBtn.textContent = '↻';
           }
         }, 3000);
       } else {
-        liveBtn.textContent = '↻ JavBus';
+        liveBtn.textContent = '↻';
       }
     }
 
-    // 启动一个 1s 定时器，把按钮文字更新成 "⏳ 抓取 Ns"，并在超时或完成后停止。
+    // 启动一个超时监控定时器：到 REFETCH_TIMEOUT_MS 主动 abort + 标记失败。
+    // 按钮只显示图标（↻），无文字 —— running 状态由 .refetch-btn.running 的
+    // pulse CSS 动画表达。title tooltip 由 refetchBtnHtml 根据状态更新。
     function startRefetchTick(btn, controller, startedAt) {
-      const code = btn.dataset.code || '';
       const tick = setInterval(() => {
         if (controller.signal.aborted) { clearInterval(tick); return; }
-        const elapsed = Math.floor((Date.now() - startedAt) / 1000);
-        btn.textContent = `⏳ 抓取 ${elapsed}s`;
-        // 超过阈值：主动 abort + 标记失败（防止浏览器静默杀掉后按钮永远卡住）
         if (Date.now() - startedAt > REFETCH_TIMEOUT_MS) {
           controller.abort(new Error('timeout'));
         }
       }, 1000);
-      // 让 cleanup 函数能停掉 tick
       controller.signal.addEventListener('abort', () => clearInterval(tick), { once: true });
     }
 
@@ -2006,7 +2053,8 @@
       btn.classList.add('running');
       const startedAt = Date.now();
       btn.dataset.startedAt = String(startedAt);
-      btn.textContent = '⏳ 抓取…';
+      // 保持 ↻ 图标（pulse 动画表达"抓取中"），不显示文字
+      btn.textContent = '↻';
 
       const controller = new AbortController();
       refetchControllers.set(code, controller);
@@ -2026,7 +2074,7 @@
           if (data.movie) {
             // 抓取成功 → 本地刚落了 cover + samples，
             // 必须重新读磁盘才能拿到最新的 local_samples 计数（data.movie 没有这个字段）。
-            // 不更新的话：卡片 sample-badge 不显示，"↻ JavBus"按钮也会残留
+            // 不更新的话：卡片 sample-badge 不显示，"↻"按钮也会残留
             // （refetchBtnHtml 判断 !noSamples 才隐藏按钮）。
             // gallery-images 走 NFS thread pool 读盘，单次 < 50ms，不阻塞 UI。
             try {
@@ -2072,7 +2120,7 @@
           // 用户主动切换页面（pagehide）触发的 abort，不算失败
           // 但要把按钮状态收尾，否则下次回来还是 "running"
           btn.classList.remove('running', 'done', 'failed');
-          btn.textContent = '↻ JavBus';
+          btn.textContent = '↻';
           btn.disabled = false;
           refetchControllers.delete(code);
         } else {
@@ -2259,6 +2307,14 @@
       const badge = m.has_video
         ? ''
         : '<div class="local-badge warn" data-code="' + esc(m.carid) + '" title="此目录下未找到视频文件">无视频</div>';
+      // 图片总数角标（cover/poster/fanart/sample_NNN.jpg）：与 wanted 卡片
+      // .sample-badge 一致但含义更广。服务端 library routes 的
+      // _batch_count_samples（folder→count 轻量缓存）提供 image_count 字段；
+      // 命中缓存，未命中并发 stat/glob 一次。
+      const imageCount = m.image_count | 0;
+      const sampleBadge = imageCount > 0
+        ? `<div class="sample-badge" title="本地資料夾中的圖片總數（封面+海報+Fanart+樣品）">${esc(imageCount)} 張圖</div>`
+        : '';
       const visibleActors = (m.actors || []).slice(0, 2);
       const actorsHtml = visibleActors.length
         ? visibleActors.map(a =>
@@ -2277,6 +2333,7 @@
           <img class="cover" src="${esc(localCoverUrl(m.folder))}" alt="" loading="lazy"
                referrerpolicy="no-referrer" onerror="this.classList.add('broken')">
           ${badge}
+          ${sampleBadge}
           <div class="body">
             <div class="code">${esc(m.carid)}</div>
             <div class="name">${esc(m.title || '(无标题)')}</div>
@@ -2312,6 +2369,32 @@
       $('pg-next')?.addEventListener('click', () => { if (page < pages) { page++; load(); } });
     }
 
+    // 渲染顶部 stats。分段结构：路径独立 span + title 属性，让窄屏 CSS 可以
+    // 单独对路径段做截断/换行而不影响 "共 X 部" / "上次扫描" 段。
+    // textContent 一锅端 → 1280px 屏幕上长 UNC 路径会溢出 toolbar。
+    function renderLibStatusHtml(data) {
+      const segs = [];
+      segs.push(`共 <b>${data.movies_count}</b> 部`);
+      if (data.root) {
+        segs.push(
+          `<span class="ls-label">根</span>` +
+          `<span class="ls-path" title="${esc(data.root)}">${esc(data.root)}</span>`
+        );
+      }
+      if (data.scanned_at) {
+        segs.push(`上次扫描 ${data.scanned_at.replace('T', ' ').slice(0, 16)}`);
+      }
+      return segs.join('<span class="ls-sep">·</span>');
+    }
+    // 扫描中/扫描失败用独立分段：路径 + 当前目录都单独 span，方便窄屏换行。
+    function renderLibScanningHtml(data) {
+      const cur = data.current_folder ? data.current_folder.split(/[\\/]/).pop() : '';
+      return [
+        `正在扫描 <b>${data.scanned}</b>/${data.total_estimate}`,
+        `<span class="ls-path" title="${esc(data.current_folder || '')}">${esc(cur || '…')}</span>`,
+      ].join('<span class="ls-sep">·</span>');
+    }
+
     async function loadStatus() {
       try {
         const res = await fetch('/api/library/status');
@@ -2323,10 +2406,8 @@
           $('lib-status').textContent = '未配置';
           return;
         }
-        let text = `共 ${data.movies_count} 部 · 根 ${data.root}`;
-        if (data.scanned_at) text += ` · 上次扫描 ${data.scanned_at.replace('T', ' ').slice(0, 16)}`;
         if (data.is_running) {
-          text = `正在扫描 ${data.scanned}/${data.total_estimate}（${data.current_folder.split(/[\\\\/]/).pop()}）…`;
+          $('lib-status').innerHTML = renderLibScanningHtml(data);
           $('btn-lib-rescan').disabled = true;
         } else {
           $('btn-lib-rescan').disabled = false;
@@ -2335,8 +2416,10 @@
             $('banner').className = 'banner error';
             $('banner').textContent = `扫描失败：${data.error}`;
           }
+          // 分段渲染：路径单独 span + title，窄屏 CSS 可单独截断/换行；
+          // textContent 一锅端会让长 UNC 路径在 1280px 屏幕溢出 toolbar。
+          $('lib-status').innerHTML = renderLibStatusHtml(data);
         }
-        $('lib-status').textContent = text;
       } catch (e) {
         $('lib-status').textContent = '状态获取失败';
       }
@@ -2441,13 +2524,19 @@
         }
         return;
       }
-      // 2) 封面 → 灯箱
+      // 2) 封面 → 灯箱（与 wanted 一致：cover + 全部样品多图浏览）
       const cover = e.target.closest('.cover');
       if (cover && cover.src && !cover.classList.contains('broken')) {
         e.stopPropagation();
         e.preventDefault();
         const card = cover.closest('.card');
-        showLightbox(cover.src, card?.dataset.code || '');
+        const code = card?.dataset.code || '';
+        const title = card?.dataset.title || card?.querySelector('.name')?.textContent || '';
+        // 乐观打开：把卡片上的 cover URL 直接当首图（浏览器大概率已缓存）
+        openGalleryLb(code, title, {
+          coverHint: cover.src,
+          imagesUrl: `/api/library/${encodeURIComponent(code)}/gallery-images`,
+        });
       }
       // 3) 演员标签 → 按演员筛选
       const actorTag = e.target.closest('.actor-tag');
