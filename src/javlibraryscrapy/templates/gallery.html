@@ -774,6 +774,74 @@
     padding: 40px;
   }
 
+  /* ---------- zspace 配置 modal（极空间 NAS 设置）---------- */
+  #zspace-modal {
+    position: fixed; inset: 0;
+    background: rgba(0, 0, 0, 0.65);
+    z-index: 220;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+  #zspace-modal.show { display: flex; }
+  .zs-box {
+    width: min(540px, 100%);
+    max-height: min(90vh, 720px);
+    background: var(--bg-elev);
+    border: 1px solid var(--border-strong);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  .zs-box header {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 16px; border-bottom: 1px solid var(--border);
+    flex: none;
+  }
+  .zs-box header h2 { margin: 0; font-size: 15px; font-weight: 620; flex: 1; }
+  .zs-box .zs-body {
+    padding: 14px 16px;
+    overflow-y: auto;
+    display: flex; flex-direction: column; gap: 12px;
+    flex: 1; min-height: 0;
+  }
+  .zs-box .field { display: flex; flex-direction: column; gap: 4px; }
+  .zs-box .field > label { font-size: 12.5px; color: var(--text-dim); font-weight: 500; }
+  .zs-box .field > label.checkbox-label {
+    display: flex; align-items: center; gap: 6px;
+    color: var(--text); cursor: pointer;
+  }
+  .zs-box .field > small { color: var(--text-faint); font-size: 11.5px; line-height: 1.4; }
+  .zs-box input[type="text"],
+  .zs-box input[type="password"] {
+    padding: 8px 11px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font: inherit;
+    width: 100%;
+  }
+  .zs-box input:focus { outline: none; border-color: var(--accent); }
+  .zs-box .password-row { display: flex; gap: 6px; }
+  .zs-box .password-row input { flex: 1; min-width: 0; }
+  .zs-box .zs-error {
+    padding: 8px 12px;
+    background: rgba(239, 106, 106, 0.10);
+    border: 1px solid rgba(239, 106, 106, 0.35);
+    border-radius: 8px;
+    color: var(--err);
+    font-size: 12px;
+  }
+  .zs-box footer {
+    display: flex; gap: 8px; justify-content: flex-end;
+    padding: 12px 16px; border-top: 1px solid var(--border);
+    flex: none;
+  }
+  .zs-box footer button { padding: 7px 16px; }
+
   #toast {
     position: fixed; left: 50%; bottom: 26px; transform: translate(-50%, 20px);
     padding: 9px 16px; border-radius: 9px;
@@ -977,6 +1045,7 @@
     <span id="last-refresh" class="last-refresh"></span>
     <button id="btn-refresh" title="抓取 Most Wanted → 合并 → 逐条抓 JavBus 详情">🔄 手动刷新</button>
     <button id="btn-export">导出 code</button>
+    <button id="btn-zspace-settings" title="极空间 NAS 配置（host / user / password / 下载目录）">🛜 zspace</button>
     <button id="btn-scrape" class="primary">抓取选中的磁力</button>
   </div>
 
@@ -1060,6 +1129,57 @@
   </div>
   <div class="glb-thumbs" id="glb-thumbs"></div>
 </div>
+
+<!-- 极空间 NAS 配置 modal（独立于抓取面板，常驻可调） -->
+<aside id="zspace-modal" hidden role="dialog" aria-label="zspace 配置">
+  <div class="zs-box">
+    <header>
+      <h2>🛜 zspace 极空间 NAS 配置</h2>
+      <button class="icon-btn" id="zspace-close" title="关闭">×</button>
+    </header>
+    <div class="zs-body">
+      <div class="field">
+        <label class="checkbox-label">
+          <input type="checkbox" id="zs-enabled"> 启用 zspace 集成
+        </label>
+        <small>未勾选则 /api/zspace/submit 返回 503，「📥 发送到NAS」按钮保持禁用</small>
+      </div>
+      <div class="field">
+        <label>NAS 内网 IP</label>
+        <input type="text" id="zs-host" placeholder="192.168.1.100" autocomplete="off">
+        <small>端口固定 5055</small>
+      </div>
+      <div class="field">
+        <label>用户名（手机号）</label>
+        <input type="text" id="zs-user" placeholder="138xxxxxxxx" autocomplete="off">
+      </div>
+      <div class="field">
+        <label>密码</label>
+        <div class="password-row">
+          <input type="password" id="zs-password" placeholder="输入新值覆盖；留空保持原密码" autocomplete="new-password">
+          <button type="button" class="icon-btn" id="zs-show-pwd" title="显示/隐藏密码">👁</button>
+        </div>
+        <small>已保存的密码不会在前端显示；只在你输入新值时才会更新</small>
+      </div>
+      <div class="field">
+        <label>device_id（可选）</label>
+        <input type="text" id="zs-device-id" placeholder="32 字符 hex；空则自动生成" autocomplete="off">
+        <small>首次启用会触发 N001414 短信验证，验证后从浏览器 cookie 复制填入可避免每次重验证</small>
+      </div>
+      <div class="field">
+        <label>下载目录</label>
+        <input type="text" id="zs-download-path" placeholder="/sata14/my/data/zvideo/JAV" autocomplete="off">
+        <small>NAS 文件系统路径（/pool/my/data/.../）。pool 名取决于你的存储池（常见 sata14/nvme19）</small>
+      </div>
+      <div class="zs-error" id="zs-error" hidden></div>
+    </div>
+    <footer>
+      <button id="zs-cancel">取消</button>
+      <button id="zs-save" class="primary">保存</button>
+    </footer>
+  </div>
+</aside>
+
 <div id="toast"></div>
 
 <script>
@@ -2262,6 +2382,88 @@
       }
     }
     $('btn-send-zspace').addEventListener('click', sendToZspace);
+
+    /* ---------- zspace 配置 modal ----------
+     * GET /api/zspace/config 读取当前配置（密码永远显示为占位 "已设置" / "未设置"），
+     * POST 保存（空 password = 不修改；非空 = 覆盖）。保存完自动 reload status 让按钮启用态即时更新。 */
+    const zspaceModal = $('zspace-modal');
+    const zsEls = {
+      enabled: $('zs-enabled'),
+      host: $('zs-host'),
+      user: $('zs-user'),
+      password: $('zs-password'),
+      deviceId: $('zs-device-id'),
+      downloadPath: $('zs-download-path'),
+      error: $('zs-error'),
+    };
+    function showZsError(msg) {
+      zsEls.error.textContent = msg;
+      zsEls.error.hidden = !msg;
+    }
+    function closeZspaceSettings() {
+      zspaceModal.classList.remove('show');
+      setTimeout(() => { zspaceModal.hidden = true; }, 180);
+    }
+    async function openZspaceSettings() {
+      showZsError('');
+      try {
+        const res = await fetch('/api/zspace/config');
+        if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+        const cfg = await res.json();
+        zsEls.enabled.checked = !!cfg.enabled;
+        zsEls.host.value = cfg.host || '';
+        zsEls.user.value = cfg.user || '';
+        zsEls.password.value = '';   // 永远不让密码从 API 回到前端
+        zsEls.password.placeholder = cfg.password === '********'
+          ? '已设置（输入新值覆盖）'
+          : '未设置';
+        zsEls.deviceId.value = cfg.device_id || '';
+        zsEls.downloadPath.value = cfg.download_path || '';
+        zspaceModal.hidden = false;
+        requestAnimationFrame(() => zspaceModal.classList.add('show'));
+      } catch (e) {
+        toast('读取 zspace 配置失败：' + e.message, true);
+      }
+    }
+    $('btn-zspace-settings').addEventListener('click', openZspaceSettings);
+    $('zspace-close').addEventListener('click', closeZspaceSettings);
+    $('zs-cancel').addEventListener('click', closeZspaceSettings);
+    zspaceModal.addEventListener('click', (e) => {
+      if (e.target === zspaceModal) closeZspaceSettings();
+    });
+    $('zs-show-pwd').addEventListener('click', () => {
+      zsEls.password.type = zsEls.password.type === 'password' ? 'text' : 'password';
+    });
+    $('zs-save').addEventListener('click', async () => {
+      showZsError('');
+      const body = {
+        enabled: zsEls.enabled.checked,
+        host: zsEls.host.value.trim(),
+        user: zsEls.user.value.trim(),
+        device_id: zsEls.deviceId.value.trim(),
+        download_path: zsEls.downloadPath.value.trim(),
+      };
+      if (zsEls.password.value) {
+        body.password = zsEls.password.value;
+      }
+      try {
+        const res = await fetch('/api/zspace/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || data.error || res.statusText);
+        toast('zspace 配置已保存');
+        closeZspaceSettings();
+        await loadZspaceStatus();  // 刷新「📥 发送到NAS」按钮启用态
+      } catch (e) {
+        showZsError(e.message);
+      }
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && zspaceModal.classList.contains('show')) closeZspaceSettings();
+    });
     $('btn-refresh').addEventListener('click', startRefresh);
     $('results').addEventListener('click', (e) => {
       const btn = e.target.closest('.r-copy');

@@ -3,27 +3,27 @@
 包内封装 zspace_skill/nas/（vendored as :mod:`.zspace_nas`），复用其
 RSA 登录 + cookie + token 续期逻辑。本模块只做两件事：
 
-1. 把 ``settings.zspace_*`` 注入到 ``os.environ``（vendored 包从 env 读配置，
-   且 ``NAS_BASE`` 在 import 时即被算好），再懒加载 vendored ``NasClient``。
+1. 从 :class:`~javlibraryscrapy.server.services.zspace_config.ZSpaceConfig`
+   读配置（不是 .env）—— 用户通过网页 UI 改完立即生效。
 2. 暴露 ``submit_magnet`` / ``list_downloads`` 高层方法。
 
 注意
 ----
+- 配置变更检测：每次调用前 hash 一下 ``(host, user, password, device_id)``，
+  变了就 aclose 旧 NasClient + 重 build 新实例（vendored 客户端从 module-level
+  env 读配置，重 build 是唯一干净的切换方式）。
 - ``/downloader/share/add`` 的 body schema 在 zspace_skill 仓库里被标注"待测"，
   本模块按推断（``url`` / ``downloadDir`` / ``type=magnet``）提交；NAS 真返回
   错误时把原始响应透传出去，方便上层定位字段名问题。
-- ``/downloader/list`` 是已验证可用的 list 接口。
-- 客户端实例是单例（``app.state.zspace``），多线程/多请求复用同一会话，
-  ``asyncio.Lock`` 防止并发重登。
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
-from ..config import Settings
+from .zspace_config import ZSpaceConfig
 
 logger = logging.getLogger("gallery.zspace")
 
@@ -32,44 +32,68 @@ class ZSpaceError(RuntimeError):
     """调用 NAS 出错时抛出（包装 RuntimeError 让路由能区分）。"""
 
 
-class ZSpaceClient:
-    """极空间 NAS 客户端（包装 vendored ``zspace_nas.NasClient``）。"""
+def _config_signature(cfg: ZSpaceConfig) -> tuple:
+    """配置指纹：4 个会影响 NasClient 行为的字段。"""
+    return (cfg.host, cfg.user, cfg.password, cfg.device_id)
 
-    def __init__(self, settings: Settings) -> None:
-        self._settings = settings
-        self._nas: Any = None  # 真正实例化推迟到第一次调用，避免启动期就发登录请求
+
+class ZSpaceClient:
+    """极空间 NAS 客户端（包装 vendored ``zspace_nas.NasClient``）。
+
+    参数
+    ----
+    get_config : Callable[[], ZSpaceConfig]
+        返回当前配置的 callable（每次访问 ``_ensure_client`` 时拉最新值）。
+        通常传 ``app.state.zspace_config_store.get``。
+    """
+
+    def __init__(self, get_config: Callable[[], ZSpaceConfig]) -> None:
+        self._get_config = get_config
+        self._nas: Any = None
+        self._sig: Optional[tuple] = None
         self._lock = asyncio.Lock()
 
     # ------------------------------------------------------------------ #
     # 内部
     # ------------------------------------------------------------------ #
-    def _ensure_env(self) -> None:
-        """把 Settings.zspace_* 写到 ``os.environ``，供 vendored nas 包读取。
+    def _ensure_env(self, cfg: ZSpaceConfig) -> None:
+        """把 cfg 的字段写到 ``os.environ``，供 vendored nas 包读取。
 
         vendored ``nas/proto.py`` 在 import 时按 ``NAS_HOST`` 算 ``NAS_BASE``，
-        所以必须先设 env 再 import。模块被 Python 缓存后 ``NAS_BASE`` 不变 —
-        因此 ``ZSpaceClient`` 是单例 + 第一调用前完成 env 设置。
+        所以必须先设 env 再 import。模块被 Python 缓存后 ``NAS_BASE`` 不变 -
+        因此配置变更时必须 aclose 旧 client + 重 build（见 ``_ensure_client``）。
         """
-        s = self._settings
-        if s.zspace_host:
-            os.environ["NAS_HOST"] = s.zspace_host
-        if s.zspace_user:
-            os.environ["NAS_USER"] = s.zspace_user
-        if s.zspace_password:
-            os.environ["NAS_PASSWORD"] = s.zspace_password
-        if s.zspace_device_id:
-            os.environ["NAS_DEVICE_ID"] = s.zspace_device_id
+        if cfg.host:
+            os.environ["NAS_HOST"] = cfg.host
+        if cfg.user:
+            os.environ["NAS_USER"] = cfg.user
+        if cfg.password:
+            os.environ["NAS_PASSWORD"] = cfg.password
+        if cfg.device_id:
+            os.environ["NAS_DEVICE_ID"] = cfg.device_id
 
     async def _ensure_client(self) -> Any:
-        """懒加载 + 并发安全的 NasClient 单例。"""
-        if self._nas is not None:
+        """懒加载 + 配置变更检测：cfg 变了就 aclose + 重建。"""
+        cfg = self._get_config()
+        sig = _config_signature(cfg)
+        if self._nas is not None and sig == self._sig:
             return self._nas
         async with self._lock:
-            if self._nas is None:
-                self._ensure_env()
-                # 必须在 _ensure_env() 之后 import（proto.py 在 import 时算 NAS_BASE）
-                from .zspace_nas import NasClient
-                self._nas = NasClient()
+            # 二次检查：可能其他协程已经重建过了
+            if self._nas is not None and sig == self._sig:
+                return self._nas
+            if self._nas is not None:
+                # 配置变了 → 关闭旧 client（drop httpx pool + cookies）
+                try:
+                    await self._nas.aclose()
+                except Exception:  # noqa: BLE001
+                    pass
+                self._nas = None
+            self._ensure_env(cfg)
+            # 必须在 _ensure_env() 之后 import（proto.py 在 import 时算 NAS_BASE）
+            from .zspace_nas import NasClient
+            self._nas = NasClient()
+            self._sig = sig
         return self._nas
 
     # ------------------------------------------------------------------ #
@@ -110,15 +134,3 @@ class ZSpaceClient:
             except Exception:  # noqa: BLE001
                 pass
             self._nas = None
-
-
-def is_configured(settings: Settings) -> bool:
-    """检查 Settings 是否满足启用 zspace 的最低配置。
-
-    缺任意一项都视为未配置（路由层会 503）。"""
-    return bool(
-        settings.zspace_enabled
-        and settings.zspace_host
-        and settings.zspace_user
-        and settings.zspace_password
-    )

@@ -127,6 +127,11 @@ def create_app(
     from javlibraryscrapy.server.services.sample_cache import get_sample_cache
     sample_cache = get_sample_cache(mw_root=settings.mostwanted_library_root)
 
+    # 极空间 NAS 配置存储（JSON 文件，output/zspace_config.json）。
+    # 首次启动从 .env 兜底 + 落盘；之后以 JSON 为准，可通过网页 UI 修改。
+    from javlibraryscrapy.server.services.zspace_config import ZSpaceConfigStore
+    zspace_config_store = ZSpaceConfigStore(output_dir=output_dir, settings=settings)
+
     # P1：后台预热 sample cache —— 把 wanted 列表里的前 N 个 code 的 sample 数扫掉，
     # 让首次 /api/wanted 不必触发 NFS cold start（NFS 单目录 glob 几百 ms~几 s）。
     # 用 daemon 线程，不阻塞启动；失败也不影响服务可用。
@@ -149,6 +154,7 @@ def create_app(
     app.state.settings = settings
     app.state.wanted = wanted
     app.state.sample_cache = sample_cache
+    app.state.zspace_config_store = zspace_config_store
 
     register_routes(app)
 
