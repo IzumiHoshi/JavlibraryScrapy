@@ -166,6 +166,13 @@ class GalleryState:
         # JAVLibrary 镜像抓取走独立的 proxy_javlibrary_enabled，不影响这里。
         self.proxy = proxy
         self.cover_proxy = proxy if proxy_javbus_enabled else None
+        # auto：proxy_javbus_enabled=true 且配了 PROXY 才走服务端代理拉图
+        if image_proxy_mode == "auto":
+            self.image_proxy = bool(self.cover_proxy)
+        else:
+            self.image_proxy = image_proxy_mode == "on"
+            if self.image_proxy:
+                self.cover_proxy = proxy
         self.user_agent = user_agent
         self.verify_ssl = verify_ssl
         self.download_timeout = download_timeout
