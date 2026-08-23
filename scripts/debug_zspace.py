@@ -8,8 +8,8 @@
 
     uv run python scripts/debug_zspace.py
 
-会先读 ``output/zspace_config.json`` 里的 host / user / password / device_id，
-然后：
+会从 .env 的 ``ZSPACE_HOST / ZSPACE_USER / ZSPACE_PASSWORD / ZSPACE_DEVICE_ID``
+读取配置，然后：
 1. list_downloads() —— 验证登录态 + token 续期
 2. submit_magnet() —— 验证下载目录权限（用假 magnet，避免污染真实下载）
 """
@@ -40,7 +40,7 @@ def _mask(s: str | None, keep: int = 4) -> str:
 
 async def main() -> int:
     settings = Settings()
-    store = ZSpaceConfigStore(output_dir=ROOT / "output", settings=settings)
+    store = ZSpaceConfigStore(settings=settings)
     cfg = store.get()
 
     print("=" * 60)

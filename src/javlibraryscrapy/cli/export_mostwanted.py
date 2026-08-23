@@ -1,8 +1,9 @@
 """
 把 JAVLibrary「最想要」列表导出到本地库。
 
-读 output/javlibrary_movies.json，对每部影片在 <library_root>/<CARID> <title>/ 下
-建一个文件夹，里面放：
+读 javlibrary_movies.json（默认 ``MOSTWANTED_INDEX`` > ``MOSTWANTED_LIBRARY_ROOT``/
+``javlibrary_movies.json`` > ``output/javlibrary_movies.json``），对每部影片在
+``<library_root>/<CARID> <title>/`` 下建一个文件夹，里面放：
 
   - movie.nfo    —— 从 JAVBus 详情页抓到的完整元数据（Kodi/Plex 兼容）
   - poster.jpg   —— JAVLibrary 列表的竖版缩略图（cover_url）
@@ -27,11 +28,17 @@ import json
 import logging
 import os
 import sys
+import warnings
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 from dotenv import load_dotenv
+from urllib3.exceptions import InsecureRequestWarning
+
+# 走代理时显式 ``verify=False``（MITM 自签 CA），urllib3 会刷屏；
+# 统一静默，与 cli/gallery.py 入口行为一致。
+warnings.filterwarnings("ignore", category=InsecureRequestWarning)
 
 from javlibraryscrapy._paths import REPO_ROOT as ROOT  # noqa: E402
 from javlibraryscrapy.scraping.javbus import JavbusSpider  # noqa: E402
@@ -161,14 +168,18 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument(
         "--source",
         default=(
-            str(Path(os.getenv("MOSTWANTED_LIBRARY_ROOT", "").strip()) / "javlibrary_movies.json")
-            if os.getenv("MOSTWANTED_LIBRARY_ROOT", "").strip()
-            else str(ROOT / "output" / "javlibrary_movies.json")
+            os.getenv("MOSTWANTED_INDEX", "").strip()
+            or (
+                str(Path(os.getenv("MOSTWANTED_LIBRARY_ROOT", "").strip()) / "javlibrary_movies.json")
+                if os.getenv("MOSTWANTED_LIBRARY_ROOT", "").strip()
+                else str(ROOT / "output" / "javlibrary_movies.json")
+            )
         ),
         help=(
             "JAVLibrary 抓取结果 JSON（默认 "
-            "MOSTWANTED_LIBRARY_ROOT/javlibrary_movies.json，未设则退回 "
-            "output/javlibrary_movies.json）"
+            "MOSTWANTED_INDEX；未设则退回 "
+            "MOSTWANTED_LIBRARY_ROOT/javlibrary_movies.json，"
+            "再退回 output/javlibrary_movies.json）"
         ),
     )
     p.add_argument(

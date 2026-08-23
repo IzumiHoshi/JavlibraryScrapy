@@ -42,22 +42,41 @@ class Settings(BaseSettings):
 
     # ---- 抓取 ----
     javbus_url: str = Field(
-        default="https://www.javbus.com/",
-        description="JAVBus 视频页 URL 前缀（用于拼接 code）。",
-    )
-    javbus_base_url: str = Field(
         default="https://www.javbus.com",
-        description="用于解析相对封面 URL 的 JAVBus 基础 URL。",
+        description=(
+            "JAVBus 站点根 URL。同时用于：(1) 拼接视频页 URL（自动补尾斜杠）；"
+            "(2) 拼接相对封面 / 樣品圖像 URL（去掉尾斜杠）。"
+            "不再有独立的 JAVBUS_BASE_URL。"
+        ),
+    )
+    javlibrary_url: str = Field(
+        default="https://www.c99i.com/cn/vl_mostwanted.php",
+        description=(
+            "JAVLibrary「最想要」列表入口 URL。当前用 c99i.com 镜像；"
+            "切换镜像或换回 javlibrary.com 原站时改这里。"
+        ),
     )
 
     # ---- 代理 ----
-    proxy_enabled: bool = Field(
-        default=False,
-        description="控制封面代理的 auto 模式；磁力抓取始终启用 PROXY。",
-    )
     proxy: Optional[str] = Field(
         default=None,
         description="HTTP/HTTPS/SOCKS5 代理地址；留空表示不使用代理。",
+    )
+    proxy_javbus_enabled: bool = Field(
+        default=False,
+        alias="PROXY_JAVBUS_ENABLED",
+        description=(
+            "JAVBus 详情抓取 + 磁力抓取 + 封面代理是否走 PROXY。"
+            "开关 + PROXY 都得有值才实际启用。"
+        ),
+    )
+    proxy_javlibrary_enabled: bool = Field(
+        default=False,
+        alias="PROXY_JAVLIBRARY_ENABLED",
+        description=(
+            "JAVLibrary 镜像抓取是否走 PROXY。"
+            "开关 + PROXY 都得有值才实际启用。"
+        ),
     )
 
     # ---- 下载/请求 ----
@@ -88,10 +107,32 @@ class Settings(BaseSettings):
             "None 表示仍走默认 output/。"
         ),
     )
+    mostwanted_index: Optional[Path] = Field(
+        default=None,
+        alias="MOSTWANTED_INDEX",
+        description=(
+            "javlibrary_movies.json 的绝对路径；优先级最高。"
+            "设了则 JSON 落在指定位置（不必与 MOSTWANTED_LIBRARY_ROOT 同目录）；"
+            "未设时退回 MOSTWANTED_LIBRARY_ROOT/javlibrary_movies.json，"
+            "再退回 library_index.parent/javlibrary_movies.json。"
+            "此变量只控制 JSON 路径，不影响 cover/samples 子目录。"
+        ),
+    )
+
+    # ---- 磁力抓取结果（持久化）----
+    magnets_index: Path = Field(
+        default=ROOT / "output" / "magnets.json",
+        alias="MAGNETS_INDEX",
+        description=(
+            "磁力抓取结果 JSON 路径。magnets_links.txt 与之同目录、"
+            "basename 由 .json 替换为 _links.txt；不设则走默认 output/magnets.json。"
+        ),
+    )
 
     # ---- 极空间 NAS 集成（/api/zspace/*）----
     # 把 wanted 抓取得到的 magnet 推到极空间下载器。需要先在极空间后台「下载」
     # app 启用下载服务（启用后 qbittorrent-nox/aria2c/xunlei 会启动）。
+    # 所有配置都从这里读，运行时不再有 UI 编辑入口；改完 .env 重启即可。
     zspace_enabled: bool = Field(
         default=False,
         description="启用极空间下载集成。开启前先在 NAS 后台启用「下载」app。",
@@ -134,8 +175,9 @@ class Settings(BaseSettings):
 
     @field_validator("javbus_url")
     @classmethod
-    def _ensure_trailing_slash(cls, v: str) -> str:
-        return v if v.endswith("/") else v + "/"
+    def _strip_trailing_slash(cls, v: str) -> str:
+        """去掉尾斜杠 —— 内部用 ``<url>/<code>`` 拼接时按需补回。"""
+        return v.rstrip("/")
 
     @field_validator("proxy")
     @classmethod

@@ -7,11 +7,20 @@ import logging
 import os
 import sys
 import threading
+import warnings
 import webbrowser
 from pathlib import Path
 from typing import List, Optional
 
 import uvicorn
+
+# ``VERIFY_SSL=false`` 是用户显式配置（常见于 MITM 代理用自签 CA 的场景）。
+# urllib3 默认会对每次 ``verify=False`` 的 HTTPS 请求发 InsecureRequestWarning，
+# 拉一批封面就把日志刷爆；这里统一静默。CLI 仍可通过 python -W all / 改 VERIFY_SSL
+# 看到这些警告。
+from urllib3.exceptions import InsecureRequestWarning  # noqa: E402
+
+warnings.filterwarnings("ignore", category=InsecureRequestWarning)
 
 # 必须早于 argparse default 表达式：原 gallery_server.py 显式 load_dotenv(.env)
 # 后再解析命令行，这样 --library-root 的默认值才能拿到 .env 里的 LIBRARY_ROOT。
@@ -29,27 +38,44 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="影片画廊本地服务器（FastAPI 重构版）",
     )
-    # --data 默认路径：若 .env 的 MOSTWANTED_LIBRARY_ROOT 设了，
-    # 把 javlibrary_movies.json 也放到那里（与每部影片的 cover/samples 同根目录）；
-    # 否则退回 output/javlibrary_movies.json（保持旧行为）。
-    _mw_root = os.getenv("MOSTWANTED_LIBRARY_ROOT", "").strip()
-    _default_data = (
-        str(Path(_mw_root) / "javlibrary_movies.json")
-        if _mw_root
-        else str(ROOT / "output" / "javlibrary_movies.json")
-    )
+    # --data 默认路径：MOSTWANTED_INDEX > MOSTWANTED_LIBRARY_ROOT/javlibrary_movies.json
+    # > output/javlibrary_movies.json（保持旧行为）。
+    _mw_index = os.getenv("MOSTWANTED_INDEX", "").strip()
+    if _mw_index:
+        _default_data = _mw_index
+    else:
+        _mw_root = os.getenv("MOSTWANTED_LIBRARY_ROOT", "").strip()
+        _default_data = (
+            str(Path(_mw_root) / "javlibrary_movies.json")
+            if _mw_root
+            else str(ROOT / "output" / "javlibrary_movies.json")
+        )
     p.add_argument(
         "--data",
         default=_default_data,
         help=(
             "影片数据文件（JSON 或 CSV，默认 "
-            f"{_default_data}；MOSTWANTED_LIBRARY_ROOT 设了则改为那里）"
+            f"{_default_data}；MOSTWANTED_INDEX/MOSTWANTED_LIBRARY_ROOT 设了则改为那里）"
         ),
     )
     p.add_argument(
         "--output-dir",
         default=str(ROOT / "output"),
-        help="结果输出目录（默认 output/）",
+        help=(
+            "临时数据目录：服务日志（.gallery_server.log）、封面缓存（.cover_cache/）、"
+            "磁力抓取的 scratch 目录等。**持久化文件（javlibrary_movies.json / "
+            "library_index.json / magnets.json）请通过 .env 的对应变量或 "
+            "--magnets-index 单独指定。** zspace 配置全部走 .env 的 ZSPACE_*，"
+            "运行时只读。"
+        ),
+    )
+    p.add_argument(
+        "--magnets-index",
+        default=None,
+        help=(
+            "磁力抓取结果 JSON 路径（覆盖 .env 的 MAGNETS_INDEX；"
+            "默认 output/magnets.json）。magnets_links.txt 与之同目录派生。"
+        ),
     )
     p.add_argument(
         "--library-root",
@@ -113,6 +139,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         settings.library_root = library_root
     if args.library_index:
         settings.library_index = Path(args.library_index).resolve()
+    if args.magnets_index:
+        settings.magnets_index = Path(args.magnets_index).resolve()
 
     data_path = Path(args.data).resolve()
     output_dir = Path(args.output_dir).resolve()
@@ -122,6 +150,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         data_path=data_path,
         output_dir=output_dir,
         image_proxy_mode=args.image_proxy,
+        magnets_index=settings.magnets_index,
         no_rescan_on_startup=args.no_rescan_on_startup,
     )
 

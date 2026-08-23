@@ -222,12 +222,15 @@ uv run playwright install chrome
 
 ```env
 # JAVBus
-JAVBUS_URL=https://www.javbus.com/
-JAVBUS_BASE_URL=https://www.javbus.com
+JAVBUS_URL=https://www.javbus.com
+
+# JAVLibrary 入口（默认 c99i.com 镜像；切镜像/换回原站时改这里）
+JAVLIBRARY_URL=https://www.c99i.com/cn/vl_mostwanted.php
 
 # 代理（大多数地区必需）
-PROXY_ENABLED=false
 PROXY=http://127.0.0.1:10808
+PROXY_JAVBUS_ENABLED=false
+PROXY_JAVLIBRARY_ENABLED=false
 
 # Scrapling
 SCRAPLING_LOAD_DOM=true
@@ -246,7 +249,7 @@ DOWNLOAD_TIMEOUT=10
 VERIFY_SSL=false
 ```
 
-> JAVLibrary 在 `main()` 中直接读取 `PROXY_ENABLED`/`PROXY`，忽略 Scrapling 前缀的变量。`SCRAPLING_TIMEOUT` 默认 30000ms，JAVLibrary 内部固定 90 秒。
+> JAVLibrary 在 `main()` 中直接读取 `JAVLIBRARY_URL` / `PROXY_JAVLIBRARY_ENABLED` / `PROXY`，忽略 Scrapling 前缀的变量。`SCRAPLING_TIMEOUT` 默认 30000ms，JAVLibrary 内部固定 90 秒。
 
 ---
 
@@ -334,7 +337,7 @@ uv run python -m javlibraryscrapy.cli.gallery [--port 8000] [--data output/javli
 - `--data` 影片数据文件（默认 `output/javlibrary_movies.json`，缺失回退同名 `.csv`）
 - `--output-dir` 结果输出目录（默认 `output/`）
 - `--host` / `--port` 监听地址与端口（默认 `0.0.0.0:8000`，允许局域网访问）
-- `--image-proxy {auto,on,off}` 封面是否经服务端代理拉取。`auto`（默认）在 `.env` 里 `PROXY_ENABLED=true` 时启用；封面缓存在 `output/.cover_cache/`
+- `--image-proxy {auto,on,off}` 封面是否经服务端代理拉取。`auto`（默认）在 `.env` 里 `PROXY_JAVBUS_ENABLED=true` 时启用；封面缓存在 `output/.cover_cache/`
 - `--library-root` 本地库根目录（需在 `.env` 配置 `LIBRARY_ROOT`，否则禁用本地库功能）
 - `--open-browser` 启动后自动打开浏览器（默认不打开）
 
@@ -603,7 +606,7 @@ headers = {
 ### 代理连接问题
 
 - **确保**：代理正在运行且可在配置的地址访问
-- **检查**：`.env` 中 `PROXY_ENABLED` 设置为 `true`
+- **检查**：`.env` 中 `PROXY_JAVBUS_ENABLED` 设置为 `true`
 
 ### 本地库扫描误判 root 不一致
 

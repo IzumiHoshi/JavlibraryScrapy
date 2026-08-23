@@ -218,7 +218,7 @@ JavbusSpider.parse() 返回 info
 
 ### 排错要点
 
-- **Cloudflare 拦截**：JAVLibrary 用 `stealth_mode=True` + 90s 超时；JAVBus 用 `disable_resources=True` + 30s。代理需在 `.env` 配 `PROXY_ENABLED=true` + `PROXY=...`。
+- **Cloudflare 拦截**：JAVLibrary 用 `stealth_mode=True` + 90s 超时；JAVBus 用 `disable_resources=True` + 30s。代理需在 `.env` 配 `PROXY_JAVBUS_ENABLED=true` + `PROXY=...`。
 - **进程崩溃 / 异常**：job 标 `phase=error`，前端 toast 提示 `snap.error`。本地 JSON 保留中断前已 merge 的内容。
 - **重跑**：直接再点按钮即可（同一 job 不复用）；会基于磁盘 JSON 增量合并。
 
@@ -310,7 +310,7 @@ JavbusSpider.parse() 返回 info
 
 - **索引与 root 不一致**：启动时 `_maybe_load_library_index()` 会比较规范化路径，不一致则丢弃旧索引、等待手动刷新（`src/javlibraryscrapy/server/services/library.py:159-186`）。
 - **大库性能**：扫描是单线程 walk IO 密集型；目前没有 cancel 接口（`ScanProgress.cancel_event` 字段保留但未接线）。
-- **NoRescanOnStartup**：服务启动时索引缺失/root 不一致**不会**自动扫描（除非 `PROXY_ENABLED=true` 之类有副作用逻辑变化）。要重新扫必须手动点。
+- **NoRescanOnStartup**：服务启动时索引缺失/root 不一致**不会**自动扫描。要重新扫必须手动点。
 
 ---
 

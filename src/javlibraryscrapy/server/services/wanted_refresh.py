@@ -344,6 +344,7 @@ def save_wanted_json(
 # --------------------------------------------------------------------------- #
 def refresh_wanted(
     data_path: Path,
+    javlibrary_url: str,
     javlibrary_proxy: Optional[str],
     javbus_proxy: Optional[str],
     job: WantedRefreshJob,
@@ -354,8 +355,11 @@ def refresh_wanted(
 ) -> None:
     """在线程中运行：抓 Most Wanted → merge → 抓 JavBus → 落盘。
 
-    - ``javlibrary_proxy``: 传给 JAVLibrary 镜像 (c99i.com 默认 None)
-    - ``javbus_proxy``: 传给 JavBus 详情抓取 (绕过 Cloudflare)
+    - ``javlibrary_url``: JAVLibrary「最想要」入口 URL（默认 c99i.com 镜像）
+    - ``javlibrary_proxy``: 传给 JAVLibrary 镜像抓取（受 .env 的
+      ``PROXY_JAVLIBRARY_ENABLED`` 控制）
+    - ``javbus_proxy``: 传给 JavBus 详情抓取（受 .env 的
+      ``PROXY_JAVBUS_ENABLED`` 控制）
     - ``sample_cache``: 外部注入的样本计数缓存；_save_per_movie_folder
       落盘成功后回写 (count)，避免下次扫描 NFS
     - ``max_pages``: 默认 2（Most Wanted 头部热度最高，2 页 ≈ 40 部够日常用）；
@@ -384,6 +388,7 @@ def refresh_wanted(
 
         wl_spider = JAVLibrarySpider(
             output_dir=data_path.parent,
+            base_url=javlibrary_url,
             proxy=javlibrary_proxy,
         )
         wl_spider.proxy_enabled = jl_proxy_enabled

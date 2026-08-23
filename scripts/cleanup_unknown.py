@@ -19,21 +19,56 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, List
 
 
-# 默认 JSON 路径与服务端 WantedService 一致（见 server/app.py）
-# ``MOSTWANTED_LIBRARY_ROOT`` 设了 → JSON 在那里；否则退回 ``library_index.parent``。
-# 服务跑起来时这些路径由 settings 提供；脚本里直接读两个常见位置中先存在的那个。
+# 默认 JSON 路径解析优先级（见 server/app.py）：
+#   MOSTWANTED_INDEX > MOSTWANTED_LIBRARY_ROOT/javlibrary_movies.json
+#   > ./output/javlibrary_movies.json > ./javlibrary_movies.json
+# 服务跑起来时这些路径由 settings 提供；脚本里手动读 .env 兜底。
 DEFAULT_PATHS = [
     Path("./output/javlibrary_movies.json"),
     Path("./javlibrary_movies.json"),
 ]
 
 
+def _read_env_value(key: str) -> str:
+    """从仓库根 .env 读单个键的值（不依赖 dotenv，便于单文件运行）。"""
+    env_path = Path(__file__).resolve().parents[1] / ".env"
+    if not env_path.exists():
+        return ""
+    try:
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            if k.strip() == key:
+                return v.strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return ""
+
+
+def _resolve_env_default() -> Path | None:
+    """从 .env 读 MOSTWANTED_INDEX / MOSTWANTED_LIBRARY_ROOT 派生 JSON 路径。"""
+    mw_index = _read_env_value("MOSTWANTED_INDEX") or os.getenv("MOSTWANTED_INDEX", "").strip()
+    if mw_index:
+        return Path(mw_index)
+    mw_root = _read_env_value("MOSTWANTED_LIBRARY_ROOT") or os.getenv("MOSTWANTED_LIBRARY_ROOT", "").strip()
+    if mw_root:
+        return Path(mw_root) / "javlibrary_movies.json"
+    return None
+
+
 def find_default_json() -> Path | None:
+    """按优先级查找 javlibrary_movies.json：.env 派生路径 → ./output/ → ./。"""
+    env_path = _resolve_env_default()
+    if env_path and env_path.exists():
+        return env_path
     for p in DEFAULT_PATHS:
         if p.exists():
             return p
@@ -46,7 +81,10 @@ def main() -> int:
         "--data",
         type=Path,
         default=None,
-        help="javlibrary_movies.json 路径；不传则在 ./output/ 和 ./ 下查找",
+        help=(
+            "javlibrary_movies.json 路径；不传则按 .env 的 MOSTWANTED_INDEX / "
+            "MOSTWANTED_LIBRARY_ROOT 推导，再退回 ./output/ 和 ./"
+        ),
     )
     parser.add_argument(
         "--yes",
@@ -60,7 +98,8 @@ def main() -> int:
         print(
             "ERROR: 找不到 javlibrary_movies.json。\n"
             "  1. 在仓库根目录运行本脚本（默认路径 ./output/javlibrary_movies.json）；\n"
-            "  2. 或用 --data <path> 显式指定 JSON 路径。",
+            "  2. 或在 .env 配置 MOSTWANTED_INDEX / MOSTWANTED_LIBRARY_ROOT；\n"
+            "  3. 或用 --data <path> 显式指定 JSON 路径。",
             file=sys.stderr,
         )
         return 1

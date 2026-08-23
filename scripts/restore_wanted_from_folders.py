@@ -134,7 +134,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--dry-run", action="store_true", help="只列出会补的 entry，不写盘")
     parser.add_argument("--mw-root", type=Path, default=None, help="覆盖 .env 的 MOSTWANTED_LIBRARY_ROOT")
-    parser.add_argument("--json", type=Path, default=None, help="覆盖 .env 的 JSON 路径（默认 <mw_root>/javlibrary_movies.json）")
+    parser.add_argument(
+        "--json",
+        type=Path,
+        default=None,
+        help=(
+            "覆盖 JSON 路径；优先级：--json > MOSTWANTED_INDEX > "
+            "<mw_root>/javlibrary_movies.json"
+        ),
+    )
     args = parser.parse_args(argv)
 
     _load_dotenv()
@@ -143,7 +151,13 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("未设置 MOSTWANTED_LIBRARY_ROOT（请传 --mw-root 或在 .env 配置）")
         return 2
     mw_root = Path(mw_root)
-    json_path = args.json or (mw_root / "javlibrary_movies.json")
+
+    # JSON 路径解析：--json > MOSTWANTED_INDEX > <mw_root>/javlibrary_movies.json
+    if args.json:
+        json_path = args.json
+    else:
+        mw_index = os.environ.get("MOSTWANTED_INDEX", "").strip()
+        json_path = Path(mw_index) if mw_index else (mw_root / "javlibrary_movies.json")
 
     restore(mw_root, json_path, dry_run=args.dry_run)
     return 0

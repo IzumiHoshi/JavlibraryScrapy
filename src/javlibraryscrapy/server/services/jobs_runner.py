@@ -2,7 +2,8 @@
 
 从原 ``gallery_server.run_scrape_job`` 提取，保持原行为：
 - 后台线程中 ``asyncio.run`` 跑 ``MagnetSpider.crawl_and_process``
-- 结束后把结果写入 ``output/magnets.json`` 与 ``output/magnets_links.txt``
+- 结束后把结果写入 ``<magnets_index>`` 与派生 ``<magnets_index 父目录>/magnets_links.txt``
+  （路径由 Settings.magnets_index / .env 的 ``MAGNETS_INDEX`` 决定；默认 ``output/magnets.json``）
 - 临时挂一个 ``JobLogHandler`` 到 root logger
 """
 
@@ -60,12 +61,19 @@ class MagnetSpider(JavbusSpider):
 
 def write_job_outputs(
     job: ScrapeJob,
-    output_dir: Path,
+    magnets_index: Path,
     javbus_url: str,
     library_index: Optional[LibraryIndex] = None,
 ) -> Dict[str, str]:
-    """把抓取结果写入 magnets.json（schema_version: 2）与 magnets_links.txt。"""
-    output_dir.mkdir(parents=True, exist_ok=True)
+    """把抓取结果写入 magnets.json（schema_version: 2）与同目录 magnets_links.txt。
+
+    ``magnets_index`` 直接给 JSON 路径（来自 Settings.magnets_index）；链接文件
+    路径由其父目录 + 派生 basename 决定：``<parent>/magnets_links.txt``（与
+    magnets.json 同名但后缀换成 ``_links.txt``）。两者必须在同一目录以便前端/用户
+    在同一处拿全。
+    """
+    magnets_index = Path(magnets_index)
+    magnets_index.parent.mkdir(parents=True, exist_ok=True)
     results = job.results()  # 仅本次任务实际抓取的 codes
 
     def annotate(r: Dict[str, Any]) -> Dict[str, Any]:
@@ -103,7 +111,7 @@ def write_job_outputs(
             }
         )
 
-    json_path = output_dir / "magnets.json"
+    json_path = magnets_index
     payload = {
         "schema_version": 2,
         "scraped_at": datetime.now().isoformat(timespec="seconds"),
@@ -113,7 +121,10 @@ def write_job_outputs(
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
     # 磁力链接文件：含真正抓到的 magnet + wanted 缓存的 magnet；跳过 local_skip/失败/无磁力
-    links_path = output_dir / "magnets_links.txt"
+    # 同目录派生：把 ``magnets.json`` 换成 ``magnets_links.txt``，跟随 magnets_index 同名
+    # 但命名空间保持 magnets_xxx.txt/_links.txt 形式（用户期望的固定 basename）。
+    links_basename = "magnets_links.txt"
+    links_path = magnets_index.parent / links_basename
     links = [r["magnet"] for r in results if r.get("magnet")]
     for r in job.extra_cached:
         if r.get("magnet"):
@@ -132,10 +143,14 @@ def write_job_outputs(
 
 
 def create_magnet_spider(
-    job: ScrapeJob, output_dir: Path, proxy: Optional[str]
+    job: ScrapeJob, root_dir: Path, proxy: Optional[str]
 ) -> MagnetSpider:
-    """创建磁力爬虫，并显式应用从项目 .env 读取的代理。"""
-    spider = MagnetSpider(job=job, root_dir=output_dir)
+    """创建磁力爬虫，并显式应用从项目 .env 读取的代理。
+
+    ``root_dir`` 仍用作 JavbusSpider 的 root_dir（MagnetSpider 仅做磁力解析、不落
+    cover，所以该参数实际不影响输出；保留签名以便服务层复用）。
+    """
+    spider = MagnetSpider(job=job, root_dir=root_dir)
     spider.proxy_enabled = proxy is not None
     spider.proxy = proxy
     return spider
@@ -143,15 +158,23 @@ def create_magnet_spider(
 
 def run_scrape_job(
     job: ScrapeJob,
-    output_dir: Path,
+    magnets_index: Path,
     proxy: Optional[str],
     library_index: Optional[LibraryIndex] = None,
+    scratch_dir: Optional[Path] = None,
 ) -> None:
-    """在后台线程中执行抓取（内部自建事件循环）。"""
+    """在后台线程中执行抓取（内部自建事件循环）。
+
+    - ``magnets_index``：结果 JSON 的写入路径（来自 Settings.magnets_index）；
+      ``magnets_links.txt`` 与之同目录派生。
+    - ``scratch_dir``：JavbusSpider 的 root_dir（磁力模式下不落 cover，传一个
+      临时目录即可，默认用 ``magnets_index.parent`` 复用父目录）。
+    """
     handler = JobLogHandler(job)
     logging.getLogger().addHandler(handler)
     try:
-        spider = create_magnet_spider(job, output_dir, proxy)
+        root_dir = scratch_dir if scratch_dir is not None else Path(magnets_index).parent
+        spider = create_magnet_spider(job, root_dir, proxy)
         logger.info(f"磁力抓取代理：{'已启用' if proxy else '未启用'}")
         car_list = [(code, "") for code in job.codes]
         logger.info(f"开始抓取 {len(car_list)} 个车牌的磁力链接")
@@ -166,7 +189,7 @@ def run_scrape_job(
         try:
             job.outputs = write_job_outputs(
                 job,
-                output_dir,
+                magnets_index,
                 os.getenv("JAVBUS_URL", "https://www.javbus.com/"),
                 library_index=library_index,
             )
