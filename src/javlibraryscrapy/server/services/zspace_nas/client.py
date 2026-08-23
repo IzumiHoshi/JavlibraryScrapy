@@ -60,7 +60,7 @@ class NasClient:
             "username": encrypt_field(NAS_USER),
             "password": encrypt_field(NAS_PASSWORD),
             "plat": "web",
-            "device": "linux",
+            "device": "pc",
             "device_id": self._device_id,
         }
         log.info("logging in user=%s", NAS_USER)
@@ -77,12 +77,20 @@ class NasClient:
                 )
             raise RuntimeError(f"login failed: code={code} msg={body.get('msg')}")
         data = body["data"]
+        # vendored patch (2026-08-23)：vendor cookies 里只放 token/username/device_id，
+        # 但 NAS web UI 还下发 nas_id（=qc_name）/ device=PC / version / _l=zh_cn
+        # 这些必须放在后续请求的 cookie/header 里，否则 submit 报 N202003。
         self._cookies = {
             "token": data.get("token", ""),
             "username": NAS_USER,
             "device_id": self._device_id,
-            "device": "linux",
+            # NAS 下发的设备 ID（不是 device_id！），用于 query 字段 nasid
+            "nas_id": str(data.get("qc_name", "")),
+            "device": "PC",
             "plat": "web",
+            # data.version 是 int（NAS 注册时间戳），强转 str 避免 httpx cookies 抛 TypeError
+            "version": str(data.get("version", "")),
+            "_l": "zh_cn",
         }
         for ck, cv in resp.cookies.items():
             self._cookies[ck] = cv

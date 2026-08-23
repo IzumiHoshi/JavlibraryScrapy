@@ -8,12 +8,23 @@ import os
 _NAS_HOST = os.environ.get("NAS_HOST", "")
 NAS_BASE = os.environ.get("NAS_BASE", f"http://{_NAS_HOST}:5055" if _NAS_HOST else "")
 
+# vendored patch (2026-08-23)：vendor 硬编码的 version / device / _l 是旧固件的值，
+# NAS 升级后会从登录响应里取真实值（data.version / web UI device=PC / _l=zh_cn）。
+# 用 env 变量覆盖，未设时回退到 vendor 原值以保持兼容。
+_NAS_VERSION = os.environ.get("NAS_VERSION", "2.3.2026062201")
+_NAS_DEVICE = os.environ.get("NAS_DEVICE", "linux")
+_NAS_LANG = os.environ.get("NAS_LANG", "zh-CN")
+
 
 def common_query(device_id: str) -> str:
-    """axios 拦截器给所有请求追加的公共参数。"""
+    """axios 拦截器给所有请求追加的公共参数。
+
+    注：token + nasid 由 ``NasClient`` 拼到 body 或 query（不同端点方式不同）；
+    公共参数这一段不含 token/nasid。
+    """
     return (
-        f"?plat=web&version=2.3.2026062201"
-        f"&device_id={device_id}&device=linux&_l=zh-CN"
+        f"?plat=web&version={_NAS_VERSION}"
+        f"&device_id={device_id}&device={_NAS_DEVICE}&_l={_NAS_LANG}"
     )
 
 
