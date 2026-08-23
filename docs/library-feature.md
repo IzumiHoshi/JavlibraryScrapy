@@ -1,10 +1,34 @@
 # 本地影片库模块 · 设计文档
 
-> 状态：v1.0 设计稿（已通过 grill-me 五轮拷问）
+> 状态：v1.x（与实现持续同步）
 > 创建日期：2026-08-18
-> 关联代码：`src/javlibraryscrapy/cli/gallery.py`、`src/javlibraryscrapy/library/scanner.py`（新增）、`src/javlibraryscrapy/templates/gallery.html`
+> 关联代码：
+> - 扫描器：`src/javlibraryscrapy/library/scanner.py`
+> - FastAPI 服务：`src/javlibraryscrapy/server/`（`app.py` + `services/` + `routes/`）
+> - 模板：`src/javlibraryscrapy/templates/gallery.html`（双页面，热加载）
+
+## 0. 文档更新记录
+
+| 日期 | 变更 |
+| --- | --- |
+| 2026-08-23 | 同步到 v1.x：原 `cli/gallery.py` 单文件 `LibraryApp` 已重构为 `server/` 包布局（`app.py` + `services/library.py` + `routes/library.py` + `routes/rescan.py`）。详见 [`architecture.md`](architecture.md)。 |
+| 2026-08-23 | 新增「关键 Commit」一节，记录 `c0ab1d7`（路径归一化）、`0471157`（单部刷新）等实现细节。 |
+| 2026-08-18 | v1.0 设计稿（grill-me 五轮拷问）。 |
 
 ---
+
+## 关键 Commit
+
+实现过程中影响本模块行为的 git commit 记录（按时间顺序）：
+
+| Commit | 标题 | 影响 |
+| --- | --- | --- |
+| `c0ab1d7` | **路径归一化**：LIBRARY_ROOT vs 索引 root 比较时统一走 `os.path.normcase` + `os.path.realpath` | 解决「`Z:\JAV`（映射盘）vs `\\nas\JAV`（UNC）物理同卷却判定为 root 不一致 → 强制重扫」的误判。覆盖启动 / 扫描 / 查询三处 |
+| `0471157` | **单部刷新 + 双页面灯箱**：路由 `/api/library/{carid}/rescan` + `/wanted` 与 `/library` 共用海报灯箱组件 | 单部重抓走队列（`RescanQueue`，worker 串行），不阻塞其他刷新 |
+
+---
+
+## 1. 目标
 
 ## 1. 目标
 
@@ -263,3 +287,51 @@ def is_local_match(target_code, local_code):
 5. **手动端到端测试**
 
 每完成一步 commit 一次（如果用户要求）。
+
+---
+
+## 12. v1.x 后记（与实现的偏差）
+
+v1.0 设计稿与最终实现之间的偏差：
+
+### 12.1 模块重构（v1.x）
+
+原计划的 `gallery_server.py` 单文件 `LibraryApp` **没有**采用，而是分拆为 `src/javlibraryscrapy/server/` 包：
+
+| 层 | 实际文件 | 职责 |
+| --- | --- | --- |
+| 应用工厂 | `server/app.py` | `create_app()` + 全局状态 |
+| 业务逻辑 | `server/services/library.py` | 扫描 / 队列 / 索引加载 |
+| 业务逻辑 | `server/services/jobs.py` | `ScrapeJob` / `RescanQueue` 状态机 |
+| HTTP 路由 | `server/routes/library.py` | 列表 / 详情 / 状态 / 警告 |
+| HTTP 路由 | `server/routes/rescan.py` | 单部 / 全库 刷新入口 |
+| HTTP 路由 | `server/routes/movies.py` | 改 `/api/movies` 加 `local_exists` |
+
+理由：路由层薄，业务逻辑可单测；其他模块（wanted / scrape / covers）也共用这套布局。
+
+### 12.2 `os.startfile` 平台分支
+
+设计稿提到"用条件分支做 macOS/Linux 兼容"，实际**仍为 Windows-only**。`server/services/library.py` 里没有 `subprocess.run(['open', ...])` 分支，CLAUDE.md 已说明本项目主平台 Windows。
+
+### 12.3 决策清单实际落实情况
+
+| 决策 | 落实 | 备注 |
+| --- | --- | --- |
+| Q1 启动扫一次 + 手动按钮 | ✅ | `startup_hook` 不触发扫描，等手动 |
+| Q2 索引落盘 + 哈希查找 | ✅ | 但用 dict + 双向前缀匹配，**未用 bisect**（亚毫秒无需） |
+| Q3 双向前缀匹配 | ✅ | `library_index.find_match()` |
+| Q6 badge | ✅ | `templates/gallery.html` 渲染 `local_exists` |
+| Q7 tooltip | ✅ | 字段：路径 / 大小 / 格式 / NFO+poster+fanart / 修改时间 / 演员前 3 |
+| Q11 双路由 | ✅ | `/wanted` + `/library` + 顶部导航 |
+| Q13 方案 a（停深入策略） | ✅ | `scan_library` 实现 |
+| Q17 URL 形参 | ✅ | `/api/library?q=...&page=...&size=...&sort=...` |
+| Q18 重复车牌取 size 最大 | ✅ | `scan_movie_folder` 实现 |
+| Q19 单实例扫描 | ✅ | 第二次返回 HTTP 409 |
+| Q20 损坏重建 | ✅ | `load_index` 容错 |
+| Q21 状态机 | ✅ | `loading-initial/rescan/empty/error/normal/search-empty` |
+| Q22 顶部显示上次扫描时间 | ✅ | `library_stats` / `library_scanned_at` |
+| Q23 `magnets.json` v2 | ✅ | 含 `local_exists` / `library_folder` |
+| Q25 `os.startfile` | ✅ | Windows-only |
+| Q26 UNC/特殊字符/长路径 | ✅ | 全部 `pathlib` 标准库 |
+| Q26 LIBRARY_ROOT 未设 → 报错 | ✅ | 启动检测 |
+| Q27 路径归一化（`c0ab1d7`） | ✅ | `normcase + realpath` |
