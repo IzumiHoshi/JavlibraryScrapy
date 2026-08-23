@@ -89,6 +89,42 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ---- 极空间 NAS 集成（/api/zspace/*）----
+    # 把 wanted 抓取得到的 magnet 推到极空间下载器。需要先在极空间后台「下载」
+    # app 启用下载服务（启用后 qbittorrent-nox/aria2c/xunlei 会启动）。
+    zspace_enabled: bool = Field(
+        default=False,
+        description="启用极空间下载集成。开启前先在 NAS 后台启用「下载」app。",
+    )
+    zspace_host: Optional[str] = Field(
+        default=None,
+        description="极空间内网 IP，如 192.168.1.100（API 端口固定 5055）。",
+    )
+    zspace_user: Optional[str] = Field(
+        default=None,
+        description="极空间登录用户名（注册手机号）。",
+    )
+    zspace_password: Optional[str] = Field(
+        default=None,
+        description="极空间登录密码（>=8 字符；走 RSA 公钥加密传输）。",
+    )
+    zspace_device_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "极空间 device_id，32 字符 hex。首次会因 N001414 触发短信验证，"
+            "验证后从浏览器 cookie 复制 device_id 填到这里，可避免每次重验证。"
+            "留空则按 zspace_skill/nas/auth.py 自动从机器指纹生成。"
+        ),
+    )
+    zspace_download_path: str = Field(
+        default="/sata14/my/data/zvideo/JAV",
+        description=(
+            "极空间默认下载目录（NAS 文件系统路径，/pool/my/data/.../）。"
+            "pool 名取决于你的存储池（常见 sata14/nvme19），可从 /auth/login 响应的"
+            " sp_perms 查到。修改前先在 NAS 后台确认目录存在且可写。"
+        ),
+    )
+
     # ---- Scrapling 透传（原服务只透传给 JavbusSpider；这里保留供将来的 env 注入） ----
     scrapling_load_dom: bool = Field(default=True, alias="SCRAPLING_LOAD_DOM")
     scrapling_network_idle: bool = Field(default=True, alias="SCRAPLING_NETWORK_IDLE")

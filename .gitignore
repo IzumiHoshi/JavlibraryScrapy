@@ -5,3 +5,8 @@ __pycache__
 temp/
 output/
 uv.lock
+
+# ---- 本地配置 / 隐私路径 ----
+# .env 含本地绝对路径（JAV 库根目录、最想要列表根目录等），
+# 走 .env.example 模板同步，禁止提交。
+.env

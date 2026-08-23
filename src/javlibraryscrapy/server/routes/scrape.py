@@ -52,34 +52,55 @@ def register(app: FastAPI) -> None:
                 detail=f"一次最多抓取 {MAX_CODES_PER_JOB} 个车牌",
             )
 
-        # Q4 决策：本地库已存在的车牌自动跳过（不入 magnets_links.txt）
+        # 三类处理：
+        #   1) 本地库已存在     → 入 skipped（status=local_skip，不入 magnets_links.txt）
+        #   2) wanted 已有 magnet → 不跑 JavBus；塞进 job.extra_cached，write 时合并到
+        #                              magnets.json + magnets_links.txt（让 NAS 批量发送仍能拿到）
+        #   3) 其他            → 正常抓 JavBus（写入 scrape_only_codes → job.codes）
         idx = state.library_index
-        skipped = []
-        scrape_codes = []
+        wanted = request.app.state.wanted
+        skipped: list[str] = []
+        scrape_only_codes: list[str] = []
+        cached_entries: List[Dict[str, Any]] = []
         for code in codes:
             if idx and idx.find_match(code):
                 skipped.append(code)
+                continue
+            entry = wanted.get(code) if wanted else None
+            if entry and (entry.get("magnet") or "").strip():
+                cached_entries.append({
+                    "code": code,
+                    "status": "ok",
+                    "title": entry.get("title", ""),
+                    "magnet": entry["magnet"],
+                    "release_date": entry.get("release_date", ""),
+                    "actors": entry.get("actors", ""),
+                })
             else:
-                scrape_codes.append(code)
+                scrape_only_codes.append(code)
 
-        if not scrape_codes:
-            # 原服务：200 + body 含 error 字段；这里保持一致以便前端兼容
+        if not scrape_only_codes and not cached_entries:
             return {
                 "error": f"全部 {len(codes)} 个车牌本地已存在，无需抓取",
                 "skipped": skipped,
             }
 
         try:
-            job = state.start_job(scrape_codes, lambda j: start_scrape_job(
+            # job.codes 只装要真正抓的——MagnetSpider 不会重复处理 cached
+            job = state.start_job(scrape_only_codes, lambda j: start_scrape_job(
                 j, state.output_dir, state.proxy, state.library_index
             ))
             job.skipped = skipped
+            job.extra_cached = cached_entries
         except RuntimeError as e:
             raise HTTPException(status_code=409, detail=str(e))
 
         return {
             "job_id": job.id,
-            "total": len(scrape_codes),
+            # 端点用户感知的 total = 真抓 + cached（用于前端 toast）
+            "total": len(scrape_only_codes) + len(cached_entries),
+            "scrape_total": len(scrape_only_codes),
+            "cached_count": len(cached_entries),
             "skipped": skipped,
         }
 

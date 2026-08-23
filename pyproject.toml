@@ -5,7 +5,9 @@ description = "jav info scrapy"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "cryptography>=43.0.0",   # 极空间 NAS RSA 登录加密（vendored zspace_nas/auth.py）
     "fastapi>=0.115.0",
+    "httpx>=0.27.0",          # 极空间 NAS async HTTP 客户端（vendored zspace_nas/client.py）
     "pillow>=11.2.1",
     "poetry>=2.1.3",
     "pydantic>=2.11.0",
