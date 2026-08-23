@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>影片画廊</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/responsive.css">
+</head>
+<body class="page-wanted">
+
+<header>
+  <div class="title-row">
+    <h1>影片画廊</h1>
+    <span class="source" id="source">加载中…</span>
+  </div>
+  <nav class="nav-bar">
+    <a href="/wanted" id="nav-wanted">最想要列表</a>
+    <a href="/library" id="nav-library">本地库</a>
+  </nav>
+
+  <!-- /wanted 工具栏：月份筛选 + 搜索 + 抓取 + 刷新 -->
+  <div class="toolbar" id="toolbar-wanted" style="display:none">
+    <input type="search" id="search" placeholder="搜索车牌或标题…" autocomplete="off">
+    <div class="month-picker-wrap">
+      <button id="btn-w-month" class="month-trigger" type="button" title="按发行月份筛选">
+        <span id="w-month-trigger-label">全部月份</span>
+        <span class="caret">▾</span>
+      </button>
+      <div class="month-popup" id="w-month-popup" hidden role="dialog" aria-label="按月份筛选">
+        <div class="month-popup-head">
+          <button class="icon-btn" id="w-year-prev" type="button" title="上一年">‹</button>
+          <span class="year-display" id="w-year-display">— 年</span>
+          <button class="icon-btn" id="w-year-next" type="button" title="下一年">›</button>
+        </div>
+        <div class="month-grid" id="w-month-grid"></div>
+        <div class="month-popup-foot">
+          <button class="chip-btn" id="w-month-unknown" type="button">未知月份 <span class="count">0</span></button>
+          <button class="chip-btn" id="w-month-clear" type="button">清除筛选</button>
+        </div>
+      </div>
+    </div>
+    <button id="btn-all">全选</button>
+    <button id="btn-none">清空</button>
+    <button id="btn-invert">反选</button>
+    <span class="spacer"></span>
+    <span class="count">已选 <b id="sel-count">0</b> / <span id="total">0</span></span>
+    <span id="last-refresh" class="last-refresh"></span>
+    <button id="btn-refresh" title="抓取 Most Wanted → 合并 → 逐条抓 JavBus 详情">🔄 手动刷新</button>
+    <button id="btn-export">导出 code</button>
+    <button id="btn-zspace-settings" title="极空间 NAS 配置（host / user / password / 下载目录）">🛜 zspace</button>
+    <button id="btn-scrape" class="primary">抓取选中的磁力</button>
+  </div>
+
+  <!-- /library 工具栏 -->
+  <div class="toolbar" id="toolbar-library" style="display:none">
+    <input type="search" id="lib-search" placeholder="搜索车牌 / 标题 / 演员…" autocomplete="off">
+    <select id="lib-sort" style="padding:7px 11px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font:inherit;">
+      <option value="released" selected>按发售时间</option>
+      <option value="carid">按车牌</option>
+      <option value="mtime">按修改时间</option>
+    </select>
+    <div class="month-picker-wrap">
+      <button id="btn-month" class="month-trigger" type="button" title="按发行月份筛选">
+        <span id="month-trigger-label">全部月份</span>
+        <span class="caret">▾</span>
+      </button>
+      <div class="month-popup" id="month-popup" hidden role="dialog" aria-label="按月份筛选">
+        <div class="month-popup-head">
+          <button class="icon-btn" id="year-prev" type="button" title="上一年">‹</button>
+          <span class="year-display" id="year-display">— 年</span>
+          <button class="icon-btn" id="year-next" type="button" title="下一年">›</button>
+        </div>
+        <div class="month-grid" id="month-grid"></div>
+        <div class="month-popup-foot">
+          <button class="chip-btn" id="month-unknown" type="button">未知月份 <span class="count">0</span></button>
+          <button class="chip-btn" id="month-clear" type="button">清除筛选</button>
+        </div>
+      </div>
+    </div>
+    <button id="btn-lib-rescan">刷新库</button>
+    <span class="spacer"></span>
+    <span class="count" id="lib-status">—</span>
+  </div>
+
+  <!-- /library 当前筛选（演员等，可点 × 清除） -->
+  <div class="active-filters" id="active-filters" style="display:none"></div>
+
+  <div id="banner" hidden></div>
+</header>
+
+<main id="grid"></main>
+
+<aside id="panel">
+  <div class="panel-head">
+    <h2>磁力抓取</h2>
+    <button class="icon-btn" id="btn-close" title="收起">×</button>
+  </div>
+  <div class="progress-wrap">
+    <div class="progress-text">
+      <span id="prog-label">准备中…</span>
+      <span id="prog-count">0 / 0</span>
+    </div>
+    <div class="bar"><i id="prog-bar"></i></div>
+  </div>
+  <div class="panel-body">
+    <div id="results"></div>
+    <details class="logs">
+      <summary>抓取日志</summary>
+      <pre class="log" id="log"></pre>
+    </details>
+  </div>
+  <div class="panel-foot">
+    <button id="btn-copy-all">复制全部磁力</button>
+    <button id="btn-send-zspace" disabled title="极空间未配置">📥 发送到NAS</button>
+    <button id="btn-retry" disabled>重试失败项</button>
+    <div class="outputs" id="outputs"></div>
+  </div>
+</aside>
+
+<div id="tooltip" hidden></div>
+<div id="lightbox" hidden role="dialog" aria-label="查看大图"><img id="lightbox-img" alt=""><div class="lb-caption" id="lightbox-cap"></div></div>
+<div id="gallery-lb" hidden role="dialog" aria-label="查看大图与样图">
+  <div class="glb-header">
+    <span id="glb-title">—</span>
+    <button type="button" class="glb-close" id="glb-close">关闭 ✕</button>
+  </div>
+  <div class="glb-main">
+    <button type="button" class="glb-nav prev" id="glb-prev" aria-label="上一张">‹</button>
+    <img id="glb-img" alt="">
+    <button type="button" class="glb-nav next" id="glb-next" aria-label="下一张">›</button>
+  </div>
+  <div class="glb-thumbs" id="glb-thumbs"></div>
+</div>
+
+<!-- 极空间 NAS 配置 modal（独立于抓取面板，常驻可调） -->
+<aside id="zspace-modal" hidden role="dialog" aria-label="zspace 配置">
+  <div class="zs-box">
+    <header>
+      <h2>🛜 zspace 极空间 NAS 配置</h2>
+      <button class="icon-btn" id="zspace-close" title="关闭">×</button>
+    </header>
+    <div class="zs-body">
+      <div class="field">
+        <label class="checkbox-label">
+          <input type="checkbox" id="zs-enabled"> 启用 zspace 集成
+        </label>
+        <small>未勾选则 /api/zspace/submit 返回 503，「📥 发送到NAS」按钮保持禁用</small>
+      </div>
+      <div class="field">
+        <label>NAS 内网 IP</label>
+        <input type="text" id="zs-host" placeholder="192.168.1.100" autocomplete="off">
+        <small>端口固定 5055</small>
+      </div>
+      <div class="field">
+        <label>用户名（手机号）</label>
+        <input type="text" id="zs-user" placeholder="138xxxxxxxx" autocomplete="off">
+      </div>
+      <div class="field">
+        <label>密码</label>
+        <div class="password-row">
+          <input type="password" id="zs-password" placeholder="输入新值覆盖；留空保持原密码" autocomplete="new-password">
+          <button type="button" class="icon-btn" id="zs-show-pwd" title="显示/隐藏密码">👁</button>
+        </div>
+        <small>已保存的密码不会在前端显示；只在你输入新值时才会更新</small>
+      </div>
+      <div class="field">
+        <label>device_id（可选）</label>
+        <input type="text" id="zs-device-id" placeholder="32 字符 hex；空则自动生成" autocomplete="off">
+        <small>首次启用会触发 N001414 短信验证，验证后从浏览器 cookie 复制填入可避免每次重验证</small>
+      </div>
+      <div class="field">
+        <label>下载目录</label>
+        <input type="text" id="zs-download-path" placeholder="/sata14/my/data/zvideo/JAV" autocomplete="off">
+        <small>NAS 文件系统路径（/pool/my/data/.../）。pool 名取决于你的存储池（常见 sata14/nvme19）</small>
+      </div>
+      <div class="zs-error" id="zs-error" hidden></div>
+    </div>
+    <footer>
+      <button id="zs-cancel">取消</button>
+      <button id="zs-save" class="primary">保存</button>
+    </footer>
+  </div>
+</aside>
+
+<div id="toast"></div>
+
+<script type="module" src="/static/js/main.js"></script>
+</body>
+</html>

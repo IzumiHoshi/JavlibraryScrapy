@@ -50,7 +50,7 @@ flowchart TB
     end
 
     subgraph UI["🖥️ 浏览器 UI"]
-        TPL["templates/gallery.html<br/>(单文件, 热加载)"]
+        TPL["static/index.html +<br/>css/ + js/ (ES modules)"]
         PAGE["/wanted  +  /library<br/>双页面 · 海报灯箱"]
     end
 
@@ -122,7 +122,7 @@ flowchart TB
 └────────────┬───────────────────────────┘
              │
 ┌─── UI ──────▼──────────────────────────┐
-│  gallery.html (双页面 /wanted + /library)│
+│  static/ (index.html + css/ + js/，双页面 /wanted + /library) │
 └────────────────────────────────────────┘
 ```
 
@@ -134,7 +134,7 @@ flowchart TB
 | CLI ↔ 持久化 | 同上 | CLI 直接读写文件，与服务**无共享内存** |
 | 服务 ↔ 持久化 | `output/javlibrary_movies.json` + `library_index.json` | 服务启动时按需加载；写操作走原子 `.tmp → rename` |
 | 服务 ↔ 爬虫 | `JavbusSpider` / `JAVLibrarySpider` 公共方法 | 单实例任务锁防并发（详见 [`refresh-flows.md`](refresh-flows.md)） |
-| UI ↔ 服务 | REST + 模板从磁盘读取 | 模板**热加载**——改 `gallery.html` 刷新即生效，不需要重启服务 |
+| UI ↔ 服务 | REST + StaticFiles | 前端**热加载**——改 `static/` 下任意文件刷新即生效（CSS/JS 走浏览器缓存 `If-Modified-Since`，HTML 走 `FileResponse`），不需要重启服务 |
 
 ---
 
@@ -242,7 +242,7 @@ flowchart TB
 sequenceDiagram
     autonumber
     participant U as 🖥️ 浏览器
-    participant T as gallery.html
+    participant T as static/index.html
     participant R as routes/*.py
     participant S as services/*.py
     participant J as JavbusSpider<br/>(异步)

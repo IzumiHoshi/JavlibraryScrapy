@@ -5,7 +5,7 @@
 > 关联代码：
 > - 扫描器：`src/javlibraryscrapy/library/scanner.py`
 > - FastAPI 服务：`src/javlibraryscrapy/server/`（`app.py` + `services/` + `routes/`）
-> - 模板：`src/javlibraryscrapy/templates/gallery.html`（双页面，热加载）
+> - 前端：`src/javlibraryscrapy/static/`（`index.html` + `css/{app,responsive}.css` + `js/{main,utils,month-picker,tooltip,lightbox,wanted,library}.js`，FastAPI `StaticFiles` 挂载在 `/static/`，热加载）
 
 ## 0. 文档更新记录
 
@@ -91,7 +91,7 @@
 
 ```
 ┌──────────────┐    ┌─────────────────────┐    ┌──────────────┐
-│ gallery.html │<──>│ gallery_server.py   │<──>│ library_index│
+│ static/ (html+css+js) │<──>│ gallery_server.py   │<──>│ library_index│
 │  (UI 双路由) │    │  GalleryApp         │    │   .json      │
 └──────────────┘    │  - library_index    │    └──────────────┘
                     │  - scan_progress    │            ▲
@@ -256,7 +256,7 @@ def is_local_match(target_code, local_code):
 | 文件 | 改动 |
 |---|---|
 | `src/javlibraryscrapy/cli/gallery.py` | 新增 `LibraryApp` 状态、新增 5 个端点、修改 `/api/movies` 与 `/api/scrape`、新增导航条 HTML |
-| `src/javlibraryscrapy/templates/gallery.html` | 重构为支持双页面（`/wanted`、`/library`）；新增 nav bar、search bar、tooltip、状态横幅 |
+| `src/javlibraryscrapy/static/` | 重构为支持双页面（`/wanted`、`/library`）的零构建 ES modules：原 117 KB `templates/gallery.html` 拆为 `static/index.html` + `css/{app,responsive}.css` + `js/{main,utils,month-picker,tooltip,lightbox,wanted,library}.js` |
 | `.gitignore` | 加 `output/library_index.json` |
 | `CLAUDE.md` | 补充「本地影片库」架构说明 |
 | `.env`（或 `.env.example`） | 加 `LIBRARY_ROOT`、`LIBRARY_INDEX` 注释 |
@@ -282,7 +282,7 @@ def is_local_match(target_code, local_code):
 
 1. **library_scanner.py** — 独立模块，先单测（tmp_path 假目录）
 2. **gallery_server.py** — 加 `LibraryApp` 状态机 + 端点（最小可用版，先不支持搜索分页）
-3. **gallery.html** — 改造为双页面
+3. **static/index.html + js/** — 改造为双页面入口（`initWanted` / `initLibrary` 两个独立模块）
 4. **.env / .gitignore / CLAUDE.md** — 配置与文档收尾
 5. **手动端到端测试**
 
@@ -320,7 +320,7 @@ v1.0 设计稿与最终实现之间的偏差：
 | Q1 启动扫一次 + 手动按钮 | ✅ | `startup_hook` 不触发扫描，等手动 |
 | Q2 索引落盘 + 哈希查找 | ✅ | 但用 dict + 双向前缀匹配，**未用 bisect**（亚毫秒无需） |
 | Q3 双向前缀匹配 | ✅ | `library_index.find_match()` |
-| Q6 badge | ✅ | `templates/gallery.html` 渲染 `local_exists` |
+| Q6 badge | ✅ | `static/js/{wanted,library}.js` 渲染 `local_exists` |
 | Q7 tooltip | ✅ | 字段：路径 / 大小 / 格式 / NFO+poster+fanart / 修改时间 / 演员前 3 |
 | Q11 双路由 | ✅ | `/wanted` + `/library` + 顶部导航 |
 | Q13 方案 a（停深入策略） | ✅ | `scan_library` 实现 |
