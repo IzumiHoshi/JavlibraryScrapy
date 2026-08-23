@@ -1,0 +1,150 @@
+  /* ---------- 紧凑 / 触屏布局 ----------
+   * 多条件触发（任一命中即走紧凑布局）：
+   *   1. (hover: none) and (pointer: coarse) —— 触屏特征，不依赖宽度
+   *   2. (max-width: 1280px)              —— 桌面模式浏览器把 1280 手机报告为桌面宽度时兜底
+   * 大屏桌面（>1280px + 鼠标）保持原 flex 行为。
+   */
+  @media (max-width: 1280px), (hover: none) and (pointer: coarse) {
+    html, body { min-height: 100%; }
+    body { overflow-x: hidden; -webkit-tap-highlight-color: transparent; }
+    header { padding: calc(10px + env(safe-area-inset-top)) 12px 10px; }
+    .title-row { display: block; }
+    h1 { font-size: 18px; }
+    .source {
+      display: block; max-width: 100%; margin-top: 2px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .nav-bar { flex-wrap: wrap; }
+    .nav-bar a { padding: 8px 12px; flex: 1; text-align: center; }
+    .toolbar {
+      display: flex; flex-wrap: wrap;
+      gap: 6px; margin-top: 8px;
+    }
+    input[type="search"] {
+      flex: 1 1 100%; width: 100%; max-width: none; min-width: 0;
+      min-height: 40px; padding: 9px 12px;
+      font-size: 16px;
+    }
+    .toolbar button { touch-action: manipulation; }
+    .spacer { display: none; }
+    .count {
+      order: 2;
+      flex: 0 0 auto;
+      padding: 8px 10px;
+      background: var(--bg-elev);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 13px;
+      min-height: 40px;
+      display: inline-flex;
+      align-items: center;
+      white-space: nowrap;
+    }
+    /* lib-status 是 lib-toolbar 唯一的 .count；长 UNC 路径在 1280px 屏幕会
+     溢出 toolbar。让整段允许换行 + 路径段允许字符级断行（断字符比断单词
+     更适合 "\\192.168.0.47\团队文件-..." 这类路径；分段里有完整 title
+     提示原始值）。 */
+  #lib-status {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    max-width: 100%;
+  }
+  #lib-status .ls-path {
+    display: inline;
+    max-width: none;
+    white-space: normal;
+    word-break: break-all;
+  }
+
+  #btn-scrape {
+      order: 3;
+      flex: 0 0 auto;
+      margin-left: auto;
+      min-height: 40px; padding: 9px 14px;
+      font-size: 14px;
+      white-space: nowrap;
+    }
+    #btn-all, #btn-none, #btn-invert {
+      order: 10;
+      min-height: 32px; padding: 5px 10px;
+      font-size: 12px;
+    }
+    #btn-refresh {
+      order: 20;
+      min-height: 32px; padding: 5px 10px;
+      font-size: 12px;
+      margin-left: auto;
+    }
+    #btn-export {
+      order: 21;
+      min-height: 32px; padding: 5px 10px;
+      font-size: 12px;
+    }
+    #last-refresh {
+      order: 30;
+      flex: 1 1 100%;
+      text-align: center;
+      margin-top: 2px;
+    }
+
+    main {
+      overflow: visible;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 10px;
+      padding: 12px 10px calc(28px + env(safe-area-inset-bottom));
+    }
+    .card { min-width: 0; gap: 10px; padding: 10px; border-radius: 10px; }
+    .card input[type="checkbox"] { width: 22px; height: 22px; margin-top: 1px; }
+    .cover { width: 84px; height: 118px; border-radius: 7px; }
+    .body { gap: 5px; }
+    .name { -webkit-line-clamp: 5; overflow-wrap: anywhere; }
+    .card-links a { display: inline-block; padding: 7px 0; }
+    .local-badge { top: 4px; right: 4px; }
+
+    #panel {
+      width: 100%; max-width: none; border-left: 0;
+      transform: translateY(102%);
+    }
+    #panel.open { transform: none; }
+    .panel-head { min-height: 56px; padding: calc(8px + env(safe-area-inset-top)) 12px 8px; }
+    .icon-btn { min-width: 44px; min-height: 44px; padding: 8px 12px; }
+    .progress-wrap { padding: 12px; }
+    .panel-body { padding: 8px 12px; overscroll-behavior: contain; }
+    .result {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      gap: 6px; align-items: center;
+      padding: 9px 0;
+    }
+    .r-code {
+      min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .r-magnet {
+      grid-column: 1 / -1; width: 100%; white-space: normal;
+      overflow-wrap: anywhere; word-break: break-word;
+      overflow: visible; text-overflow: clip;
+    }
+    .r-copy { min-height: 36px; padding: 7px 10px; touch-action: manipulation; }
+    details.logs { margin-top: 8px; }
+    details.logs summary { min-height: 44px; display: flex; align-items: center; }
+    pre.log { max-height: 240px; }
+    .panel-foot {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+    }
+    .panel-foot button { width: 100%; min-height: 44px; padding: 8px 6px; touch-action: manipulation; }
+    .outputs { grid-column: 1 / -1; max-height: 60px; overflow: auto; }
+    #toast {
+      bottom: calc(16px + env(safe-area-inset-bottom));
+      max-width: calc(100vw - 24px); text-align: center;
+    }
+    #tooltip { max-width: calc(100vw - 24px); }
+  }
+
+  @media (max-width: 380px) {
+    main { padding-left: 8px; padding-right: 8px; }
+    .card { gap: 8px; padding: 8px; }
+    .cover { width: 76px; height: 107px; }
+  }

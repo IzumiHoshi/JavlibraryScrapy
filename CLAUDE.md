@@ -12,7 +12,8 @@ Python 网络爬虫，用于从 **JAVBus**（按视频抓取元数据 → 生成
 
 ```bash
 # 安装/同步依赖
-uv sync
+uv sync                   # 仅运行时依赖（默认）
+uv sync --group dev       # 含 pytest + pytest-asyncio（跑 `uv run pytest` 之前需要）
 
 # JAVBus：扫描视频目录，抓取元数据，生成 NFO + 封面
 uv run python -m javlibraryscrapy.scraping.javbus
@@ -60,7 +61,7 @@ uv run python -m javlibraryscrapy.cli.rename_at_symbol <path> [--preview]
 uv run python scripts/restore_wanted_from_folders.py [--dry-run] [--mw-root Z:/JAV/MostWanted] [--json output/javlibrary_movies.json]
 
 # 调试辅助脚本（手动脚本，不是 pytest；tests/ 里 .py 是 Python，.ps1 是 PowerShell 辅助）
-uv run pytest tests/unit/                 # 单元测试
+uv run pytest tests/unit/                 # 单元测试（pytest 在 [dependency-groups].dev，uv sync --group dev 安装）
 uv run pytest tests/integration/          # 集成测试（启动子进程画廊服务）
 uv run python tests/unit/debug_scraper.py  # 诊断 AsyncDynamicSession 加载
 uv run python tests/unit/test_scraper.py   # 仅爬取 JAVLibrary 首页
@@ -115,7 +116,8 @@ uv run python tests/integration/test_gallery_server_library.py # 离线跑画廊
     - 同一时刻只允许一个任务（第二次提交返回 409）；`code` 必须匹配 `[A-Z0-9_-]{2,32}` 才会被拼进 URL。
     - `/api/cover?url=` 用 `requests` + `.env` 代理在服务端拉封面并缓存到 `output/.cover_cache/`（`--image-proxy auto` 时，配了代理才启用）—— `pics.dmm.co.jp` 的图在部分网络下浏览器直连拿不到。
     - **单部刷新**（commit `0471157`）：`wanted_refresh` 路由对单条车牌重新拉 JAVBus，可保留已选状态、避免整页重抓。
-  - 页面模板在 `src/javlibraryscrapy/templates/gallery.html`，每次请求从磁盘读取，改完刷新即可，不用重启服务。模板同时承载 `/wanted`（爬取结果）和 `/library`（本地库）双页面 + 顶部导航 + 海报灯箱（commit `0471157` 的双页面灯箱指 wanted/library 两个页面共用一个灯箱组件）。
+  - 页面入口在 `src/javlibraryscrapy/static/index.html`，由 `app.py` 的 `StaticFiles` 挂载在 `/static/` 提供；`pages.py` 的 4 个 GET 路由（`/`、`/index.html`、`/wanted`、`/library`）统一返回同一份 `index.html`（`FileResponse`，浏览器 `If-Modified-Since` 自动 304，改完前端文件刷新即生效，不需重启服务）。模板同时承载 `/wanted`（爬取结果）和 `/library`（本地库）双页面 + 顶部导航 + 海报灯箱（commit `0471157` 的双页面灯箱指 wanted/library 两个页面共用一个灯箱组件）。
+  - 前端拆分为零构建的原生 ES modules（`src/javlibraryscrapy/static/js/`）：`main.js` 入口根据 `location.pathname` 路由；通用工具 `utils.js`、月份选择器 `month-picker.js`、Tooltip `tooltip.js`、多图灯箱 `lightbox.js` 是双页面共用叶子；`wanted.js` / `library.js` 是页面初始化（各自 ~400 / ~870 行，单函数闭包持有本地状态）。CSS 拆为 `app.css`（变量 + 布局 + 组件）+ `responsive.css`（触屏/窄屏 `@media`）。
 
 > `scripts/README.md` 引用的 `scripts/workflow.py` 不存在 —— 工作流位于 `src/javlibraryscrapy/cli/workflow.py`。`scripts/` 下只有 PowerShell 脚本：
 > - `Start-GalleryServer.ps1` —— FastAPI 画廊的后台启停 / 探活（PID + 端口双定位，日志写到 `output/.gallery_server.log`）。
@@ -145,14 +147,14 @@ uv run python tests/integration/test_gallery_server_library.py # 离线跑画廊
   - `/library` 页面 + `/api/library*` 端点（列表/详情/状态/重扫/报警）；`/api/movies` 返回时附加 `local_exists` / `library_folder`；`/api/scrape` 自动跳过本地已存在的车牌（**不入 `magnets_links.txt`**，但 `magnets.json` v2 仍记录 `status=local_skip` 与 `library_folder`）
   - **路径归一化**（commit `c0ab1d7`）：用户传入的 `LIBRARY_ROOT` 和索引里已存的路径可能一个用映射盘（`Z:\JAV`）一个用 UNC（`\\nas\JAV`），形参上看着不一样但其实指向同一物理卷；服务启动 / 扫描 / 查询时统一走规范化比较，避免"索引被判定为 root 不一致 → 强制重扫"的误判。
   - `/api/local-cover` 读本地 `poster.jpg`（按 poster/folder/cover 顺序自动挑选，受 `library_root` 越界检查保护）；`/api/open-folder` 调 `os.startfile` 打开目录
-  - HTML 模板 `src/javlibraryscrapy/templates/gallery.html` 重构为支持 `/wanted` + `/library` 双路由 + 顶部导航 + badge tooltip + 搜索/分页/翻页/打开文件夹 + 双页面共用的海报灯箱（commit `0471157`）
+  - 前端入口 `src/javlibraryscrapy/static/index.html` 重构为支持 `/wanted` + `/library` 双路由 + 顶部导航 + badge tooltip + 搜索/分页/翻页/打开文件夹 + 双页面共用的海报灯箱（commit `0471157`）。原 117 KB 单 HTML 拆为 `static/index.html`（入口 HTML）+ `css/{app,responsive}.css` + `js/{main,utils,month-picker,tooltip,lightbox,wanted,library}.js`，每个 JS 文件 <900 行，最大文件是 `wanted.js`（869 行）而非 2901 行。
 - `scripts/Sync-LibraryCoverNames.ps1` — 一次性工具：把本地库里 `<carid> <title>-poster.jpg` / `...-fanart.jpg` / `<carid> <title>.nfo` 这类本机实际命名，复制一份成 `library_scanner` 识别的标准名（`poster.jpg` / `fanart.jpg` / `movie.nfo`）。原文件不动；`-DryRun` 只打印计划，`-Force` 覆盖已存在的标准名文件。一次 `Get-ChildItem` 拿齐文件夹内容再做批量决策，避免大量 PSObject 实例化。
 
 ## 仓库布局（精选）
 
 - `output/` — `cli/workflow.py` 结果和 JAVLibrary `movies.json`/`movies.csv` 的默认目的地。仓库中已存在（可能是历史运行产物）。画廊的磁力结果也写在这里（`magnets.json` v2 含 `local_skip`、`magnets_links.txt`），封面缓存在 `output/.cover_cache/`（已 gitignore），本地库索引 `output/library_index.json`（已 gitignore），画廊后台运行 PID 在 `output/.gallery_server.pid`、日志在 `output/.gallery_server.log`。**⚠️ 整个 `output/` 在 `.gitignore` 里**，包括 `javlibrary_movies.json` —— 任何 `git rm`/`git reset`/分支回滚都会丢数据。若被误删，用 `scripts/restore_wanted_from_folders.py` 从 NFS `<MOSTWANTED_LIBRARY_ROOT>` 上的 `<CODE> <title>/` folder 反推；release_date 会留空，下次 `refresh_wanted` 自动补回。
-- `src/javlibraryscrapy/` — 主包（见上方架构一节），按 `scraping/`、`library/`、`cli/`、`server/`、`utils/`、`templates/` 分子包。
-- `src/javlibraryscrapy/templates/gallery.html` — 单文件模板，承载 `/wanted` + `/library` 双路由 + 海报灯箱 + 顶部导航。模板从磁盘实时读取，不需要重启服务。
+- `src/javlibraryscrapy/` — 主包（见上方架构一节），按 `scraping/`、`library/`、`cli/`、`server/`、`utils/`、`static/` 分子包。
+- `src/javlibraryscrapy/static/` — 前端静态资源（由 FastAPI `StaticFiles` 挂载在 `/static/`）：`index.html` 入口、`css/{app,responsive}.css`、`js/{main,utils,month-picker,tooltip,lightbox,wanted,library}.js`。零构建链，改完文件刷新页面即生效。
 - `tests/` — pytest 测试 + 手动调试脚本，按 `unit/` / `integration/` 分目录。`tests/ps1/` 下是 PowerShell 调试脚本。
 - `temp/` — `tests/unit/verify_parsing.py` 的测试夹具：调试 JAVLibrary 解析时把 HTML 响应文件保存到这里。
 - `.claude/` — 本项目的 Claude Code 配置（`settings.json` 启用 `frontend-design` 插件、`settings.local.json` 放行 `Bash(*)`）。添加允许的权限或 hooks 时编辑这里。

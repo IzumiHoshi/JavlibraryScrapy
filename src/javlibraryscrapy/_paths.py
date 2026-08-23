@@ -4,7 +4,7 @@
 脆弱的写法。包被搬到子目录或被 vendored 进去时，只需改这一处。
 
 - :data:`REPO_ROOT` —— 仓库根（``src/`` 的父目录，``output/``、``.env`` 在这里）
-- :data:`PACKAGE_ROOT` —— Python 包根（``src/javlibraryscrapy/``，``templates/`` 在这里）
+- :data:`PACKAGE_ROOT` —— Python 包根（``src/javlibraryscrapy/``，``static/`` 在这里）
 
 注意：装成 wheel 后这些路径仍指向源码 checkout；这跟原代码行为一致
 （脚本仍假设从源码 checkout 运行，不假设安装后的 site-packages 布局）。
