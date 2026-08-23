@@ -6,6 +6,21 @@
 > 服务入口：`src/javlibraryscrapy/cli/gallery.py`（包装 `python -m javlibraryscrapy.cli.gallery`）
 > 模板：单文件 `src/javlibraryscrapy/templates/gallery.html`，从磁盘实时读，改完刷新即生效
 
+## 文档更新记录
+
+| 日期 | 变更 |
+| --- | --- |
+| 2026-08-23 | 同步到 v1.x：服务已重构为 `src/javlibraryscrapy/server/` 包；本节路由 / 服务路径按当前代码标注。 |
+| 2026-08-23 | 新增「关键 Commit」一节：`c0ab1d7`（路径归一化影响扫描启动判定）、`0471157`（单部刷新 + 双页面灯箱）、`45e0d9a`（磁链解析回退）。 |
+
+## 关键 Commit
+
+| Commit | 标题 | 影响本流程的点 |
+| --- | --- | --- |
+| `45e0d9a` | **磁链解析鲁棒性**：`_extract_magnet_link` 加全文正则回退 | 手动刷新 Phase 3 的 JAVBus 抓取对结构差异的画廊详情页不再漏抓 |
+| `0471157` | **单部刷新 + 双页面灯箱**：`/api/library/{carid}/rescan` + `/wanted`/`/library` 共用灯箱 | 「↻ 单部刷新」按钮的入口；顶部导航；灯箱组件复用 |
+| `c0ab1d7` | **路径归一化**：`LIBRARY_ROOT` vs 索引 root 比较时统一走 `normcase + realpath` | 「刷新库」启动时不再因映射盘 vs UNC 物理同卷而误判为 root 不一致 → 强制重扫 |
+
 ---
 
 ## 总览
@@ -21,6 +36,62 @@
 - 「手动刷新」**单实例**——再触发返回 `is_already_running=true`。
 - 「刷新库」**单实例**——再触发返回 HTTP 409。
 - 「单部刷新」**队列**——重复点击同一部会入队或标记 `already`；不同车可以同时入队，但 worker 一次只处理一部。
+
+### Mermaid 总览
+
+```mermaid
+flowchart LR
+    subgraph UI["🖥️ 浏览器"]
+        BTN["3 个刷新按钮"]
+    end
+
+    subgraph API["⚙️ FastAPI 路由"]
+        R1["/api/wanted/refresh"]
+        R2["/api/library/rescan"]
+        R3["/api/library/{carid}/rescan"]
+    end
+
+    subgraph Worker["🧵 后台执行"]
+        W1["wanted_refresh.refresh_wanted<br/>4 phase 流水线"]
+        W2["_run_rescan<br/>walk + 解析 NFO"]
+        W3["RescanQueue worker<br/>串行单部"]
+    end
+
+    subgraph Output["💾 落盘"]
+        F1["javlibrary_movies.json<br/>+ &lt;root&gt;/&lt;CARID&gt; &lt;title&gt;/cover.jpg"]
+        F2["library_index.json"]
+        F3["影片目录内 NFO + 封面"]
+    end
+
+    subgraph Polling["🔁 前端轮询"]
+        P1["refresh-status (1.5s)"]
+        P2["library/rescan-status (3s)"]
+        P3["library/{carid}/rescan-status (1.5s)"]
+    end
+
+    BTN -->|手动刷新| R1
+    BTN -->|刷新库| R2
+    BTN -->|单部 ↻| R3
+
+    R1 --> W1 --> F1
+    R2 --> W2 --> F2
+    R3 --> W3 --> F3
+
+    W1 -.->|snap.phase/current_code| P1
+    W2 -.->|scanned/current_folder| P2
+    W3 -.->|current/queued| P3
+
+    P1 --> BTN
+    P2 --> BTN
+    P3 --> BTN
+
+    style W1 fill:#e3f2fd
+    style W2 fill:#fff3e0
+    style W3 fill:#f3e5f5
+    style F1 fill:#e8f5e9
+    style F2 fill:#e8f5e9
+    style F3 fill:#e8f5e9
+```
 
 ---
 
