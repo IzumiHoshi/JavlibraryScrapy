@@ -16,7 +16,9 @@ from typing import Optional
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, Response
+from fastapi.staticfiles import StaticFiles
 
+from javlibraryscrapy._paths import PACKAGE_ROOT
 from .config import Settings, load_settings
 from .routes import register_routes
 from .services.library import GalleryState
@@ -185,6 +187,13 @@ def create_app(
     app.state.wanted = wanted
     app.state.sample_cache = sample_cache
     app.state.zspace_config_store = zspace_config_store
+
+    # 前端静态资源：CSS / JS / 图片（重构后 gallery.html → static/index.html + 多模块）
+    # mount 在 routes 注册之后：Starlette 的 mount 作为路由表的 fallback，
+    # 所以 /api/* 的精确路由仍优先匹配，只有未匹配请求才会落到 StaticFiles。
+    static_dir = PACKAGE_ROOT / "static"
+    if static_dir.exists():
+        app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
     register_routes(app)
 

@@ -39,6 +39,19 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/javlibraryscrapy"]
 
+# Dev 依赖（PEP 735）。`uv sync --group dev` 装；uv run pytest 默认也会带上。
+# httpx 已在主依赖里，无需重复。
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+# pytest-asyncio 配置：async def test_* 无需 @pytest.mark.asyncio 装饰器。
+# tests/unit/test_scraper.py 等历史测试就是这种写法。
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
 [[tool.uv.index]]
 # Optional name for the index. 这个可以不写
 name = "aliyun"

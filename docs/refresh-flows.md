@@ -4,7 +4,7 @@
 「前端点击 → API → 后台执行 → 落盘/回填 → 前端轮询」的完整链路。
 
 > 服务入口：`src/javlibraryscrapy/cli/gallery.py`（包装 `python -m javlibraryscrapy.cli.gallery`）
-> 模板：单文件 `src/javlibraryscrapy/templates/gallery.html`，从磁盘实时读，改完刷新即生效
+> 前端：`src/javlibraryscrapy/static/`（`index.html` + `css/` + `js/`，零构建 ES modules），由 FastAPI `StaticFiles` 挂载在 `/static/`，改完刷新即生效
 
 ## 文档更新记录
 
@@ -208,7 +208,7 @@ JavbusSpider.parse() 返回 info
 
 ### 关键代码位置
 
-- 前端：`src/javlibraryscrapy/templates/gallery.html:1138-1190`（`startRefresh` / `pollRefreshStatus`）
+- 前端：`src/javlibraryscrapy/static/js/wanted.js`（`startRefresh` / `pollRefreshStatus`）
 - 路由：`src/javlibraryscrapy/server/routes/wanted.py:46-63`
 - 服务：`src/javlibraryscrapy/server/services/wanted.py:156-183`（任务管理）
 - Pipeline：`src/javlibraryscrapy/server/services/wanted_refresh.py:201-`（4 phase 主编排）
@@ -301,7 +301,7 @@ JavbusSpider.parse() 返回 info
 
 ### 关键代码位置
 
-- 前端：`src/javlibraryscrapy/templates/gallery.html:1706-1722`（按钮 handler）+ `:1580-1620`（loadStatus 渲染）
+- 前端：`src/javlibraryscrapy/static/js/library.js`（按钮 handler + loadStatus 渲染）
 - 路由：`src/javlibraryscrapy/server/routes/rescan.py:21-28`
 - 服务：`src/javlibraryscrapy/server/services/library.py:188-223`（`start_rescan` / `_run_rescan`）
 - 扫描器：`src/javlibraryscrapy/library/scanner.py`（`scan_library` / `save_index` / `load_index` / `LibraryIndex`）
@@ -399,7 +399,7 @@ JavbusSpider.parse() 返回 info
 
 ### 关键代码位置
 
-- 前端：`src/javlibraryscrapy/templates/gallery.html:1724-1810`（按钮 handler + 状态轮询）
+- 前端：`src/javlibraryscrapy/static/js/library.js`（按钮 handler + 状态轮询）
 - 路由：`src/javlibraryscrapy/server/routes/rescan.py:35-70`（`{carid}/rescan` + 返回 `already/running/position`）
 - 服务：`src/javlibraryscrapy/server/services/library.py:226-248`
 - 队列：`src/javlibraryscrapy/server/services/jobs.py:RescanQueue`
