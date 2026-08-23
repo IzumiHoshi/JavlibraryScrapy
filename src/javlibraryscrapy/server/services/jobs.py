@@ -41,6 +41,10 @@ class ScrapeJob:
         self.logs: Deque[str] = deque(maxlen=MAX_LOG_LINES)
         # Q4：本地库已存在、被前端发起但服务端过滤掉的 codes
         self.skipped: List[str] = []
+        # V2 增强：wanted 列表里已经持久化磁力的 codes——不跑 JavBus，但
+        # 也要写进 magnets.json + magnets_links.txt，让 NAS 批量发送能拿到。
+        # 元素结构同 ``results()`` 里 ok 项：``{code, status="ok", title, magnet, ...}``
+        self.extra_cached: List[Dict[str, Any]] = []
         self._lock = threading.Lock()
         self._items: Dict[str, Dict[str, Any]] = {
             code: {"code": code, "status": "pending", "title": "", "magnet": None}
@@ -78,7 +82,14 @@ class ScrapeJob:
                     item["status"] = "failed"
 
     def snapshot(self) -> Dict[str, Any]:
-        items = self.results()
+        items = list(self.results())
+        seen = {it["code"] for it in items}
+        # V2 增强：extra_cached 也算"完成项"——前端 lastItems 需要它们来"📥 发送到NAS"
+        for r in self.extra_cached:
+            if r["code"] in seen:
+                continue
+            items.append(dict(r))
+            seen.add(r["code"])
         finished = sum(1 for i in items if i["status"] != "pending")
         current = next((i["code"] for i in items if i["status"] == "pending"), None)
         with self._lock:

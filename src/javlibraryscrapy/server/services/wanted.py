@@ -183,6 +183,21 @@ class WantedService:
             )
         ]
 
+    def get(self, code: str) -> Optional[Dict[str, Any]]:
+        """按车牌查 wanted 记录（大小写不敏感），未找到返回 None。
+
+        镜像 :meth:`LibraryIndex.get` 接口；调用方在锁外只读快照，
+        所以无需拿 ``_lock``（``_movies`` 字典本身在 reload/save 时被整体替换，
+        读端可能短暂看到旧值，但语义安全）。
+        """
+        if not code:
+            return None
+        target = code.strip().upper()
+        for m in self._movies:
+            if (m.get("code") or "").upper() == target:
+                return m
+        return None
+
     def list(
         self,
         month: str = "",

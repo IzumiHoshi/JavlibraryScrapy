@@ -77,6 +77,14 @@ def write_job_outputs(
         }
 
     items: List[Dict[str, Any]] = [annotate(r) for r in results]
+    # 加入 wanted 缓存的磁力（V2 增强）：状态 ok + 有 magnet，直接 merge 进结果集
+    # 去重：code 已在 results 里的话跳过（避免重复写）
+    seen_codes = {item["code"] for item in items}
+    for r in job.extra_cached:
+        if r["code"] in seen_codes:
+            continue
+        items.append(annotate(r))
+        seen_codes.add(r["code"])
 
     # 加入被跳过的 codes（status=local_skip，无 magnet）
     for code in job.skipped:
@@ -104,16 +112,20 @@ def write_job_outputs(
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
-    # 磁力链接文件：只含真正抓到 magnet 的条目，跳过 local_skip 与失败项
+    # 磁力链接文件：含真正抓到的 magnet + wanted 缓存的 magnet；跳过 local_skip/失败/无磁力
     links_path = output_dir / "magnets_links.txt"
     links = [r["magnet"] for r in results if r.get("magnet")]
+    for r in job.extra_cached:
+        if r.get("magnet"):
+            links.append(r["magnet"])
     with open(links_path, "w", encoding="utf-8") as f:
         f.write("\n".join(links))
         if links:
             f.write("\n")
 
     logger.info(
-        f"已写入 {json_path}（{len(items)} 条，本地跳过 {len(job.skipped)} 条）"
+        f"已写入 {json_path}（{len(items)} 条，本地跳过 {len(job.skipped)} 条，"
+        f"wanted 缓存 {len(job.extra_cached)} 条）"
         f"与 {links_path}（{len(links)} 条磁力）"
     )
     return {"json": str(json_path), "links": str(links_path)}
