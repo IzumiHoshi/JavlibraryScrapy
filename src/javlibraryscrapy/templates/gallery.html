@@ -1045,7 +1045,6 @@
     <span id="last-refresh" class="last-refresh"></span>
     <button id="btn-refresh" title="抓取 Most Wanted → 合并 → 逐条抓 JavBus 详情">🔄 手动刷新</button>
     <button id="btn-export">导出 code</button>
-    <button id="btn-zspace-settings" title="极空间 NAS 配置（host / user / password / 下载目录）">🛜 zspace</button>
     <button id="btn-scrape" class="primary">抓取选中的磁力</button>
   </div>
 
@@ -1130,55 +1129,8 @@
   <div class="glb-thumbs" id="glb-thumbs"></div>
 </div>
 
-<!-- 极空间 NAS 配置 modal（独立于抓取面板，常驻可调） -->
-<aside id="zspace-modal" hidden role="dialog" aria-label="zspace 配置">
-  <div class="zs-box">
-    <header>
-      <h2>🛜 zspace 极空间 NAS 配置</h2>
-      <button class="icon-btn" id="zspace-close" title="关闭">×</button>
-    </header>
-    <div class="zs-body">
-      <div class="field">
-        <label class="checkbox-label">
-          <input type="checkbox" id="zs-enabled"> 启用 zspace 集成
-        </label>
-        <small>未勾选则 /api/zspace/submit 返回 503，「📥 发送到NAS」按钮保持禁用</small>
-      </div>
-      <div class="field">
-        <label>NAS 内网 IP</label>
-        <input type="text" id="zs-host" placeholder="192.168.1.100" autocomplete="off">
-        <small>端口固定 5055</small>
-      </div>
-      <div class="field">
-        <label>用户名（手机号）</label>
-        <input type="text" id="zs-user" placeholder="138xxxxxxxx" autocomplete="off">
-      </div>
-      <div class="field">
-        <label>密码</label>
-        <div class="password-row">
-          <input type="password" id="zs-password" placeholder="输入新值覆盖；留空保持原密码" autocomplete="new-password">
-          <button type="button" class="icon-btn" id="zs-show-pwd" title="显示/隐藏密码">👁</button>
-        </div>
-        <small>已保存的密码不会在前端显示；只在你输入新值时才会更新</small>
-      </div>
-      <div class="field">
-        <label>device_id（可选）</label>
-        <input type="text" id="zs-device-id" placeholder="32 字符 hex；空则自动生成" autocomplete="off">
-        <small>首次启用会触发 N001414 短信验证，验证后从浏览器 cookie 复制填入可避免每次重验证</small>
-      </div>
-      <div class="field">
-        <label>下载目录</label>
-        <input type="text" id="zs-download-path" placeholder="/sata14/my/data/zvideo/JAV" autocomplete="off">
-        <small>NAS 文件系统路径（/pool/my/data/.../）。pool 名取决于你的存储池（常见 sata14/nvme19）</small>
-      </div>
-      <div class="zs-error" id="zs-error" hidden></div>
-    </div>
-    <footer>
-      <button id="zs-cancel">取消</button>
-      <button id="zs-save" class="primary">保存</button>
-    </footer>
-  </div>
-</aside>
+<!-- zspace 配置已迁到 .env：ZSPACE_ENABLED / ZSPACE_HOST / ZSPACE_USER / ZSPACE_PASSWORD -->
+<!-- / ZSPACE_DEVICE_ID / ZSPACE_DOWNLOAD_PATH。改完需重启服务。 -->
 
 <div id="toast"></div>
 
@@ -2401,87 +2353,6 @@
     }
     $('btn-send-zspace').addEventListener('click', sendToZspace);
 
-    /* ---------- zspace 配置 modal ----------
-     * GET /api/zspace/config 读取当前配置（密码永远显示为占位 "已设置" / "未设置"），
-     * POST 保存（空 password = 不修改；非空 = 覆盖）。保存完自动 reload status 让按钮启用态即时更新。 */
-    const zspaceModal = $('zspace-modal');
-    const zsEls = {
-      enabled: $('zs-enabled'),
-      host: $('zs-host'),
-      user: $('zs-user'),
-      password: $('zs-password'),
-      deviceId: $('zs-device-id'),
-      downloadPath: $('zs-download-path'),
-      error: $('zs-error'),
-    };
-    function showZsError(msg) {
-      zsEls.error.textContent = msg;
-      zsEls.error.hidden = !msg;
-    }
-    function closeZspaceSettings() {
-      zspaceModal.classList.remove('show');
-      setTimeout(() => { zspaceModal.hidden = true; }, 180);
-    }
-    async function openZspaceSettings() {
-      showZsError('');
-      try {
-        const res = await fetch('/api/zspace/config');
-        if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
-        const cfg = await res.json();
-        zsEls.enabled.checked = !!cfg.enabled;
-        zsEls.host.value = cfg.host || '';
-        zsEls.user.value = cfg.user || '';
-        zsEls.password.value = '';   // 永远不让密码从 API 回到前端
-        zsEls.password.placeholder = cfg.password === '********'
-          ? '已设置（输入新值覆盖）'
-          : '未设置';
-        zsEls.deviceId.value = cfg.device_id || '';
-        zsEls.downloadPath.value = cfg.download_path || '';
-        zspaceModal.hidden = false;
-        requestAnimationFrame(() => zspaceModal.classList.add('show'));
-      } catch (e) {
-        toast('读取 zspace 配置失败：' + e.message, true);
-      }
-    }
-    $('btn-zspace-settings').addEventListener('click', openZspaceSettings);
-    $('zspace-close').addEventListener('click', closeZspaceSettings);
-    $('zs-cancel').addEventListener('click', closeZspaceSettings);
-    zspaceModal.addEventListener('click', (e) => {
-      if (e.target === zspaceModal) closeZspaceSettings();
-    });
-    $('zs-show-pwd').addEventListener('click', () => {
-      zsEls.password.type = zsEls.password.type === 'password' ? 'text' : 'password';
-    });
-    $('zs-save').addEventListener('click', async () => {
-      showZsError('');
-      const body = {
-        enabled: zsEls.enabled.checked,
-        host: zsEls.host.value.trim(),
-        user: zsEls.user.value.trim(),
-        device_id: zsEls.deviceId.value.trim(),
-        download_path: zsEls.downloadPath.value.trim(),
-      };
-      if (zsEls.password.value) {
-        body.password = zsEls.password.value;
-      }
-      try {
-        const res = await fetch('/api/zspace/config', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || data.error || res.statusText);
-        toast('zspace 配置已保存');
-        closeZspaceSettings();
-        await loadZspaceStatus();  // 刷新「📥 发送到NAS」按钮启用态
-      } catch (e) {
-        showZsError(e.message);
-      }
-    });
-    document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && zspaceModal.classList.contains('show')) closeZspaceSettings();
-    });
     $('btn-refresh').addEventListener('click', startRefresh);
     $('results').addEventListener('click', (e) => {
       const btn = e.target.closest('.r-copy');

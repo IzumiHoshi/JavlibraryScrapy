@@ -65,7 +65,7 @@ uv run python -m javlibraryscrapy.cli.gallery --port 8000 --data output/javlibra
 - `--data` 影片数据文件（默认 `output/javlibrary_movies.json`，缺失时回退同名 `.csv`）
 - `--output-dir` 结果输出目录（默认 `output/`）
 - `--host` / `--port` 监听地址与端口（默认 `0.0.0.0:8000`，允许局域网访问）
-- `--image-proxy {auto,on,off}` 封面是否经服务端代理拉取。`auto`（默认）在 `.env` 里 `PROXY_ENABLED=true` 时启用；封面缓存在 `output/.cover_cache/`
+- `--image-proxy {auto,on,off}` 封面是否经服务端代理拉取。`auto`（默认）在 `.env` 里 `PROXY_JAVBUS_ENABLED=true` 时启用；封面缓存在 `output/.cover_cache/`
 - `--open-browser` 启动后自动打开浏览器（默认不打开）
 
 > 代理、超时、User-Agent 等都读 `.env`，与 `javlibraryscrapy.scraping.javbus` 共用一套配置。同一时间只允许一个抓取任务。

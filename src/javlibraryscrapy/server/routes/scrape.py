@@ -88,7 +88,7 @@ def register(app: FastAPI) -> None:
         try:
             # job.codes 只装要真正抓的——MagnetSpider 不会重复处理 cached
             job = state.start_job(scrape_only_codes, lambda j: start_scrape_job(
-                j, state.output_dir, state.proxy, state.library_index
+                j, state.magnets_index, state.proxy, state.library_index
             ))
             job.skipped = skipped
             job.extra_cached = cached_entries

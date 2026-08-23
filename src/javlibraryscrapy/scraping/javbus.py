@@ -42,12 +42,19 @@ class JavbusSpider:
             root_dir: 根目录路径
         """
         self.root_dir = Path(root_dir) if root_dir else Path.cwd()
-        self.javbus_url = os.getenv("JAVBUS_URL", "https://www.javbus.com/")
-        if not self.javbus_url.endswith("/"):
-            self.javbus_url += "/"
+        # javbus_url：拼接视频页 URL 用（带尾斜杠）
+        # javbus_base_url：拼接相对封面 / 樣品 URL 用（不带尾斜杠）
+        # 两个值都从同一个 JAVBUS_URL 派生（避免两个变量手动同步）
+        url = os.getenv("JAVBUS_URL", "https://www.javbus.com").rstrip("/")
+        self.javbus_url = url + "/"
+        self.javbus_base_url = url
 
         self.movie_info_list = []
-        self.proxy_enabled = os.getenv("PROXY_ENABLED", "False").lower() == "true"
+        # 代理：开关 + PROXY 都得有值才实际启用；只控制 JAVBus 详情抓取
+        # （JAVLibrary 镜像走 PROXY_JAVLIBRARY_ENABLED，控制台 / Gallery 互不干扰）
+        self.proxy_enabled = (
+            os.getenv("PROXY_JAVBUS_ENABLED", "False").lower() == "true"
+        )
         self.proxy = os.getenv("PROXY", None) if self.proxy_enabled else None
         
         # Scrapling 会话配置
@@ -64,8 +71,7 @@ class JavbusSpider:
         self.download_timeout = int(os.getenv("DOWNLOAD_TIMEOUT", "10"))
         self.verify_ssl = os.getenv("VERIFY_SSL", "False").lower() == "true"
 
-        # 基础 URL 配置（用于处理相对路径）
-        self.javbus_base_url = os.getenv("JAVBUS_BASE_URL", "https://www.javbus.com")
+        # javbus_base_url 已在 __init__ 上方从 JAVBUS_URL 派生（不再单独读 JAVBUS_BASE_URL）
 
     def _extract_magnet_link(self, response) -> Optional[str]:
         """
@@ -543,7 +549,7 @@ async def main():
     spider = JavbusSpider(root_dir=root_dir)
 
     # 配置 User-Agent 和代理
-    proxy_enabled = os.getenv("PROXY_ENABLED", "False").lower() == "true"
+    proxy_enabled = os.getenv("PROXY_JAVBUS_ENABLED", "False").lower() == "true"
     if proxy_enabled:
         proxy_url = os.getenv("PROXY", "")
         logger.info(f"启用代理...{proxy_url}")

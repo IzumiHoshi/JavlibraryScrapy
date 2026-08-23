@@ -44,19 +44,23 @@ __all__ = ["WantedService", "WantedRefreshJob", "_bucket_for_release_date"]
 class WantedService:
     """Wanted 状态 + 后台任务管理。
 
-    ``javlibrary_proxy``：JAVLibrary 镜像（c99i.com）抓取时使用的代理。
-    当前默认 None——c99i.com 直连；将来若换镜像需要代理再设。
-    ``javbus_proxy``：JavBus 详情抓取时使用的代理（JavBus 需代理绕过
-    Cloudflare）；与磁力抓取（GalleryState）共用 ``settings.proxy``。
+    ``javlibrary_url``：JAVLibrary「最想要」列表入口 URL（默认 c99i.com 镜像；
+    切镜像/换原站时改 .env 的 ``JAVLIBRARY_URL``）。
+    ``javlibrary_proxy``：JAVLibrary 镜像抓取时使用的代理，受 ``.env`` 的
+    ``PROXY_JAVLIBRARY_ENABLED`` 控制；c99i.com 默认不需要。
+    ``javbus_proxy``：JavBus 详情抓取时使用的代理，受 ``.env`` 的
+    ``PROXY_JAVBUS_ENABLED`` 控制（JavBus 需代理绕过 Cloudflare）。
     """
 
     def __init__(
         self,
         data_path: Path,
+        javlibrary_url: str = "https://www.c99i.com/cn/vl_mostwanted.php",
         javlibrary_proxy: Optional[str] = None,
         javbus_proxy: Optional[str] = None,
     ):
         self.data_path = Path(data_path)
+        self.javlibrary_url = javlibrary_url
         self.javlibrary_proxy = javlibrary_proxy
         self.javbus_proxy = javbus_proxy
         self._lock = threading.Lock()
@@ -264,7 +268,13 @@ class WantedService:
             self.job = job
             t = threading.Thread(
                 target=refresh_wanted,
-                args=(self.data_path, self.javlibrary_proxy, self.javbus_proxy, job),
+                args=(
+                    self.data_path,
+                    self.javlibrary_url,
+                    self.javlibrary_proxy,
+                    self.javbus_proxy,
+                    job,
+                ),
                 kwargs={
                     "max_pages": max_pages,
                     "on_complete": self.reload,

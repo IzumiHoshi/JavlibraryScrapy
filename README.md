@@ -238,12 +238,15 @@ uv run python scripts/restore_wanted_from_folders.py --mw-root "Z:\JAV\MostWante
 
 ```env
 # JAVBus
-JAVBUS_URL=https://www.javbus.com/
-JAVBUS_BASE_URL=https://www.javbus.com
+JAVBUS_URL=https://www.javbus.com
+
+# JAVLibrary 入口（默认 c99i.com 镜像；切镜像/换回原站时改这里）
+JAVLIBRARY_URL=https://www.c99i.com/cn/vl_mostwanted.php
 
 # 代理（大多数地区必需）
-PROXY_ENABLED=false
 PROXY=http://127.0.0.1:10808
+PROXY_JAVBUS_ENABLED=false
+PROXY_JAVLIBRARY_ENABLED=false
 
 # Scrapling（毫秒；JAVLibrary 内部固定 90 秒）
 SCRAPLING_LOAD_DOM=true

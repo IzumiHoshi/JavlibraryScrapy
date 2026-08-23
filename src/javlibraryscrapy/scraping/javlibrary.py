@@ -335,8 +335,8 @@ class JAVLibrarySpider:
 
 async def main():
     """主函数"""
-    # 从环境变量读取配置
-    proxy_enabled = os.getenv("PROXY_ENABLED", "False").lower() == "true"
+    # 代理：JAVLibrary 镜像独立开关（PROXY_JAVLIBRARY_ENABLED + PROXY）
+    proxy_enabled = os.getenv("PROXY_JAVLIBRARY_ENABLED", "False").lower() == "true"
     proxy = os.getenv("PROXY", None) if proxy_enabled else None
 
     if proxy:
@@ -344,27 +344,46 @@ async def main():
     else:
         logger.info("未配置代理")
 
-    # 输出目录：若 .env 的 MOSTWANTED_LIBRARY_ROOT 设了，把 JSON/CSV 与
-    # export_mostwanted 的影片文件夹放到一起；否则退回项目内 output/。
+    # 输出目录优先级：MOSTWANTED_INDEX（直接控制 JSON/CSV 落点）
+    # > MOSTWANTED_LIBRARY_ROOT（库根目录，JSON/CSV 与影片文件夹同根）
+    # > 项目内 output/（保持旧行为）。
+    mw_index = os.getenv("MOSTWANTED_INDEX", "").strip()
     mw_root = os.getenv("MOSTWANTED_LIBRARY_ROOT", "").strip()
-    output_dir = Path(mw_root) if mw_root else Path(__file__).parent / "output"
+    if mw_index:
+        mw_index_path = Path(mw_index)
+        output_dir = mw_index_path.parent
+        json_filename = mw_index_path.name
+    elif mw_root:
+        output_dir = Path(mw_root)
+        json_filename = "javlibrary_movies.json"
+    else:
+        output_dir = Path(__file__).parent / "output"
+        json_filename = "javlibrary_movies.json"
     output_dir.mkdir(parents=True, exist_ok=True)
-    if mw_root:
+    if mw_index:
+        logger.info(f"MOSTWANTED_INDEX={mw_index}，输出落到 {output_dir / json_filename}")
+    elif mw_root:
         logger.info(f"MOSTWANTED_LIBRARY_ROOT={mw_root}，输出落到 {output_dir}")
     else:
         logger.info(f"输出目录：{output_dir}")
 
-    # 创建爬虫实例（c99i.com 镜像不需要代理）
+    # 入口 URL：默认 c99i.com 镜像；切换镜像或换回 javlibrary.com 原站时改 .env 的 JAVLIBRARY_URL
+    javlibrary_url = os.getenv(
+        "JAVLIBRARY_URL", "https://www.c99i.com/cn/vl_mostwanted.php"
+    )
+
+    # 创建爬虫实例
     spider = JAVLibrarySpider(
         output_dir=output_dir,
-        proxy=None,
+        base_url=javlibrary_url,
+        proxy=proxy,
     )
 
     # 爬取（可以指定最多页数，如：max_pages=2）
     await spider.crawl(max_pages=2)
 
-    # 保存结果
-    spider.save_to_json("javlibrary_movies.json")
+    # 保存结果（文件名取 MOSTWANTED_INDEX 的 basename 或默认）
+    spider.save_to_json(json_filename)
     spider.save_to_csv("javlibrary_movies.csv")
 
     # 打印摘要

@@ -135,7 +135,12 @@ def load_movies(data_path: Path) -> List[Dict[str, str]]:
 # 全局状态
 # --------------------------------------------------------------------------- #
 class GalleryState:
-    """服务器共享状态：影片数据、当前任务、封面代理配置、本地库索引。"""
+    """服务器共享状态：影片数据、当前任务、封面代理配置、本地库索引。
+
+    ``output_dir`` 仅承载临时数据（日志、cover cache、scratch），所有持久化文件
+    （javlibrary_movies.json、library_index.json、magnets.json）都通过 Settings
+    显式路径传入，不要再塞进 ``output_dir``。zspace 配置走 .env，不落盘。
+    """
 
     def __init__(
         self,
@@ -143,37 +148,39 @@ class GalleryState:
         output_dir: Path,
         image_proxy_mode: str,
         proxy: Optional[str],
-        proxy_enabled: bool,
+        proxy_javbus_enabled: bool,
         user_agent: str,
         verify_ssl: bool,
         download_timeout: int,
         javbus_url: str,
         library_root: Optional[Path] = None,
         library_index_path: Optional[Path] = None,
+        magnets_index: Optional[Path] = None,
     ):
         self.data_path = data_path
         self.output_dir = output_dir
         self.movies = load_movies(data_path)
 
-        # 磁力抓取始终使用 PROXY；PROXY_ENABLED 仅保留给封面 auto 模式。
+        # 代理：javbus 详情抓取 + 磁力抓取始终使用 PROXY；
+        # 封面 auto 模式额外受 ``proxy_javbus_enabled`` 控制（开关 + URL 都得有值）。
+        # JAVLibrary 镜像抓取走独立的 proxy_javlibrary_enabled，不影响这里。
         self.proxy = proxy
-        self.cover_proxy = proxy if proxy_enabled else None
+        self.cover_proxy = proxy if proxy_javbus_enabled else None
         self.user_agent = user_agent
         self.verify_ssl = verify_ssl
         self.download_timeout = download_timeout
-        self.javbus_url = javbus_url if javbus_url.endswith("/") else javbus_url + "/"
-
-        # auto：PROXY_ENABLED=true 且配了 PROXY 才走服务端代理拉图
-        if image_proxy_mode == "auto":
-            self.image_proxy = bool(self.cover_proxy)
-        else:
-            self.image_proxy = image_proxy_mode == "on"
-            if self.image_proxy:
-                self.cover_proxy = proxy
+        # javbus_url：规范化为"带尾斜杠"形式，便于拼接 ``<url><code>``。
+        # settings 的 validator 只去尾斜杠，这里补回；调用方无需关心是否带 ``/``。
+        self.javbus_url = javbus_url.rstrip("/") + "/"
 
         self.cover_cache_dir = output_dir / ".cover_cache"
         self.job: Optional[ScrapeJob] = None
         self._lock = threading.Lock()
+        # 磁力抓取结果路径（默认 fallback 到 output_dir/magnets.json）
+        self.magnets_index: Path = (
+            Path(magnets_index) if magnets_index is not None
+            else output_dir / "magnets.json"
+        )
 
         # ---- 本地影片库 ----
         self.library_root: Optional[Path] = library_root

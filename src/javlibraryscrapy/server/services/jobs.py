@@ -274,11 +274,14 @@ class RescanQueue:
 # --------------------------------------------------------------------------- #
 def start_scrape_job(
     job: ScrapeJob,
-    output_dir: Path,
+    magnets_index: Path,
     proxy: Optional[str],
     library_index: Any,
 ) -> threading.Thread:
     """在后台线程中执行磁力抓取；返回线程对象。
+
+    ``magnets_index``：结果 JSON 的写入路径（来自 Settings.magnets_index / .env
+    的 ``MAGNETS_INDEX``）；``magnets_links.txt`` 与之同目录派生。
 
     ``run_scrape_job`` 定义在 :mod:`jobs_runner`，那里单向 import 本模块
     （``from .jobs import JobLogHandler, ScrapeJob``）。如果本模块顶层再
@@ -291,7 +294,7 @@ def start_scrape_job(
     from .jobs_runner import run_scrape_job  # noqa: PLC0415  懒加载避免循环
     t = threading.Thread(
         target=run_scrape_job,
-        args=(job, output_dir, proxy, library_index),
+        args=(job, magnets_index, proxy, library_index),
         daemon=True,
     )
     t.start()

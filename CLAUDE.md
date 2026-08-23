@@ -83,8 +83,8 @@ uv run python tests/integration/test_gallery_server_library.py # 离线跑画廊
   - `download_cover()` 使用同步 `requests`（而非 Scrapling session）以便显式设置 `Referer` 头指向视频页面 —— 这是避免 403 的必需操作。封面初次保存到 `root_dir/<car_id>.png`，然后 `process_movie()` 在每个视频子目录中将其重命名为 `fanart.png`。
   - `process_movie()` 被 `cli/workflow.py` 子类化以重定向输出到不同目录（构造后设置 `spider.output_dir = output_path`；子类把封面复制到子目录，而不是原地重命名）。
 
-- **`src/javlibraryscrapy/scraping/javlibrary.py`** — `JAVLibrarySpider`：爬取 JAVLibrary `vl_mostwanted.php`（或可配置的基础 URL），自动检测总页数，页间休眠 3 秒，导出 `movies.json` + `movies.csv` 到 `output/`（若 `.env` 的 `MOSTWANTED_LIBRARY_ROOT` 设了则落到该目录下）。使用 `stealth_mode=True` 和 90 秒超时以通过 Cloudflare 验证。
-- **`src/javlibraryscrapy/cli/export_mostwanted.py`** — 把 JAVLibrary `movies.json` 导出到本地库。对每部影片建 `<root>/<CARID> <title>/`，写 `movie.nfo`（用 `JavbusSpider.parse()` 拉 JAVBus 详情页元数据填 NFO）+ `poster.jpg`（JAVLibrary 缩略图）+ `fanart.jpg`（JAVBus 横版原图）。复用 `JavbusSpider` 处理 JAVBus 部分，仅覆写 `process_movie` 把 `fanart.png → fanart.jpg`、NFO 改名为 `movie.nfo`、不做 `split_poster_from_fanart`。默认跳过已存在文件夹；排除列表与 `find_car_bus` 一致（`HEYZO/PONDO/CARIB/OKYOHOT`，这些在 JAVBus 上没页面）。`--source` / `--library-root` 默认都从 `.env` 的 `MOSTWANTED_LIBRARY_ROOT` 读，未设则退回 `output/`。
+- **`src/javlibraryscrapy/scraping/javlibrary.py`** — `JAVLibrarySpider`：爬取 JAVLibrary `vl_mostwanted.php`（或可配置的基础 URL），自动检测总页数，页间休眠 3 秒，导出 `movies.json` + `movies.csv`。输出位置优先级：`.env` 的 `MOSTWANTED_INDEX`（直接控制 JSON 文件路径）> `MOSTWANTED_LIBRARY_ROOT`（库根目录）> 项目内 `output/`。使用 `stealth_mode=True` 和 90 秒超时以通过 Cloudflare 验证。
+- **`src/javlibraryscrapy/cli/export_mostwanted.py`** — 把 JAVLibrary `movies.json` 导出到本地库。对每部影片建 `<root>/<CARID> <title>/`，写 `movie.nfo`（用 `JavbusSpider.parse()` 拉 JAVBus 详情页元数据填 NFO）+ `poster.jpg`（JAVLibrary 缩略图）+ `fanart.jpg`（JAVBus 横版原图）。复用 `JavbusSpider` 处理 JAVBus 部分，仅覆写 `process_movie` 把 `fanart.png → fanart.jpg`、NFO 改名为 `movie.nfo`、不做 `split_poster_from_fanart`。默认跳过已存在文件夹；排除列表与 `find_car_bus` 一致（`HEYZO/PONDO/CARIB/OKYOHOT`，这些在 JAVBus 上没页面）。`--source` 默认优先级：`MOSTWANTED_INDEX` > `MOSTWANTED_LIBRARY_ROOT/javlibrary_movies.json` > `output/javlibrary_movies.json`；`--library-root` 仍只从 `MOSTWANTED_LIBRARY_ROOT` 读。
 
 两个爬虫都使用 `scrapling.fetchers.AsyncDynamicSession` 进行 JS 渲染。
 
@@ -109,7 +109,8 @@ uv run python tests/integration/test_gallery_server_library.py # 离线跑画廊
   - `services/` — 业务逻辑：`jobs.py`（`ScrapeJob` 状态机 + `JobLogHandler`）、`jobs_runner.py`、`wanted.py`（wanted 列表）、`wanted_refresh.py`（单部刷新）、`library.py`（本地库查询 / 详情 / 报警）、`covers.py`（封面代理）
   - `routes/` — HTTP 路由层：仅做请求解析 + 响应包装。模块按资源拆分：`movies`、`scrape`、`covers`、`folder`、`library`、`rescan`、`wanted`（合并了 refresh + images）、`pages`
   - 关键行为：
-    - 读取 `output/javlibrary_movies.json`（缺失时回退 `.csv`），以卡片 + 复选框形式展示；勾选后点"抓取选中的磁力"，后端在**后台线程**里 `asyncio.run(MagnetSpider.crawl_and_process(...))`，结果写入 `output/magnets.json` + `output/magnets_links.txt`（纯磁力链接，每行一条）。
+    - 读取 javlibrary_movies.json（路径由 `.env` 的 `MOSTWANTED_INDEX` 决定，缺失时回退 `.csv`），以卡片 + 复选框形式展示；勾选后点"抓取选中的磁力"，后端在**后台线程**里 `asyncio.run(MagnetSpider.crawl_and_process(...))`，结果写入 `<MAGNETS_INDEX>` + 同目录派生的 `magnets_links.txt`（纯磁力链接，每行一条；`MAGNETS_INDEX` 默认 `output/magnets.json`）。
+    - **`output/` 仅承载临时数据**：服务日志（`.gallery_server.log`）、PID 文件（`.gallery_server.pid`）、封面缓存（`.cover_cache/`）、磁力抓取的 scratch 目录。**所有持久化文件都通过 .env 变量单独指定**：`MOSTWANTED_INDEX`（wanted JSON）/ `LIBRARY_INDEX`（本地库索引）/ `MAGNETS_INDEX`（磁力结果），不设时退回 `output/` 兜底。**zspace 配置全部走 .env 的 `ZSPACE_*`，运行时只读**（不再有 UI 编辑入口；改完重启服务）。
     - `MagnetSpider(JavbusSpider)` 覆写 `download_cover()` 返回 `None`（跳过封面下载）和 `process_movie()`（不落地 NFO/视频，只把磁力记录到 `ScrapeJob`）；`crawl_and_process` 要求 `[(car_id, video_path), ...]`，这里视频路径传空串占位。
     - 进度靠 `ScrapeJob` 状态机 + 一个临时挂到 root logger 的 `JobLogHandler` 实时回传日志。因为 `crawl_and_process` 按顺序处理且仅在成功时回调，"正在抓取 X" 取的是首个仍为 `pending` 的车牌；任务结束时残留的 `pending` 统一标记为 `failed`。
     - 同一时刻只允许一个任务（第二次提交返回 409）；`code` 必须匹配 `[A-Z0-9_-]{2,32}` 才会被拼进 URL。
@@ -163,9 +164,11 @@ uv run python tests/integration/test_gallery_server_library.py # 离线跑画廊
 ## 配置（`.env`）
 
 ```env
-JAVBUS_URL=https://www.javbus.com/        # 车牌页 URL 前缀
-JAVBUS_BASE_URL=https://www.javbus.com    # 用于解析相对封面 URL
-PROXY_ENABLED=false                       # 大多数地区必需
+JAVBUS_URL=https://www.javbus.com        # JAVBus 站点根 URL（视频页 + 封面拼接）
+JAVLIBRARY_URL=https://www.c99i.com/cn/vl_mostwanted.php  # JAVLibrary 镜像入口
+PROXY=http://127.0.0.1:10808             # HTTP/HTTPS/SOCKS5 代理地址
+PROXY_JAVBUS_ENABLED=false               # JAVBus 抓取 + 磁力 + 封面代理（开关 + PROXY 都得有值）
+PROXY_JAVLIBRARY_ENABLED=false           # JAVLibrary 镜像抓取（开关 + PROXY 都得有值）
 PROXY=http://127.0.0.1:10808              # HTTP/HTTPS/SOCKS5
 SCRAPLING_LOAD_DOM=true
 SCRAPLING_NETWORK_IDLE=true
@@ -174,12 +177,15 @@ SCRAPLING_HEADLESS=true
 SCRAPLING_TIMEOUT=30000                   # 毫秒；JAVLibrary 内部用 90 秒
 LIBRARY_ROOT=Z:\JAV                       # 本地影片库根目录；不设则禁用本地库功能
 LIBRARY_INDEX=output/library_index.json   # 索引输出路径（已 gitignore）
+MOSTWANTED_INDEX=output/javlibrary_movies.json # wanted JSON 路径（默认 output/）
+MAGNETS_INDEX=output/magnets.json         # 磁力结果 JSON 路径（默认 output/）
+ZSPACE_ENABLED=false                       # 极空间 NAS 集成（所有 ZSPACE_* 都在 .env，运行时只读）
 USER_AGENT=Mozilla/5.0 (...)
 DOWNLOAD_TIMEOUT=10
 VERIFY_SSL=false
 ```
 
-JAVLibrary 在 `main()` 中直接读取 `PROXY_ENABLED`/`PROXY`，忽略 Scrapling 前缀的变量。
+JAVLibrary 在 `main()` 中直接读取 `JAVLIBRARY_URL` / `PROXY_JAVLIBRARY_ENABLED` / `PROXY`，忽略 Scrapling 前缀的变量。
 
 ## 关键技术细节
 

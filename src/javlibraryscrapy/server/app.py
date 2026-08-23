@@ -45,21 +45,27 @@ def create_gallery_state(
     data_path: Path,
     output_dir: Path,
     image_proxy_mode: str,
+    magnets_index: Optional[Path] = None,
     no_rescan_on_startup: bool = False,
 ) -> GalleryState:
-    """构造 ``GalleryState``（供 main 和测试使用）。"""
+    """构造 ``GalleryState``（供 main 和测试使用）。
+
+    ``magnets_index`` 可由 caller 显式覆盖 settings.magnets_index，便于测试
+    写到 tmp 目录。
+    """
     state = GalleryState(
         data_path=data_path,
         output_dir=output_dir,
         image_proxy_mode=image_proxy_mode,
         proxy=settings.proxy,
-        proxy_enabled=settings.proxy_enabled,
+        proxy_javbus_enabled=settings.proxy_javbus_enabled,
         user_agent=settings.user_agent,
         verify_ssl=settings.verify_ssl,
         download_timeout=settings.download_timeout,
         javbus_url=settings.javbus_url,
         library_root=settings.library_root,
         library_index_path=settings.library_index,
+        magnets_index=magnets_index if magnets_index is not None else settings.magnets_index,
     )
     # 启动时若 root 不一致则强制重建（沿用原服务 main 行为）
     if (
@@ -106,28 +112,45 @@ def create_app(
     data_path: Path,
     output_dir: Path,
     image_proxy_mode: str = "auto",
+    magnets_index: Optional[Path] = None,
     no_rescan_on_startup: bool = False,
 ) -> FastAPI:
-    """构造 FastAPI 应用。"""
+    """构造 FastAPI 应用。
+
+    ``magnets_index`` 可显式覆盖 settings.magnets_index；不传则走 settings。
+    """
     state = create_gallery_state(
         settings,
         data_path=data_path,
         output_dir=output_dir,
         image_proxy_mode=image_proxy_mode,
+        magnets_index=magnets_index,
         no_rescan_on_startup=no_rescan_on_startup,
     )
 
     # JAVLibrary 镜像（c99i.com）当前不需要代理；磁力抓取（JavBus）由 GalleryState 用 settings.proxy。
     # 这里的两个 proxy 字段分别控制 wanted pipeline 两阶段的代理使用。
-    # data_path：MOSTWANTED_LIBRARY_ROOT 设了 → JSON 放在那里；否则退回 library_index.parent（保持旧行为）
-    if settings.mostwanted_library_root:
+    # data_path 解析优先级：MOSTWANTED_INDEX > MOSTWANTED_LIBRARY_ROOT/javlibrary_movies.json
+    # > library_index.parent/javlibrary_movies.json（保持旧行为）
+    if settings.mostwanted_index:
+        wanted_data_path = settings.mostwanted_index
+    elif settings.mostwanted_library_root:
         wanted_data_path = settings.mostwanted_library_root / "javlibrary_movies.json"
     else:
         wanted_data_path = settings.library_index.parent / "javlibrary_movies.json"
+    # 代理分开配：javlibrary 镜像抓取走 proxy_javlibrary_enabled 控制；
+    # javbus 详情抓取走 proxy_javbus_enabled 控制（共用 settings.proxy 地址）。
+    javlibrary_proxy = (
+        settings.proxy if settings.proxy_javlibrary_enabled else None
+    )
+    javbus_proxy = (
+        settings.proxy if settings.proxy_javbus_enabled else None
+    )
     wanted = WantedService(
         data_path=wanted_data_path,
-        javlibrary_proxy=None,            # c99i.com 直连
-        javbus_proxy=settings.proxy,      # JavBus 需要代理绕过 Cloudflare
+        javlibrary_url=settings.javlibrary_url,
+        javlibrary_proxy=javlibrary_proxy,
+        javbus_proxy=javbus_proxy,
     )
 
     # sample 数量缓存：启动期用 settings.mostwanted_library_root 一次性配置。
@@ -135,10 +158,9 @@ def create_app(
     from javlibraryscrapy.server.services.sample_cache import get_sample_cache
     sample_cache = get_sample_cache(mw_root=settings.mostwanted_library_root)
 
-    # 极空间 NAS 配置存储（JSON 文件，output/zspace_config.json）。
-    # 首次启动从 .env 兜底 + 落盘；之后以 JSON 为准，可通过网页 UI 修改。
+    # 极空间 NAS 配置 holder（从 Settings.zspace_* 读取；运行时只读）。
     from javlibraryscrapy.server.services.zspace_config import ZSpaceConfigStore
-    zspace_config_store = ZSpaceConfigStore(output_dir=output_dir, settings=settings)
+    zspace_config_store = ZSpaceConfigStore(settings=settings)
 
     # P1：后台预热 sample cache —— 把 wanted 列表里的前 N 个 code 的 sample 数扫掉，
     # 让首次 /api/wanted 不必触发 NFS cold start（NFS 单目录 glob 几百 ms~几 s）。
