@@ -7,11 +7,20 @@ import logging
 import os
 import sys
 import threading
+import warnings
 import webbrowser
 from pathlib import Path
 from typing import List, Optional
 
 import uvicorn
+
+# ``VERIFY_SSL=false`` 是用户显式配置（常见于 MITM 代理用自签 CA 的场景）。
+# urllib3 默认会对每次 ``verify=False`` 的 HTTPS 请求发 InsecureRequestWarning，
+# 拉一批封面就把日志刷爆；这里统一静默。CLI 仍可通过 python -W all / 改 VERIFY_SSL
+# 看到这些警告。
+from urllib3.exceptions import InsecureRequestWarning  # noqa: E402
+
+warnings.filterwarnings("ignore", category=InsecureRequestWarning)
 
 # 必须早于 argparse default 表达式：原 gallery_server.py 显式 load_dotenv(.env)
 # 后再解析命令行，这样 --library-root 的默认值才能拿到 .env 里的 LIBRARY_ROOT。

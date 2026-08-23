@@ -28,11 +28,17 @@ import json
 import logging
 import os
 import sys
+import warnings
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 from dotenv import load_dotenv
+from urllib3.exceptions import InsecureRequestWarning
+
+# 走代理时显式 ``verify=False``（MITM 自签 CA），urllib3 会刷屏；
+# 统一静默，与 cli/gallery.py 入口行为一致。
+warnings.filterwarnings("ignore", category=InsecureRequestWarning)
 
 from javlibraryscrapy._paths import REPO_ROOT as ROOT  # noqa: E402
 from javlibraryscrapy.scraping.javbus import JavbusSpider  # noqa: E402
