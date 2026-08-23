@@ -19,14 +19,18 @@ from cryptography.hazmat.primitives.serialization import load_pem_public_key
 
 # 注：这是 NAS 公开端点 /zspace/system/private/pubkey 返回的 RSA 公钥，
 # 用于登录加密，非私钥/密码。更换 NAS 固件版本时可能需要更新。
+#
+# vendored patch (2026-08-23)：从 NAS 实际 /zspace/system/private/pubkey 拉取替换，
+# 原值报 N001200 "账号格式不对"——本机 NAS 实际公钥与上游 vendored 版本不一致。
+# 故障排查表对应：N001200 = "RSA 用错公钥"。
 NAS_PUBKEY_PEM = b"""-----BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtrDHnaRmRaMAhZC2CmRV
-CPO3ekJRo5ELX3Jjtr9P8MoWHSQbsAE5G+VTkKWhTyMQQMR0erKabn82fOZgyOO4
-F+CVRSJH0TRD854IeQyFD2iZg2W2J/BzYNYC8EmBjlRhs8oS5LBc0WUN7bP4et0s
-Z2LGSXbt6TetSndeV9LP8+zaKka+xvV/9aohg5rc5Ha5ka7BfTliBOyzLPR+UTKe
-mx9ysWrXedlYGUjXkDRyp4xfj98bOx44EmswJh+YHYNSINyCZ4nMsat98aWOPEDl
-jsflEvNt6vXFDqrziOjAPW0S/wvyvrFCZxlb+IxJMrtNH7M61spGfobE8sjNU+MC
-wwIDAQAB
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwRqvmlOHSc60J/p727sX
+QJ+E+NCuaQJwWR7sMJ0jecYy9NU5ayuSgi3D1Ux001xPdW10mMl0Xw1VNAl3I9P/
+bYgrsqesU/thmkkl93RwKKb49HgWYjFYF0gWiQE/6I6+Utsdo9fSUfcS/vSZijl6
+Q/pvtWTERhpWi8GnaIVVujvpXJHrzblWb25IC2gWjkPrfBofkobYwbl65Ua18o6Y
+9js6uL8Ji7CJrXcYul9PXDDHkhwTozT1pY9BjTEOpV9uLnVzQYCP4mRd2OT6Ydzb
+/J4z/oKqeTuf7YQTCpImGK8RPuwf7PV9IHra4N1nXWvOiiz5NgvR7ebAPw06KTrV
+KwIDAQAB
 -----END PUBLIC KEY-----"""
 
 _PUBKEY = load_pem_public_key(NAS_PUBKEY_PEM)
