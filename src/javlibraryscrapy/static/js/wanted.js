@@ -577,7 +577,10 @@ export async function initWanted() {
           const i = movies.findIndex((x) => x.code === code);
           if (i >= 0) movies[i] = data.movie;
           if (oldBucket !== data.movie._bucket) {
+            // bucket 跨月迁移 → 更新月份 chip 数 + 重渲该卡片（release_date /
+            // sample-badge / refetch-btn 全部依赖新 movies[i] 数据，不重渲就过期）
             await loadMonthsOnly();
+            renderCardInPlace(code);
           } else {
             renderCardInPlace(code);
           }

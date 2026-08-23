@@ -1,8 +1,7 @@
-<style>
-  :root {
-    color-scheme: dark;
-    --bg: #0e1014;
-    --bg-elev: #16191f;
+:root {
+  color-scheme: dark;
+  --bg: #0e1014;
+  --bg-elev: #16191f;
     --card: #1a1e25;
     --card-hover: #1f242c;
     --border: #2a3038;
