@@ -363,6 +363,35 @@
     color: var(--text-faint); font-size: 12px; text-decoration: none;
   }
   .card-links a:hover { color: var(--accent); text-decoration: underline; }
+  /* 卡片里的磁力行：[🧲 复制] [📥 NAS] 两个带图标按钮并列 */
+  .card-magnet {
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+    font-size: 11px; color: var(--text-faint);
+  }
+  .card-magnet .r-copy,
+  .card-magnet .r-nas {
+    padding: 2px 8px; font-size: 11px;
+    background: var(--card-hover); border: 1px solid var(--border);
+    border-radius: 6px; color: var(--accent); cursor: pointer;
+    line-height: 1.4;
+    display: inline-flex; align-items: center; gap: 4px;
+    /* 防止「复制」/「NAS」文字因按钮被挤窄而换行成两行 */
+    white-space: nowrap;
+    /* 两个按钮宽度统一：按内容多的一边（"🧲 复制"）定最小宽度，文字少的一边
+       用 justify-content: center 把内容居中 —— 视觉上两个按钮严格同宽 */
+    min-width: 92px;
+    justify-content: center;
+  }
+  .card-magnet .r-copy:hover:not(:disabled),
+  .card-magnet .r-nas:hover:not(:disabled) {
+    border-color: var(--accent); color: var(--text);
+  }
+  .card-magnet .r-nas.r-nas-ok {
+    background: rgba(62, 207, 142, 0.15); border-color: var(--ok); color: var(--ok);
+  }
+  .card-magnet .r-nas.r-nas-fail {
+    background: rgba(239, 106, 106, 0.15); border-color: var(--err); color: var(--err);
+  }
   .empty { grid-column: 1 / -1; text-align: center; color: var(--text-faint); }
 
   /* ---------- 本地已有 badge ---------- */

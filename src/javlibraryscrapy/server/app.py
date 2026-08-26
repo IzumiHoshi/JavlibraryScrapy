@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import socket
 import threading
 from contextlib import asynccontextmanager
@@ -109,6 +110,58 @@ async def _lifespan(app: FastAPI, state: GalleryState):
                 pass
 
 
+class VersionedStaticFiles(StaticFiles):
+    """支持版本化文件名的 StaticFiles。
+
+    URL 中的 ``wanted.<8字符hex>.js`` 会按 hex 后缀切掉，还原到磁盘真实文件
+    ``wanted.js``。浏览器看到 URL 变了 → 必定发新请求（不是 304），所以无需
+    Cache-Control 头也保证文件更新即时生效。
+
+    设计要点：
+    - 8 字符 hex = 文件 mtime 的低 32 位，覆盖 2106 年之前的需求
+    - hash 后缀不参与路由匹配，只作 cache-busting；命中后即被剥离
+    - 非版本化 URL（原 ``app.css``）也照常工作，向后兼容
+    """
+
+    VERSION_SUFFIX_RE = re.compile(
+        r"^(?P<stem>.+?)\.([a-f0-9]{8})(?P<ext>\.[^.]+)$"
+    )
+
+    async def get_response(self, path: str, scope: dict) -> Response:  # type: ignore[override]
+        # path 是相对 static_dir 的，如 ``js/wanted.abc123.js``。
+        # Windows 下 Starlette 会把 ``/`` 转成 ``\\``，rsplit 时要兼容两种。
+        sep = "\\" if "\\" in path else "/"
+        parts = path.rsplit(sep, 1)
+        if len(parts) == 2:
+            dir_part, filename = parts
+            m = self.VERSION_SUFFIX_RE.match(filename)
+            if m:
+                real_filename = f"{m.group('stem')}{m.group('ext')}"
+                real_path = f"{dir_part}{sep}{real_filename}"
+                return await super().get_response(real_path, scope)
+        return await super().get_response(path, scope)
+
+
+def versioned_static_url(static_dir: Path, rel_path: str) -> str:
+    """把 ``js/wanted.js`` 这种相对 static_dir 的路径，转成带 hash 的 URL。
+
+    例：``js/wanted.js`` → ``/static/js/wanted.5a1b2c3d.js``
+
+    文件不存在时（开发态偶尔发生）原样返回，避免 HTML 渲染挂掉。
+    """
+    file_path = static_dir / rel_path
+    if not file_path.exists():
+        return f"/static/{rel_path}"
+    mtime = int(file_path.stat().st_mtime) & 0xFFFFFFFF
+    hash_hex = format(mtime, "08x")
+    p = Path(rel_path)
+    parent = p.parent.as_posix()
+    new_name = f"{p.stem}.{hash_hex}{p.suffix}"
+    if parent and parent != ".":
+        return f"/static/{parent}/{new_name}"
+    return f"/static/{new_name}"
+
+
 def create_app(
     settings: Settings,
     data_path: Path,
@@ -191,9 +244,14 @@ def create_app(
     # 前端静态资源：CSS / JS / 图片（重构后 gallery.html → static/index.html + 多模块）
     # mount 在 routes 注册之后：Starlette 的 mount 作为路由表的 fallback，
     # 所以 /api/* 的精确路由仍优先匹配，只有未匹配请求才会落到 StaticFiles。
+    # 用 VersionedStaticFiles 支持版本化文件名（cache-busting）：
+    #   /static/js/wanted.<hash>.js → 命中后还原到磁盘的 wanted.js
+    # 浏览器看到 URL 变了 → 必定发新请求 → 修改 CSS/JS 后用户刷新立刻生效，
+    # 不依赖 Cache-Control 头（手机浏览器也不会无限期吃 disk cache）。
+    # 版本化的 URL 由 pages.py 在吐 index.html 时动态注入。
     static_dir = PACKAGE_ROOT / "static"
     if static_dir.exists():
-        app.mount("/static", StaticFiles(directory=static_dir), name="static")
+        app.mount("/static", VersionedStaticFiles(directory=static_dir), name="static")
 
     register_routes(app)
 
