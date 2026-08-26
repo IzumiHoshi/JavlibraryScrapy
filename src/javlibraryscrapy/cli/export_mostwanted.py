@@ -8,10 +8,11 @@
   - movie.nfo    —— 从 JAVBus 详情页抓到的完整元数据（Kodi/Plex 兼容）
   - poster.jpg   —— JAVLibrary 列表的竖版缩略图（cover_url）
   - fanart.jpg   —— JAVBus 详情页的横版原图
+  - sample_NNN.jpg —— JAVBus sample waterfall（默认开，可关）
+  - magnets.json / magnets_links.txt —— 集中磁力索引
 
-复用 JavbusSpider 解析 JAVBus 详情页（parse + download_cover），避免重复实现磁力
-优先级、Referer 头等细节。poster.jpg 用单独的 requests 下载（pixhost CDN 在部分
-网络下需要走 .env 里的代理）。
+所有削刮逻辑走统一的 :class:`MovieExporter`；本文件只负责 CLI 参数、计划打印、
+跳过/覆盖决策。
 
 CLI：
     uv run python scripts/export_mostwanted.py
@@ -41,8 +42,7 @@ from urllib3.exceptions import InsecureRequestWarning
 warnings.filterwarnings("ignore", category=InsecureRequestWarning)
 
 from javlibraryscrapy._paths import REPO_ROOT as ROOT  # noqa: E402
-from javlibraryscrapy.scraping.javbus import JavbusSpider  # noqa: E402
-from javlibraryscrapy.utils.filesave import write_xml  # noqa: E402
+from javlibraryscrapy.scraping.exporter import MovieExporter  # noqa: E402
 
 load_dotenv(ROOT / ".env", override=False)
 logger = logging.getLogger("export_mostwanted")
@@ -52,51 +52,9 @@ logger = logging.getLogger("export_mostwanted")
 EXCLUDED_CAR_PREFIXES = ("HEYZO", "PONDO", "CARIB", "OKYOHOT")
 
 
-class MostWantedExporter(JavbusSpider):
-    """覆写 process_movie：fanart 不再拆 poster、JAVBus 原图直接保存为 fanart.jpg，
-    NFO 名为 movie.nfo（Kodi/Plex 标准）。JavbusSpider 的其它行为保持不变。
-    """
-
-    def __init__(self, library_root: Path):
-        # JavbusSpider 的 root_dir 同时充当 cover 临时目录（<root_dir>/<carid>.png），
-        # 让 process_movie 自己挑走。这里把它直接指到 library_root，最后清理残留 .png。
-        super().__init__(root_dir=library_root)
-        self.library_root = Path(library_root)
-
-    async def process_movie(self, info: Dict[str, Any]) -> None:
-        try:
-            if not info.get("title") or not info.get("carid"):
-                logger.warning("标题或车牌为空，跳过处理")
-                return
-
-            filename_prefix = f"{info['carid']} {info['title'].strip()}"
-            save_dir = self.library_root / filename_prefix
-            save_dir.mkdir(parents=True, exist_ok=True)
-
-            # JAVBus 抓下来的原图 → fanart.jpg（不调用 split_poster_from_fanart）
-            cover = info.get("cover")
-            if cover and Path(cover).exists():
-                fanart_dest = save_dir / "fanart.jpg"
-                if Path(cover).resolve() == fanart_dest.resolve():
-                    logger.info(f"fanart.jpg 已在目标位置：{fanart_dest.name}")
-                elif fanart_dest.exists():
-                    logger.warning(f"fanart.jpg 已存在，跳过覆盖：{fanart_dest.name}")
-                else:
-                    Path(cover).rename(fanart_dest)
-                    logger.info(f"已保存 fanart.jpg：{fanart_dest.name}")
-
-            # NFO
-            nfo_path = save_dir / "movie.nfo"
-            write_xml(nfo_path, info)
-
-            logger.info(f"完成处理：{filename_prefix}")
-
-        except Exception as e:
-            logger.error(
-                f"处理电影失败 - 车牌: {info.get('carid', 'unknown')}, 错误: {e}"
-            )
-
-
+# --------------------------------------------------------------------------- #
+# poster.jpg 下载（仅 ``--skip-javbus`` 模式用；正常模式由 MovieExporter 处理）
+# --------------------------------------------------------------------------- #
 def _download_image(
     url: str,
     dest: Path,
@@ -104,11 +62,7 @@ def _download_image(
     proxy: Optional[str],
     timeout: int = 10,
 ) -> bool:
-    """通用图片下载（同步）。
-
-    只在走用户配置的本地代理时禁用证书校验（典型 MITM 代理用自签 CA）。
-    直连 CDN（pixhost 等）默认严格校验，避免中间人攻击。
-    """
+    """通用图片下载（同步）。"""
     if not url:
         return False
     try:
@@ -123,7 +77,7 @@ def _download_image(
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(r.content)
         return True
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.warning(f"下载失败 {url[:80]}... → {dest.name}: {e}")
         return False
 
@@ -131,7 +85,7 @@ def _download_image(
 def _download_javlibrary_cover(
     cover_url: str, dest: Path, proxy: Optional[str]
 ) -> bool:
-    """下载 JAVLibrary 列表页的缩略图作为 poster.jpg。"""
+    """下载 JAVLibrary 列表页的缩略图作为 poster.jpg（``--skip-javbus`` 专用）。"""
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -143,6 +97,9 @@ def _download_javlibrary_cover(
     return _download_image(cover_url, dest, headers, proxy)
 
 
+# --------------------------------------------------------------------------- #
+# 计划
+# --------------------------------------------------------------------------- #
 def _plan_folder(movies: List[Dict[str, Any]], library_root: Path) -> List[Tuple[Dict[str, Any], Path, str]]:
     """为每部影片计算目标文件夹 + 状态（'new' / 'exists' / 'excluded' / 'invalid'）。"""
     plan: List[Tuple[Dict[str, Any], Path, str]] = []
@@ -161,6 +118,9 @@ def _plan_folder(movies: List[Dict[str, Any]], library_root: Path) -> List[Tuple
     return plan
 
 
+# --------------------------------------------------------------------------- #
+# CLI 参数
+# --------------------------------------------------------------------------- #
 def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="把 JAVLibrary 最想要列表导出到本地库（每部一个文件夹）",
@@ -220,6 +180,9 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+# --------------------------------------------------------------------------- #
+# 主编排
+# --------------------------------------------------------------------------- #
 async def _async_main(args: argparse.Namespace) -> int:
     if not args.library_root:
         logger.error(
@@ -287,56 +250,52 @@ async def _async_main(args: argparse.Namespace) -> int:
         logger.info("没有需要处理的影片（全部已存在或被排除）")
         return 0
 
-    exporter = MostWantedExporter(library_root=library_root)
-
-    # Phase 1：每个目标文件夹先建好 + 下 poster.jpg（JAVLibrary 缩略图，并行快速）
-    proxy = exporter.proxy
-    for movie in to_process:
-        code = movie["code"].strip().upper()
-        title = movie["title"].strip()
-        save_dir = library_root / f"{code} {title}"
-        save_dir.mkdir(parents=True, exist_ok=True)
-        poster_path = save_dir / "poster.jpg"
-        ok = _download_javlibrary_cover(movie.get("cover_url"), poster_path, proxy)
-        if ok:
-            logger.info(f"已下载 poster.jpg：{code}")
-        else:
-            logger.warning(f"poster.jpg 下载失败：{code}（继续 JAVBus 抓取）")
-
+    # ---- skip-javbus：只下 poster.jpg ----
     if args.skip_javbus:
-        logger.info("完成：仅 poster.jpg 已写入")
+        # 临时构造一个 exporter 来拿 JAVBus proxy（默认沿用 .env）
+        tmp = MovieExporter(output_root=library_root, move_video=False, download_samples=False, collect_magnets=False)
+        proxy = tmp.proxy
+        ok_count = 0
+        for movie in to_process:
+            code = movie["code"].strip().upper()
+            title = movie["title"].strip()
+            save_dir = library_root / f"{code} {title}"
+            save_dir.mkdir(parents=True, exist_ok=True)
+            poster_path = save_dir / "poster.jpg"
+            if _download_javlibrary_cover(movie.get("cover_url"), poster_path, proxy):
+                ok_count += 1
+                logger.info(f"已下载 poster.jpg：{code}")
+            else:
+                logger.warning(f"poster.jpg 下载失败：{code}（跳过）")
+        logger.info(f"完成：仅 poster.jpg 已写入 {ok_count}/{len(to_process)} 部")
         return 0
 
-    # Phase 2：单次 JAVBus 会话拉所有车（复用同一个 AsyncDynamicSession）
+    # ---- 正常模式：调 MovieExporter 统一处理 ----
+    exporter = MovieExporter(
+        output_root=library_root,
+        move_video=False,
+        download_samples=True,
+        collect_magnets=True,
+        magnets_index=library_root / "magnets.json",
+    )
+    proxy = exporter.proxy
+    cover_urls: Dict[str, str] = {
+        m["code"].strip().upper(): (m.get("cover_url") or "").strip()
+        for m in to_process
+        if m.get("cover_url")
+    }
     car_list = [(m["code"].strip().upper(), "") for m in to_process]
     logger.info(
         f"开始批量拉 JAVBus，共 {len(car_list)} 部（间隔 {args.delay}s，"
         f"代理={'开启' if proxy else '关闭'}）"
     )
-    await exporter.crawl_and_process(car_list)
+    stats = await exporter.export_movies(car_list, cover_urls=cover_urls)
 
-    # Phase 3：清理 JavbusSpider 在 root_dir 留下的临时 <carid>.png
-    for movie in to_process:
-        code = movie["code"].strip().upper()
-        temp = library_root / f"{code}.png"
-        if temp.exists():
-            try:
-                temp.unlink()
-            except OSError as e:
-                logger.debug(f"清理临时文件失败 {temp}: {e}")
-
-    # 简单统计：已写入 fanart 的 = JAVBus 抓到 + 处理成功的
-    written = sum(
-        1 for m in to_process
-        if (library_root / f"{m['code'].strip().upper()} {m['title'].strip()}" / "fanart.jpg").exists()
-    )
-    nfo_count = sum(
-        1 for m in to_process
-        if (library_root / f"{m['code'].strip().upper()} {m['title'].strip()}" / "movie.nfo").exists()
-    )
     logger.info(
-        f"完成：处理 {len(to_process)} 部，fanart.jpg 写入 {written} 部，"
-        f"movie.nfo 写入 {nfo_count} 部"
+        f"完成：处理 {stats['written']} 部，"
+        f"failed {stats['failed']} 部，"
+        f"magnets_ok {stats['magnets_collected']} 部，"
+        f"magnets.json → {library_root / 'magnets.json'}"
     )
     return 0
 
@@ -345,7 +304,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = _parse_args(argv)
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s)",
     )
     return asyncio.run(_async_main(args))
 

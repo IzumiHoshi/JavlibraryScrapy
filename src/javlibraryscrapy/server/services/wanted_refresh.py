@@ -26,10 +26,12 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 import os
 import re
+import tempfile
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -672,11 +674,16 @@ def scrape_one_javbus(
     *,
     mw_root: Optional[Path] = None,
     sample_cache: Optional["SampleCountCache"] = None,
+    cover_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     """同步入口：抓一个车牌的 JavBus 详情。
 
     在 **独立线程** 里跑 asyncio.run，避免与 uvicorn 的事件循环冲突
     （``asyncio.run() cannot be called from a running event loop``）。
+
+    内部走统一的 :class:`MovieExporter`（``scraping.exporter``）。download_samples 关闭
+    （保留旧行为：单部刷新不下 samples；只在 export_mostwanted 那种批量场景下）。collect_magnets
+    关闭（gallery 的 magnet 由 ``/api/scrape`` 单独管，不在单部刷新里写）。
 
     返回 dict（便于调用方直接 jsonify）：
         ``{
@@ -688,101 +695,86 @@ def scrape_one_javbus(
             "saved": {cover, samples} | None # 本地库落地结果
         }``
 
-    与 ``refresh_wanted`` 内 Phase 3 单部循环共用同一套判断：
-    - 必须 ``info and isinstance(info, dict) and release_date.strip() and status==200``
-    - 404 / 缺 release_date → ``ok=False``，由调用方写回 ``_status=failed``
-
-    ``mw_root`` 非空时调用 ``_save_per_movie_folder`` 把 cover + samples 落到
+    ``mw_root`` 非空时把 movie.nfo / fanart.jpg / poster.jpg（来自 cover_url）落到
     ``<root>/<CARID> <title>/`` 下，并回填 ``sample_cache`` 计数。
-    """
-    import concurrent.futures
 
+    ``cover_url`` 是 JAVLibrary 缩略图 URL；传入后会从 JAVLibrary 下载 poster.jpg
+    （之前的实现漏掉了这个参数，导致单部刷新永远不下 poster.jpg —— 已修复）。
+    """
     code = (code or "").strip().upper()
     if not code:
         return {"code": code, "ok": False, "error": "空车牌"}
 
     try:
-        from javlibraryscrapy.scraping.javbus import JavbusSpider
-        from scrapling.fetchers import AsyncDynamicSession
+        from javlibraryscrapy.scraping.exporter import MovieExporter
     except ImportError as e:
         return {"code": code, "ok": False, "error": f"导入爬虫失败：{e}"}
 
-    # 让 JavbusSpider 把 cover 临时 <CARID>.png 直接落到 mw_root（如果设置），
-    # 方便 _save_per_movie_folder 直接 rename 避免覆盖 output/；否则落到 JSON 同目录
-    spider_root = mw_root if mw_root else Path(".")
-    bus_spider = JavbusSpider(root_dir=spider_root)
-    bus_spider.proxy_enabled = javbus_proxy is not None
-    bus_spider.proxy = javbus_proxy
+    # 没指定本地库 → 输出到 tempdir（不让 MovieExporter 落到 cwd 乱）
+    output_root = mw_root if mw_root is not None else (
+        Path(tempfile.gettempdir()) / "javlibraryscrapy_scratch"
+    )
+    output_root.mkdir(parents=True, exist_ok=True)
 
-    async def _do() -> Dict[str, Any]:
-        async with AsyncDynamicSession(
-            load_dom=bus_spider.load_dom,
-            network_idle=bus_spider.network_idle,
-            disable_resources=bus_spider.disable_resources,
-            proxy=bus_spider.proxy,
-            headless=bus_spider.headless,
-            timeout=bus_spider.timeout,
-        ) as session:
-            url = f"{bus_spider.javbus_url}{code}"
-            try:
-                page = await session.fetch(url)
-            except Exception as e:  # noqa: BLE001
-                return {"code": code, "ok": False, "error": f"网络异常：{e}"}
-            status_code = getattr(page, "status", None) or getattr(page, "status_code", None)
-            try:
-                info = await bus_spider.parse(page)
-            except Exception as e:  # noqa: BLE001
-                return {
-                    "code": code,
-                    "ok": False,
-                    "status_code": status_code,
-                    "error": f"解析异常：{e}",
-                }
-            release_date = (info.get("release_date") or "").strip() if isinstance(info, dict) else ""
-            if (
-                info
-                and isinstance(info, dict)
-                and release_date
-                and (status_code is None or status_code == 200)
-            ):
-                saved = None
-                if mw_root:
-                    try:
-                        saved = _save_per_movie_folder(
-                            bus_spider, info, code, mw_root,
-                            sample_cache=sample_cache,
-                        )
-                    except Exception as e:  # noqa: BLE001
-                        logger.warning(f"本地库落地异常 {code}: {e}")
-                        saved = None
-                return {
-                    "code": code,
-                    "ok": True,
-                    "info": info,
-                    "status_code": status_code,
-                    "saved": saved,
-                }
-            reason = (
-                f"http={status_code}" if status_code and status_code != 200
-                else "无 release_date"
-            )
-            return {
-                "code": code,
-                "ok": False,
-                "status_code": status_code,
-                "error": reason,
-            }
+    exporter = MovieExporter(
+        output_root=output_root,
+        move_video=False,
+        download_samples=False,
+        collect_magnets=False,
+        javlibrary_proxy=javbus_proxy,  # 单部刷新：JAVLibrary 也用同一份 proxy
+    )
+
+    cover_urls_dict: Optional[Dict[str, str]] = {code: cover_url} if cover_url else None
+
+    def _run() -> Dict[str, Any]:
+        return asyncio.run(exporter.export_movies(
+            [(code, "")],
+            cover_urls=cover_urls_dict,
+        ))
 
     # 用独立线程跑 asyncio.run —— uvicorn 进程已有事件循环，
     # 直接 asyncio.run 会报 "cannot be called from a running event loop"。
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-            future = ex.submit(asyncio.run, _do())
-            return future.result(timeout=180)  # 单次最多 3 分钟
+            future = ex.submit(_run)
+            stats = future.result(timeout=180)  # 单次最多 3 分钟
     except concurrent.futures.TimeoutError:
         return {"code": code, "ok": False, "error": "抓取超时（>180s）"}
     except RuntimeError as e:
-        # ThreadPoolExecutor 自身跑不出来时的兜底
         return {"code": code, "ok": False, "error": f"线程执行失败：{e}"}
     except Exception as e:  # noqa: BLE001
         return {"code": code, "ok": False, "error": f"抓取异常：{e}"}
+
+    # 解析 MovieExporter 的结果，对齐旧的返回 schema
+    info = exporter.movie_info_list[0] if exporter.movie_info_list else {}
+    release_date = (info.get("release_date") or "").strip() if isinstance(info, dict) else ""
+    ok = stats["written"] == 1 and bool(release_date)
+
+    # saved：写到本地的 fanart.jpg / poster.jpg 计数
+    saved: Optional[Dict[str, int]] = None
+    if info.get("title") and output_root.exists():
+        folder = output_root / f"{code} {info['title'].strip()}"
+        if folder.exists():
+            saved = {
+                "cover": 1 if (folder / "fanart.jpg").exists() else 0,
+                "samples": 0,  # download_samples=False
+            }
+            # 回填 sample_cache（即使 samples=0 也写，避免下次冷扫）
+            if sample_cache is not None:
+                try:
+                    sample_cache.put(code, 0, folder=folder)
+                except OSError as e:  # noqa: BLE001
+                    logger.warning(f"回填 cache 失败 {code}: {e}")
+
+    error: Optional[str] = None
+    if not ok:
+        error = "无 release_date"
+
+    return {
+        "code": code,
+        "ok": ok,
+        "info": info if ok else None,
+        "status_code": None,  # MovieExporter 不暴露 status_code
+        "saved": saved,
+        "error": error,
+    }

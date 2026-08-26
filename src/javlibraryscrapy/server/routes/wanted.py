@@ -8,6 +8,7 @@
     GET  /api/wanted/{carid}/gallery-images  —— 该车在 MOSTWANTED_LIBRARY_ROOT 下
                                                 的 cover.jpg + sample_*.jpg URL
     GET  /api/wanted/{carid}/image?type=cover|sample&idx=N —— 单张图片字节流
+    POST /api/wanted/reload                  —— 从磁盘重读 wanted JSON（外部脚本改文件后用）
 
 封面代理：
     ``/api/movies`` 在 ``image_proxy=on`` 时把 cover 改写成 ``/api/cover?url=...``
@@ -148,6 +149,34 @@ def register(app: FastAPI) -> None:
         if snap is None:
             return {"status": "idle"}
         return snap
+
+    @app.post("/api/wanted/reload")
+    def reload(request: Request) -> Dict[str, Any]:
+        """从磁盘重读 wanted JSON。
+
+        用途：外部脚本（如 ``scripts/backfill_magnets.py``）改完
+        ``javlibrary_movies.json`` 后调用，让 gallery 服务立即看到新数据，
+        不用重启进程。refresh_wanted 任务跑完也会自动 reload。
+
+        Returns:
+            ``{"ok": True, "loaded_at": ISO 时间, "total": N,
+            "with_magnet": M}``
+        """
+        wanted: WantedService = request.app.state.wanted
+        try:
+            wanted.reload()
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"wanted reload 失败：{e}")
+            raise HTTPException(status_code=500, detail=f"reload 失败：{e}")
+        # reload() 后 _loaded_at / _movies 已更新
+        total = len(wanted._movies)
+        with_magnet = sum(1 for m in wanted._movies if m.get("magnet"))
+        return {
+            "ok": True,
+            "loaded_at": wanted._loaded_at,
+            "total": total,
+            "with_magnet": with_magnet,
+        }
 
     @app.post("/api/wanted/{carid}/javbus")
     async def fetch_one_javbus(carid: str, request: Request) -> Dict[str, Any]:

@@ -4,7 +4,7 @@
 流程：
 1. 从下载目录移动视频到中间目录（按大小过滤）
 2. 清理中间目录文件名（去除 @ 前缀）
-3. 从中间目录削刮 JAVBus 信息，输出到最终目录
+3. 从中间目录削刮 JAVBus 信息，输出到最终目录（用 MovieExporter 统一削刮）
 """
 
 import argparse
@@ -16,7 +16,7 @@ import sys
 
 from dotenv import load_dotenv
 from javlibraryscrapy._paths import REPO_ROOT as _project_root
-from javlibraryscrapy.scraping.javbus import JavbusSpider
+from javlibraryscrapy.scraping.exporter import MovieExporter
 from javlibraryscrapy.utils.car import javbuscar
 
 load_dotenv(_project_root / ".env")
@@ -122,7 +122,13 @@ def step2_clean_at_prefix(intermediate_path: Path, preview: bool = False):
 
 
 async def step3_scrape(intermediate_path: Path, output_path: Path):
-    """步骤3：从中间目录削刮，输出到最终目录"""
+    """步骤3：从中间目录削刮，输出到最终目录。
+
+    走统一的 :class:`MovieExporter`：
+        - move_video=True（把中间目录的视频移进子目录）
+        - download_samples=True
+        - collect_magnets=True（写 ``<output_path>/magnets.json`` + ``magnets_links.txt``）
+    """
     logger.info("=" * 50)
     logger.info("步骤3：削刮 JAVBus")
     logger.info(f"  中间目录: {intermediate_path}")
@@ -138,48 +144,20 @@ async def step3_scrape(intermediate_path: Path, output_path: Path):
     for car_id, path in cars:
         logger.info(f"  {car_id}: {path}")
 
-    class OutputSpider(JavbusSpider):
-        async def process_movie(self, info: dict):
-            try:
-                if not info.get("title") or not info.get("carid"):
-                    return
+    exporter = MovieExporter(
+        output_root=output_path,
+        move_video=True,
+        download_samples=True,
+        collect_magnets=True,
+        magnets_index=output_path / "magnets.json",
+    )
+    stats = await exporter.export_movies(cars)
 
-                car_id = info["carid"]
-                title = info["title"].strip()
-                filename_prefix = f"{car_id} {title}"
-                save_dir = self.output_dir / filename_prefix
-                save_dir.mkdir(parents=True, exist_ok=True)
-
-                video_path = Path(info["path"])
-                if video_path.exists():
-                    new_video_name = f"{filename_prefix}{video_path.suffix}"
-                    new_video_path = save_dir / new_video_name
-                    shutil.move(str(video_path), str(new_video_path))
-
-                nfo_filename = save_dir / f"{filename_prefix}.nfo"
-                write_xml(nfo_filename, {**info, "path": save_dir / new_video_name if video_path.exists() else save_dir / f"{filename_prefix}.mp4"})
-
-                cover = info.get("cover", "")
-                if cover:
-                    cover_path = Path(cover)
-                    if cover_path.exists():
-                        fanart_path = save_dir / "fanart.png"
-                        shutil.copy(cover_path, fanart_path)
-                        split_poster_from_fanart(fanart_path, save_dir / "poster.png")
-
-                logger.info(f"完成: {filename_prefix}")
-            except Exception as e:
-                logger.error(f"处理失败: {info.get('carid', 'unknown')} - {e}")
-
-    from javlibraryscrapy.utils.filesave import write_xml
-    from javlibraryscrapy.utils.fanart import split_poster_from_fanart
-
-    spider = OutputSpider(root_dir=intermediate_path)
-    spider.output_dir = output_path
-    await spider.crawl_and_process(cars)
-
-    logger.info(f"削刮完成，共处理 {len(spider.movie_info_list)} 部电影")
-    return True
+    logger.info(
+        f"削刮完成：written={stats['written']}，failed={stats['failed']}，"
+        f"magnets_ok={stats['magnets_collected']}"
+    )
+    return stats["written"] > 0
 
 
 async def workflow(download_path: Path, intermediate_path: Path, output_path: Path, min_size_mb: int, preview: bool = False):
