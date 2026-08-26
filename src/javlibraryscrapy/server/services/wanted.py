@@ -41,6 +41,25 @@ logger = logging.getLogger("gallery.wanted")
 __all__ = ["WantedService", "WantedRefreshJob", "_bucket_for_release_date"]
 
 
+def _matches_query(movie: Dict[str, Any], q_lower: str) -> bool:
+    """wanted 单部是否匹配搜索关键字（已 lower + strip）。
+
+    匹配字段：车牌 / 标题 / 演员（任一命中即 True）。
+    大小写不敏感、unicode 子串匹配（演员里可能有日文片假名/汉字混排，
+    单纯 .lower() 对中日字符是 no-op，但留着不影响行为）。
+    """
+    code = (movie.get("code") or "").lower()
+    if q_lower in code:
+        return True
+    title = (movie.get("title") or "").lower()
+    if q_lower in title:
+        return True
+    actors = (movie.get("actors") or "").lower()
+    if q_lower in actors:
+        return True
+    return False
+
+
 class WantedService:
     """Wanted 状态 + 后台任务管理。
 
@@ -208,11 +227,16 @@ class WantedService:
         page: int = 1,
         size: int = 60,
         include_missing: bool = True,
+        q: str = "",
     ) -> Dict[str, Any]:
-        """按月份筛选 + 分页。同时返回 ``months`` 列表（月份桶摘要）。
+        """按月份筛选 + 关键字搜索 + 分页。同时返回 ``months`` 列表（月份桶摘要）。
 
         P2：派生数据（months 摘要、missing 总数）已预计算，``_sorted_movies``
         已按 release_date 倒序。本方法只需一次过滤 + 切片。
+
+        ``q`` 是大小写不敏感的子串搜索，匹配车牌 / 标题 / 演员（任一命中即返回）。
+        之前的版本把搜索留在前端做（``applyLocalFilter``），导致只能搜当前页 60 部。
+        现在下沉到服务端，搜全部 129 部；前端用 debounce 输入框触发重拉。
         """
         with self._lock:
             all_sorted = self._sorted_movies
@@ -222,12 +246,15 @@ class WantedService:
             )
             missing_count = self._missing_count
 
-        # 单次过滤：月份 + include_missing 合并成一个 list comp
+        # 单次过滤：月份 + include_missing + 关键字搜索
         items = all_sorted
         if month:
             items = [m for m in items if (m.get("_bucket") or "unknown") == month]
         if not include_missing:
             items = [m for m in items if not m.get("missing_in_remote")]
+        q_norm = q.strip().lower()
+        if q_norm:
+            items = [m for m in items if _matches_query(m, q_norm)]
         # 已是倒序，直接切片
         total = len(items)
         page = max(1, page)
@@ -242,6 +269,7 @@ class WantedService:
             "page": page,
             "size": size,
             "month": month,
+            "q": q,
             "missing_in_remote_count": missing_count,
         }
 
@@ -330,11 +358,25 @@ class WantedService:
         if not code_norm:
             return {"code": code_norm, "ok": False, "error": "空车牌"}
 
+        # 取 cover_url 用于 poster.jpg 下载：caller 显式传入优先（CLI 等场景），
+        # 否则从内部 JSON 状态里读已有值（前端点 ↻ 时 body 是空的，cover_url 必须
+        # 从内存恢复，否则 poster.jpg 永远不下）
+        if not cover_url:
+            with self._lock:
+                existing_for_cover = next(
+                    (m for m in self._movies
+                     if (m.get("code") or "").upper() == code_norm),
+                    None,
+                )
+            if existing_for_cover:
+                cover_url = (existing_for_cover.get("cover_url") or "").strip() or None
+
         result = scrape_one_javbus(
             code_norm,
             self.javbus_proxy,
             mw_root=mw_root,
             sample_cache=sample_cache,
+            cover_url=cover_url,
         )
 
         ok = bool(result.get("ok"))

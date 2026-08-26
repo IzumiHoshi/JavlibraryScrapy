@@ -251,6 +251,7 @@ export async function initWanted() {
     updateUrl();
     const qs = new URLSearchParams({ page, size });
     if (month) qs.set('month', month);
+    if (q) qs.set('q', q);  // 搜索关键字由服务端过滤（搜全部 129 部，不止当前页 60 部）
     try {
       const res = await fetch(`/api/wanted?${qs}`);
       const text = await res.text();
@@ -670,7 +671,23 @@ export async function initWanted() {
     if (e.target.closest('.local-badge')) hideTooltip();
   });
 
-  $('search').addEventListener('input', (e) => { q = e.target.value; applyLocalFilter(); });
+  // 搜索框 debounce：服务端过滤（搜全部 129 部），停止输入 250ms 后再重拉，
+// 避免每打一个字就发请求。回车 / clear 立即触发（不等 debounce）。
+  let searchDebounce = null;
+  $('search').addEventListener('input', (e) => {
+    q = e.target.value;
+    page = 1;  // 搜索条件变了 → 跳回第一页
+    clearTimeout(searchDebounce);
+    searchDebounce = setTimeout(() => load(), 250);
+  });
+  $('search').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      clearTimeout(searchDebounce);
+      page = 1;
+      load();
+    }
+  });
   $('btn-all').addEventListener('click', () => { visibleCards().forEach((c) => setSelected(c.dataset.code, true)); refreshCount(); });
   $('btn-none').addEventListener('click', () => {
     selected.clear();

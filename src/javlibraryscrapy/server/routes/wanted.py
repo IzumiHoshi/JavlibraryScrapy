@@ -261,6 +261,7 @@ def register(app: FastAPI) -> None:
         page: int = Query(default=1, ge=1),
         size: int = Query(default=60, ge=1, le=200),
         include_missing: bool = Query(default=True),
+        q: str = Query(default="", description="搜索关键字（车牌/标题/演员，大小写不敏感）"),
     ) -> Dict[str, Any]:
         wanted: WantedService = request.app.state.wanted
         gallery = request.app.state.gallery
@@ -271,6 +272,7 @@ def register(app: FastAPI) -> None:
             page=page,
             size=size,
             include_missing=include_missing,
+            q=q,
         )
 
         # local_samples：NFS glob 单次几百毫秒～几秒，60 条串行扫 = 几十秒。
