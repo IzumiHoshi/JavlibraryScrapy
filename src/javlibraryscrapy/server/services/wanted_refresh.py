@@ -719,8 +719,10 @@ def scrape_one_javbus(
     exporter = MovieExporter(
         output_root=output_root,
         move_video=False,
-        download_samples=False,
-        collect_magnets=False,
+        # 单部刷新下 samples：跟 export_mostwanted 对齐。wanted refresh 全站流程
+        # 也是开的，单部重抓不开反而奇怪 —— 用户点 ↻ 通常就是为了补齐本地的缺图。
+        download_samples=True,
+        collect_magnets=False,  # gallery 的 magnet 由 /api/scrape 单独管，不在单部刷新里写
         javlibrary_proxy=javbus_proxy,  # 单部刷新：JAVLibrary 也用同一份 proxy
     )
 

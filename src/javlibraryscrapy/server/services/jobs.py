@@ -138,6 +138,7 @@ class RescanJob:
         self.started_at: Optional[str] = None
         self.finished_at: Optional[str] = None
         self.title: str = ""
+        self.samples_downloaded: int = 0
         self.logs: Deque[str] = deque(maxlen=200)
         self._lock = threading.Lock()
 
@@ -156,6 +157,7 @@ class RescanJob:
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "title": self.title,
+            "samples_downloaded": self.samples_downloaded,
             "logs": logs,
         }
 
@@ -254,6 +256,7 @@ class RescanQueue:
             if result.get("ok"):
                 job.status = "done"
                 job.title = result.get("title", "")
+                job.samples_downloaded = int(result.get("samples_downloaded") or 0)
                 if self._on_complete is not None:
                     try:
                         self._on_complete(job.folder)

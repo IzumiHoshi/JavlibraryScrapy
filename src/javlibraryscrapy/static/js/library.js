@@ -107,7 +107,7 @@ export async function initLibrary() {
       `<span class="icon ${on ? 'on' : 'off'}" title="${label}">${on ? '✓' : '✗'} ${label}</span>`;
     // 刷新按钮：有视频的卡片才显示（没有视频没东西可刷）
     const rescanBtn = m.has_video
-      ? `<button class="rescan-btn" data-code="${esc(m.carid)}" title="重新搜刮（生成 NFO + 封面）">↻</button>`
+      ? `<button class="rescan-btn" data-code="${esc(m.carid)}" title="重新搜刮（生成 NFO + 封面 + 下载样图）">↻</button>`
       : '';
     return `
       <div class="card${noVideoCls}" data-code="${esc(m.carid)}" data-folder="${esc(m.folder)}" tabindex="0">
@@ -336,13 +336,18 @@ export async function initLibrary() {
 
   /* ---------- 刷新状态轮询：按钮实时反映队列状态 ---------- */
   const prevRescanState = new Map(); // carid -> 'running' | 'queued'
+  const lastCurrentMap = new Map();  // carid -> 最近一次 current snapshot（完成后用来显示样图数）
   async function refreshRescanStatus() {
     try {
       const res = await fetch('/api/library/rescan-status');
       if (!res.ok) return;
       const data = await res.json();
       const inProgress = new Map();
-      if (data.current) inProgress.set(data.current.carid, 'running');
+      if (data.current) {
+        inProgress.set(data.current.carid, 'running');
+        // 缓存 current 的 snapshot（含 samples_downloaded），完成后用得到
+        lastCurrentMap.set(data.current.carid, data.current);
+      }
       for (const q of (data.queued || [])) inProgress.set(q.carid, 'queued');
 
       document.querySelectorAll('.rescan-btn').forEach((btn) => {
@@ -358,6 +363,11 @@ export async function initLibrary() {
         } else {
           const wasActive = prevRescanState.has(code);
           if (wasActive) {
+            // 刚完成 → 取最后一次 current snapshot 拿样图数（data.current 已不在 inProgress，
+            // 但本轮 status_snapshot 里有；用 lastCurrentMap 缓存）
+            const lastSnap = lastCurrentMap.get(code);
+            const sampleCount = lastSnap ? (lastSnap.samples_downloaded || 0) : 0;
+            const sampleNote = sampleCount > 0 ? `（新下样图 ${sampleCount} 张）` : '';
             btn.classList.add('done');
             btn.classList.remove('running', 'queued');
             btn.textContent = '✓';
@@ -365,13 +375,17 @@ export async function initLibrary() {
             setTimeout(() => {
               btn.classList.remove('done');
               btn.textContent = '↻';
-              btn.title = '重新搜刮';
+              btn.title = '重新搜刮（NFO + 封面 + 样图）';
             }, 1800);
+            // 只对"刚才确实在跑"的（不是 queue 中就取消）才弹 toast，避免误报
+            if (prevRescanState.get(code) === 'running') {
+              toast(`${code} 刷新完成 ${sampleNote}`);
+            }
           } else {
             btn.disabled = false;
             btn.classList.remove('running', 'queued', 'done');
             btn.textContent = '↻';
-            btn.title = '重新搜刮';
+            btn.title = '重新搜刮（NFO + 封面 + 样图）';
           }
         }
       });

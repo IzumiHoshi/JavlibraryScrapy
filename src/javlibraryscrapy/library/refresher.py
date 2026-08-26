@@ -134,6 +134,43 @@ async def refresh_library_movie(
         else:
             emit(logging.WARNING, "未下载到封面（CDN 403 / 解析失败？）")
 
+        # 下载 samples：info["samples"] 是 JAVBus 樣品瀑布流 URL 列表。
+        # download_samples() 落到 <carid>_sample_NNN.jpg（临时命名），caller
+        # 重命名为标准 sample_NNN.jpg（Kodi 兼容）。已存在的目标文件跳过下载，
+        # 但 leftover 的 <carid>_sample_*.jpg 一律清理。
+        sample_urls = info.get("samples") or []
+        samples_downloaded = 0
+        if sample_urls:
+            emit(logging.INFO, f"开始下载 {len(sample_urls)} 张样图…")
+            try:
+                downloaded = spider.download_samples(sample_urls, info["carid"])
+            except Exception as e:  # noqa: BLE001
+                emit(logging.WARNING, f"调用 download_samples 失败：{e}")
+                downloaded = []
+            for i, src in enumerate(downloaded, start=1):
+                dest = folder / f"sample_{i:03d}.jpg"
+                if dest.exists():
+                    try:
+                        src.unlink()
+                    except OSError:
+                        pass
+                    continue
+                try:
+                    if src.exists():
+                        src.rename(dest)
+                        samples_downloaded += 1
+                except OSError as e:
+                    emit(logging.WARNING, f"移动樣品 {i} 失败：{e}")
+            # 清理残留的 <carid>_sample_NNN.jpg（download_samples 跳过/失败的）
+            for leftover in spider.root_dir.glob(f"{info['carid']}_sample_*.jpg"):
+                try:
+                    leftover.unlink()
+                except OSError:
+                    pass
+            emit(logging.INFO, f"样图下载完成：新增 {samples_downloaded}/{len(sample_urls)} 张")
+        else:
+            emit(logging.INFO, "本页无样图")
+
         emit(logging.INFO, f"刷新完成：{folder.name}")
         return {
             "ok": True,
@@ -141,6 +178,7 @@ async def refresh_library_movie(
             "nfo_path": str(nfo_filename),
             "fanart_path": str(fanart_path) if fanart_path.exists() else None,
             "poster_path": str(poster_path) if poster_path.exists() else None,
+            "samples_downloaded": samples_downloaded,
             "error": None,
         }
     except Exception as e:  # noqa: BLE001
@@ -160,6 +198,7 @@ def _fail(msg: str, log_callback: LogCallback = None) -> Dict[str, Any]:
         "nfo_path": None,
         "fanart_path": None,
         "poster_path": None,
+        "samples_downloaded": 0,
         "error": msg,
     }
 
