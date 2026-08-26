@@ -155,7 +155,7 @@ export async function initWanted() {
           ${m.release_date ? `<div class="meta-line"><span class="icon">📅 ${esc(m.release_date)}</span></div>` : ''}
           ${m.actors ? `<div class="meta-line"><span class="icon">👤 ${esc(m.actors.split(' / ').slice(0, 3).join(' · '))}</span></div>` : ''}
           ${m.javbus_url ? `<div class="card-links"><a href="${esc(m.javbus_url)}" target="_blank" rel="noreferrer">JavBus ↗</a></div>` : ''}
-          ${m.magnet ? `<div class="card-magnet"><button class="r-copy" data-magnet="${esc(m.magnet)}" title="复制磁力链接（wanted refresh 时一并保存，无需再点抓磁力）">🧲 复制</button><button class="r-nas" data-code="${esc(m.code)}" data-magnet="${esc(m.magnet)}" title="直接推送到极空间 NAS（使用 .env 中的 ZSPACE_DOWNLOAD_PATH）">📥 NAS</button></div>` : ''}
+          ${m.magnet ? `<div class="card-magnet"><button class="r-copy" data-magnet="${esc(m.magnet)}" title="复制磁力链接（wanted refresh 时一并保存，无需再点抓磁力）"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 15-4-4 6.75-6.77a7.59 7.59 0 0 1 11 11L13 22l-4-4 6.39-6.36a2.14 2.14 0 0 0-3-3L6 15"/><path d="m5 8 4 4"/><path d="m12 15 4 4"/></svg>复制</button><button class="r-nas" data-code="${esc(m.code)}" data-magnet="${esc(m.magnet)}" title="直接推送到极空间 NAS（使用 .env 中的 ZSPACE_DOWNLOAD_PATH）"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>NAS</button></div>` : ''}
         </div>
       </div>`;
   }
