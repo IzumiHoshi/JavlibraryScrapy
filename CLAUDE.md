@@ -84,6 +84,53 @@ uv run python tests/integration/test_gallery_server_library.py # 离线跑画廊
   - `download_cover()` 使用同步 `requests`（而非 Scrapling session）以便显式设置 `Referer` 头指向视频页面 —— 这是避免 403 的必需操作。封面初次保存到 `root_dir/<car_id>.png`，然后 `process_movie()` 在每个视频子目录中将其重命名为 `fanart.png`。
   - `process_movie()` 被 `cli/workflow.py` 子类化以重定向输出到不同目录（构造后设置 `spider.output_dir = output_path`；子类把封面复制到子目录，而不是原地重命名）。
 
+### `src/javlibraryscrapy/scraping/exporter.py` —— `MovieExporter`（统一削刮入口）
+
+设计目标：把三套并行的 JAVBus 削刮代码（`cli/workflow.py` step3、`cli/export_mostwanted.py`、`server/services/wanted_refresh.py:scrape_one_javbus`）合并到单一接口。所有"按车号削刮并写本地库"的需求都走这个类。
+
+继承自 `JavbusSpider`，沿用其：
+- `javbus_url` / `javbus_base_url` / `proxy`（从 .env 读）
+- `parse()` / `_extract_magnet_link()` / `download_cover()` / `download_samples()`
+- `crawl_and_process()`（AsyncDynamicSession 生命周期管理）
+
+**4 个开关**：
+| 参数 | 用途 | 默认 |
+|---|---|---|
+| `move_video` | 把源视频移进子目录（workflow=True，其它=False） | False |
+| `download_samples` | 下载 JAVBus sample waterfall（wanted_refresh=False，其它=True） | True |
+| `collect_magnets` | 收集 magnet 到集中 `magnets.json` | True |
+| `magnets_index` | 集中 magnet JSON 路径（None → `<output_root>/magnets.json`） | None |
+| `javlibrary_proxy` | JAVLibrary 缩略图下载代理（None → 沿用 `self.proxy`） | None |
+
+**主入口**：`await exporter.export_movies(car_list, cover_urls=...)`，返回 `{total, written, failed, skipped, magnets_collected}`。
+
+**输出布局**（每部影片统一）：
+```
+<output_root>/<CARID> <title>/
+├── <CARID> <title>.<ext>        # 视频（move_video=True 时）
+├── movie.nfo                    # 统一名（Kodi/Plex 兼容）
+├── poster.jpg                   # JAVLibrary 缩略图
+├── fanart.jpg                   # JAVBus 原图（统一扩展名）
+└── sample_NNN.jpg               # JAVBus sample waterfall
+<output_root>/
+├── magnets.json                 # 集中索引（schema v2）
+└── magnets_links.txt            # 一行一条 magnet（仅 status=ok）
+```
+
+**调用方配置矩阵**：
+
+| 调用方 | move_video | download_samples | collect_magnets | magnets_index |
+|---|---|---|---|---|
+| `cli/workflow.py` step3 | ✅ | ✅ | ✅ | `<output_path>/magnets.json` |
+| `cli/export_mostwanted.py` | ❌ | ✅ | ✅ | `<library_root>/magnets.json` |
+| `wanted_refresh.scrape_one_javbus` | ❌ | ❌ | ❌ | （不主动写；gallery 单独管） |
+
+⚠️ **注意**：`MovieExporter` 内部存 `download_samples` 开关到 `self._download_samples_enabled`，避免遮蔽父类的 `download_samples()` 方法。
+
+**旧库迁移**：见 `scripts/migrate_to_unified_naming.py` —— 把 `cover.jpg` → `fanart.jpg`、`fanart.png` → `fanart.jpg`、`poster.png` → `poster.jpg`、`<CARID> <title>.nfo` → `movie.nfo`。默认 dry-run，加 `--yes` 真正执行。
+
+设计文档：`docs/workflow-design.md`。
+
 - **`src/javlibraryscrapy/scraping/javlibrary.py`** — `JAVLibrarySpider`：爬取 JAVLibrary `vl_mostwanted.php`（或可配置的基础 URL），自动检测总页数，页间休眠 3 秒，导出 `movies.json` + `movies.csv`。输出位置优先级：`.env` 的 `MOSTWANTED_INDEX`（直接控制 JSON 文件路径）> `MOSTWANTED_LIBRARY_ROOT`（库根目录）> 项目内 `output/`。使用 `stealth_mode=True` 和 90 秒超时以通过 Cloudflare 验证。
 - **`src/javlibraryscrapy/cli/export_mostwanted.py`** — 把 JAVLibrary `movies.json` 导出到本地库。对每部影片建 `<root>/<CARID> <title>/`，写 `movie.nfo`（用 `JavbusSpider.parse()` 拉 JAVBus 详情页元数据填 NFO）+ `poster.jpg`（JAVLibrary 缩略图）+ `fanart.jpg`（JAVBus 横版原图）。复用 `JavbusSpider` 处理 JAVBus 部分，仅覆写 `process_movie` 把 `fanart.png → fanart.jpg`、NFO 改名为 `movie.nfo`、不做 `split_poster_from_fanart`。默认跳过已存在文件夹；排除列表与 `find_car_bus` 一致（`HEYZO/PONDO/CARIB/OKYOHOT`，这些在 JAVBus 上没页面）。`--source` 默认优先级：`MOSTWANTED_INDEX` > `MOSTWANTED_LIBRARY_ROOT/javlibrary_movies.json` > `output/javlibrary_movies.json`；`--library-root` 仍只从 `MOSTWANTED_LIBRARY_ROOT` 读。
 
