@@ -370,17 +370,19 @@
   }
   .card-magnet .r-copy,
   .card-magnet .r-nas {
-    padding: 2px 8px; font-size: 11px;
+    padding: 1px 6px; font-size: 11px;
     background: var(--card-hover); border: 1px solid var(--border);
-    border-radius: 6px; color: var(--accent); cursor: pointer;
-    line-height: 1.4;
-    display: inline-flex; align-items: center; gap: 4px;
-    /* 防止「复制」/「NAS」文字因按钮被挤窄而换行成两行 */
+    border-radius: 5px; color: var(--accent); cursor: pointer;
+    line-height: 1.3;
+    display: inline-flex; align-items: center; gap: 3px;
     white-space: nowrap;
-    /* 两个按钮宽度统一：按内容多的一边（"🧲 复制"）定最小宽度，文字少的一边
-       用 justify-content: center 把内容居中 —— 视觉上两个按钮严格同宽 */
-    min-width: 92px;
+    /* 两个按钮尺寸统一 */
+    min-width: 70px;
     justify-content: center;
+  }
+  /* 按钮内 SVG 图标：固定像素尺寸 */
+  .card-magnet .ico {
+    width: 11px; height: 11px; flex-shrink: 0;
   }
   .card-magnet .r-copy:hover:not(:disabled),
   .card-magnet .r-nas:hover:not(:disabled) {
