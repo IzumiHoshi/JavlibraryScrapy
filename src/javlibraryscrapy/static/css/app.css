@@ -363,6 +363,37 @@
     color: var(--text-faint); font-size: 12px; text-decoration: none;
   }
   .card-links a:hover { color: var(--accent); text-decoration: underline; }
+  /* 卡片里的磁力行：[🧲 复制] [📥 NAS] 两个带图标按钮并列 */
+  .card-magnet {
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+    font-size: 11px; color: var(--text-faint);
+  }
+  .card-magnet .r-copy,
+  .card-magnet .r-nas {
+    padding: 1px 6px; font-size: 11px;
+    background: var(--card-hover); border: 1px solid var(--border);
+    border-radius: 5px; color: var(--accent); cursor: pointer;
+    line-height: 1.3;
+    display: inline-flex; align-items: center; gap: 3px;
+    white-space: nowrap;
+    /* 两个按钮尺寸统一 */
+    min-width: 70px;
+    justify-content: center;
+  }
+  /* 按钮内 SVG 图标：固定像素尺寸 */
+  .card-magnet .ico {
+    width: 11px; height: 11px; flex-shrink: 0;
+  }
+  .card-magnet .r-copy:hover:not(:disabled),
+  .card-magnet .r-nas:hover:not(:disabled) {
+    border-color: var(--accent); color: var(--text);
+  }
+  .card-magnet .r-nas.r-nas-ok {
+    background: rgba(62, 207, 142, 0.15); border-color: var(--ok); color: var(--ok);
+  }
+  .card-magnet .r-nas.r-nas-fail {
+    background: rgba(239, 106, 106, 0.15); border-color: var(--err); color: var(--err);
+  }
   .empty { grid-column: 1 / -1; text-align: center; color: var(--text-faint); }
 
   /* ---------- 本地已有 badge ---------- */

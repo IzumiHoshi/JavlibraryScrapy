@@ -124,6 +124,7 @@
       overflow-wrap: anywhere; word-break: break-word;
       overflow: visible; text-overflow: clip;
     }
+    .r-nas,
     .r-copy { min-height: 36px; padding: 7px 10px; touch-action: manipulation; }
     details.logs { margin-top: 8px; }
     details.logs summary { min-height: 44px; display: flex; align-items: center; }

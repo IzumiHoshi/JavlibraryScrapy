@@ -155,7 +155,7 @@ export async function initWanted() {
           ${m.release_date ? `<div class="meta-line"><span class="icon">📅 ${esc(m.release_date)}</span></div>` : ''}
           ${m.actors ? `<div class="meta-line"><span class="icon">👤 ${esc(m.actors.split(' / ').slice(0, 3).join(' · '))}</span></div>` : ''}
           ${m.javbus_url ? `<div class="card-links"><a href="${esc(m.javbus_url)}" target="_blank" rel="noreferrer">JavBus ↗</a></div>` : ''}
-          ${m.magnet ? `<div class="card-magnet"><span class="icon" title="磁力已抓取（wanted refresh 时一并保存，无需再点抓磁力）">🧲</span><button class="r-copy" data-magnet="${esc(m.magnet)}" title="复制磁力链接">复制</button></div>` : ''}
+          ${m.magnet ? `<div class="card-magnet"><button class="r-copy" data-magnet="${esc(m.magnet)}" title="复制磁力链接（wanted refresh 时一并保存，无需再点抓磁力）"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 15-4-4 6.75-6.77a7.59 7.59 0 0 1 11 11L13 22l-4-4 6.39-6.36a2.14 2.14 0 0 0-3-3L6 15"/><path d="m5 8 4 4"/><path d="m12 15 4 4"/></svg>复制</button><button class="r-nas" data-code="${esc(m.code)}" data-magnet="${esc(m.magnet)}" title="直接推送到极空间 NAS（使用 .env 中的 ZSPACE_DOWNLOAD_PATH）"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>NAS</button></div>` : ''}
         </div>
       </div>`;
   }
@@ -446,6 +446,14 @@ export async function initWanted() {
       copyText(copyBtn.dataset.magnet, '已复制磁力链接');
       return;
     }
+    // 点击卡片里的「📥 NAS」按钮 → 推送单条磁力到 NAS（不弹路径框，走 .env 配置）
+    const nasBtn = e.target.closest('.r-nas');
+    if (nasBtn) {
+      e.stopPropagation();
+      e.preventDefault();
+      sendOneToZspace(nasBtn);
+      return;
+    }
     // 点击单部 JavBus 重抓按钮 → 调 /api/wanted/{code}/javbus，成功后刷新当前页
     const refetchBtn = e.target.closest('.refetch-btn');
     if (refetchBtn) {
@@ -708,7 +716,76 @@ export async function initWanted() {
     btn.title = zspaceStatus.configured
       ? `发送到极空间 ${zspaceStatus.host || ''}（默认 ${zspaceStatus.default_download_path}）`
       : '极空间未配置（.env 需 ZSPACE_ENABLED + ZSPACE_HOST/USER/PASSWORD）';
+    // 同步禁用卡片里的「📥 NAS」按钮
+    document.querySelectorAll('.r-nas').forEach((b) => {
+      b.disabled = !zspaceStatus.configured;
+      if (!zspaceStatus.configured) {
+        b.title = '极空间未配置（.env 需 ZSPACE_ENABLED + ZSPACE_HOST/USER/PASSWORD）';
+      }
+    });
   }
+  // 单卡片 NAS 推送：直接调 /api/zspace/submit（items 长度=1），不弹路径框，
+  // 路径走 zspaceStatus.default_download_path。按钮状态：sending 时禁用 + 改文案，
+  // 完成后短暂变 ✓/✗ 再恢复。
+  async function sendOneToZspace(btn) {
+    if (!zspaceStatus || !zspaceStatus.configured) return toast('极空间未配置');
+    const code = btn.dataset.code || '';
+    const magnet = btn.dataset.magnet || '';
+    if (!magnet) return toast('该卡片没有磁力链接');
+    if (btn.disabled) return;
+
+    const path = (zspaceStatus.default_download_path || '').trim();
+    if (!path) return toast('ZSPACE_DOWNLOAD_PATH 未配置（请在 .env 设置）');
+
+    btn.disabled = true;
+    const orig = btn.textContent;
+    btn.textContent = '📥 推送中…';
+    try {
+      const res = await fetch('/api/zspace/submit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items: [{ code, magnet }],
+          download_path: path,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || data.error || res.statusText);
+      const results = data.results || [];
+      const r = results[0] || {};
+      if (r.ok) {
+        btn.textContent = '✓ 已推送';
+        btn.classList.add('r-nas-ok');
+        toast(`${code} 已推送到 NAS`);
+        setTimeout(() => {
+          btn.textContent = orig;
+          btn.classList.remove('r-nas-ok');
+          btn.disabled = false;
+        }, 2500);
+      } else {
+        const code2 = r.status_code ? ` [${r.status_code}]` : '';
+        const msg = r.msg || r.error || '未知错误';
+        btn.textContent = '✗ 失败';
+        btn.classList.add('r-nas-fail');
+        toast(`${code} NAS 推送失败${code2}：${msg}`, true);
+        setTimeout(() => {
+          btn.textContent = orig;
+          btn.classList.remove('r-nas-fail');
+          btn.disabled = false;
+        }, 3000);
+      }
+    } catch (e) {
+      btn.textContent = '✗ 失败';
+      btn.classList.add('r-nas-fail');
+      toast(`NAS 推送失败：${e.message}`, true);
+      setTimeout(() => {
+        btn.textContent = orig;
+        btn.classList.remove('r-nas-fail');
+        btn.disabled = false;
+      }, 3000);
+    }
+  }
+
   async function sendToZspace() {
     const items = lastItems
       .filter((it) => it.magnet)
