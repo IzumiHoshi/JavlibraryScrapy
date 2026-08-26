@@ -5,7 +5,7 @@ RSA 登录 + cookie + token 续期逻辑。本模块只做两件事：
 
 1. 从 :class:`~javlibraryscrapy.server.services.zspace_config.ZSpaceConfig`
    读配置（不是 .env）—— 用户通过网页 UI 改完立即生效。
-2. 暴露 ``submit_magnet`` / ``list_downloads`` 高层方法。
+2. 暴露 ``submit_magnet`` / ``list_downloads`` / ``get_download_codes`` 高层方法。
 
 注意
 ----
@@ -21,13 +21,49 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import Any, Callable, Dict, Optional
+import re
+import time
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import httpx
 
 from .zspace_config import ZSpaceConfig
 
 logger = logging.getLogger("gallery.zspace")
+
+
+# 任务名里抽 car id 的正则（独立维护避免循环依赖）。
+# 兼容多种 car ID 格式：
+#   ABF-340 / IPZZ-907 / SNOS-334     → 普通格式
+#   T28-001                            → 字母+数字前缀
+#   20ID-020                           → 数字+字母前缀
+#   SNOS.334.1080p                     → 点分隔（容忍）
+#
+# 限定后缀 3~4 位数字：实测 wanted JSON 全部是 3 位数字。
+# 收紧这一点避免误匹配（如 "madoubt.com 858935.xyz NGOD-352" 里
+# "COM-85893" 假阳性 —— 5 位数字截断造成）。
+_CARID_IN_NAME_RE = re.compile(
+    r"([A-Z]{1,6}\d*|\d{2}[A-Z]+)[-_. ]?(\d{3,4})",
+    re.IGNORECASE,
+)
+
+# NAS 任务状态字符串 / 数字码 → 我们的语义（兼容多种 NAS 厂家命名）。
+# 极空间实测：status 是 int（0=active, 13=seeding/completed）+ 布尔 isFinished
+_DOWNLOADING_STATES = frozenset({
+    "downloading", "active", "preparing", "metadata",
+    "queued", "waiting", "checking",
+})
+_COMPLETED_STATES = frozenset({
+    "completed", "complete", "finished", "seeding", "done", "uploaded",
+})
+# 极空间实测的 int status 码：0=active，13=seeding/completed。其它值按
+# isFinished bool / 进度兜底。
+_DOWNLOADING_STATUS_CODES = frozenset({0, 1, 2, 3, 4, 5})  # active 类
+_COMPLETED_STATUS_CODES = frozenset({11, 12, 13, 14, 15, 16, 17})  # seeding / completed 类
+
+# 缓存有效期：NAS list API 单次 500ms~2s，wanted 页每次 load() 都拉太重。
+# 30s 足够「在卡片上看到下载进度变化」，又不会把 NAS 摸死。
+_DOWNLOAD_CODES_CACHE_TTL = 30.0
 
 
 class ZSpaceError(RuntimeError):
@@ -54,6 +90,8 @@ class ZSpaceClient:
         self._nas: Any = None
         self._sig: Optional[tuple] = None
         self._lock = asyncio.Lock()
+        # 下载任务代码集缓存（30s），让 wanted 页频繁 load() 不会把 NAS 摸死
+        self._codes_cache: Optional[Tuple[float, Set[str], Set[str]]] = None
 
     # ------------------------------------------------------------------ #
     # 内部
@@ -185,6 +223,200 @@ class ZSpaceClient:
             raise ZSpaceError(str(e)) from e
         except (httpx.HTTPError, ValueError) as e:
             raise ZSpaceError(f"{type(e).__name__}: {e}") from e
+
+    # ------------------------------------------------------------------ #
+    # 下载代码集：wanted 页用，给每张卡片标 NAS 下载状态
+    # ------------------------------------------------------------------ #
+    async def get_download_codes(
+        self, *, force_refresh: bool = False
+    ) -> Tuple[Set[str], Set[str]]:
+        """返回 ``(downloading_codes, completed_codes)`` 两个集合。
+
+        - 从 ``/downloader/list`` 拿原始任务列表
+        - 用正则从 ``task.name`` 抽 car id（兼容大小写、与 - 分隔符无关）
+        - 按 ``status`` 字符串 + ``progress`` 字段联合判定 downloading / completed
+        - 30s 内存缓存；force_refresh=True  无视缓存（给用户手动刷新按钮用）
+
+        出错时（NAS 离线 / 登录失效 / list 失败）抛 :class:`ZSpaceError`，
+        路由层映射成 502 + 空集兜底；前端拿到空集就不显示 NAS 徽章，跟
+        「未配置 zspace」一致。
+        """
+        now = time.monotonic()
+        if (
+            not force_refresh
+            and self._codes_cache is not None
+            and (now - self._codes_cache[0]) < _DOWNLOAD_CODES_CACHE_TTL
+        ):
+            return self._codes_cache[1], self._codes_cache[2]
+
+        raw = await self.list_downloads()
+        downloading, completed = _parse_download_codes(raw)
+        self._codes_cache = (now, downloading, completed)
+        logger.debug(
+            f"NAS 下载代码集刷新：downloading={len(downloading)}, "
+            f"completed={len(completed)}"
+        )
+        return downloading, completed
+
+    def invalidate_download_codes_cache(self) -> None:
+        """主动失效缓存。
+
+        提交新磁力成功后调一下，让 wanted 页下次 load() 立刻看到新下载任务。
+        """
+        self._codes_cache = None
+
+
+def _parse_download_codes(
+    raw: Dict[str, Any],
+) -> Tuple[Set[str], Set[str]]:
+    """从 ``/downloader/list`` 的响应里抽 car id，按状态分两组。
+
+    兼容性处理（实测覆盖极空间 + 其它 qBittorrent 系）：
+    - tasks 路径：``data.tasks`` / ``data.list`` / ``data.items`` / 顶层 ``list``
+    - 任务名：``name`` / ``title`` / ``fileName``
+    - 状态字段：``status``（int 或 str）/ ``state``（str）/ ``isFinished``（bool）
+    - 进度：``progress`` / ``percent`` / ``completeSize``/``totalSize``
+
+    判定优先级：isFinished bool > status 字符串 > status 数字码 > progress
+    """
+    # 尝试多个常见路径定位 task 列表
+    candidates: List[Any] = []
+    if isinstance(raw, dict):
+        data = raw.get("data") or raw
+        for key in ("tasks", "list", "items"):
+            v = data.get(key) if isinstance(data, dict) else None
+            if isinstance(v, list):
+                candidates = v
+                break
+        if not candidates and isinstance(data, list):
+            candidates = data
+
+    downloading: Set[str] = set()
+    completed: Set[str] = set()
+    for task in candidates:
+        if not isinstance(task, dict):
+            continue
+        # 抽 car id：name / title / fileName 任一字段里有就行
+        name = ""
+        for key in ("name", "title", "fileName", "filename"):
+            v = task.get(key)
+            if isinstance(v, str) and v.strip():
+                name = v
+                break
+        carid = _extract_carid(name)
+        if not carid:
+            continue
+
+        # 状态判定（按优先级）
+        # 1) isFinished bool（极空间实测）—— 最直接可靠
+        is_finished = task.get("isFinished")
+        if isinstance(is_finished, bool):
+            if is_finished:
+                completed.add(carid)
+            else:
+                # isFinished=false → 还在下载；可能 progress=99.7% 但还没标记完成
+                downloading.add(carid)
+            continue
+
+        # 2) status / state 字符串
+        status_raw = None
+        for key in ("status", "state"):
+            v = task.get(key)
+            if isinstance(v, str):
+                status_raw = v
+                break
+        if status_raw is not None:
+            status_lower = status_raw.strip().lower()
+            if status_lower in _COMPLETED_STATES:
+                completed.add(carid)
+            elif status_lower in _DOWNLOADING_STATES:
+                downloading.add(carid)
+            # 其它状态字符串（未知）继续看数字码
+            else:
+                # 尝试把 status 当 int 解析
+                try:
+                    code = int(status_raw)
+                    if code in _COMPLETED_STATUS_CODES:
+                        completed.add(carid)
+                    elif code in _DOWNLOADING_STATUS_CODES:
+                        downloading.add(carid)
+                except (TypeError, ValueError):
+                    pass
+            continue
+
+        # 3) status int 字段（极空间：0=active, 13=completed/seeding）
+        for key in ("status", "state"):
+            v = task.get(key)
+            if isinstance(v, int):
+                if v in _COMPLETED_STATUS_CODES:
+                    completed.add(carid)
+                elif v in _DOWNLOADING_STATUS_CODES:
+                    downloading.add(carid)
+                # 未知码继续看进度
+                else:
+                    progress = _extract_progress(task)
+                    if progress >= 100:
+                        completed.add(carid)
+                    elif progress > 0:
+                        downloading.add(carid)
+                break
+        else:
+            # 4) 纯进度兜底
+            progress = _extract_progress(task)
+            if progress >= 100:
+                completed.add(carid)
+            elif progress > 0:
+                downloading.add(carid)
+
+    return downloading, completed
+
+
+def _extract_carid(name: str) -> Optional[str]:
+    """从任务名里抽 car id（统一大写）。无匹配返回 None。
+
+    例：
+        "ABF-340-C.torrent"              → "ABF-340"
+        "[HD] IPZZ-907 [无码破解]"        → "IPZZ-907"
+        "SNOS.334.1080p"                 → "SNOS-334"（容忍 . 分隔符）
+        "madoubt.com 858935.xyz NGOD-352" → "NGOD-352"（取**最右**的候选——
+                                          真正的 car id 习惯在文件名的末尾，
+                                          前面往往是网站名 / 路径 / 标签）
+
+    取最右匹配：真正 car id 在文件名末尾是行业惯例（命名规则 `<站名><path><CARID>`），
+    而中间的网站 / 路径数字（"madoubt.com 858935"）经常包含看起来像 car id 的字串。
+    """
+    if not name:
+        return None
+    matches = list(_CARID_IN_NAME_RE.finditer(name.upper().replace(".", "-")))
+    if not matches:
+        return None
+    # 取最右（文件名末位）的匹配 + 同位置时取最长
+    best = max(matches, key=lambda m: (m.start(), len(m.group(1)) + len(m.group(2))))
+    return f"{best.group(1).upper()}-{best.group(2)}"
+
+
+def _extract_progress(task: Dict[str, Any]) -> float:
+    """从 task 里抽进度（0~100 数字）。无进度字段返回 -1。
+
+    支持：
+    - ``progress`` / ``percent`` / ``pct`` —— 直接是百分比
+    - ``completeSize``/``totalSize`` / ``size``/``totalSize`` —— 字节数算比
+    """
+    for key in ("progress", "percent", "pct"):
+        v = task.get(key)
+        if isinstance(v, (int, float)):
+            return float(v)
+    # 兜底：completeSize / totalSize（极空间实测字段名）
+    complete = task.get("completeSize")
+    total = task.get("totalSize") or task.get("total_size")
+    if isinstance(complete, (int, float)) and isinstance(total, (int, float)) and total > 0:
+        return float(complete) / float(total) * 100.0
+    # 兜底 2：size / totalSize
+    size = task.get("size")
+    total = task.get("totalSize") or task.get("total_size")
+    if isinstance(size, (int, float)) and isinstance(total, (int, float)) and total > 0:
+        return float(size) / float(total) * 100.0
+    return -1.0
 
     async def aclose(self) -> None:
         """关闭 vendored httpx 客户端（lifespan 退出时调用）。"""
