@@ -15,6 +15,7 @@
     python scripts/backfill_magnets.py --data <path>          # 指定非默认 JSON
     python scripts/backfill_magnets.py --batch-size 5         # 改批量大小（默认 10）
     python scripts/backfill_magnets.py --only ABF-376 MIAB-001  # 只补指定车牌
+    python scripts/backfill_magnets.py --yes --reload          # 跑完通知 gallery 重读
 
 退出码：成功 0；找不到文件 1。
 
@@ -22,7 +23,7 @@
     - 只补 ``_status=ready`` 且 ``magnet`` 为空的条目（不动其它状态的）
     - 抓到的 magnet 写回原条目的 ``magnet`` 字段
     - 每批跑完增量落盘（崩了最多丢一个 batch 的进度）
-    - 跳过本地库已存在的车（gallery 的 ``/api/scrape`` 默认行为，避免重复）
+    - ``--reload`` 时落盘后 POST /api/wanted/reload 让 gallery 立即看到新数据
 """
 from __future__ import annotations
 
@@ -243,6 +244,16 @@ def main(argv: List[str] | None = None) -> int:
         default=None,
         help="只补指定车牌（空格分隔，如 --only ABF-376 MIAB-001）",
     )
+    p.add_argument(
+        "--reload",
+        action="store_true",
+        help="落盘后 POST /api/wanted/reload 让 gallery 立即重读（避免重启服务）",
+    )
+    p.add_argument(
+        "--gallery-url",
+        default="http://127.0.0.1:8000",
+        help="gallery 服务根 URL（默认 http://127.0.0.1:8000）",
+    )
     args = p.parse_args(argv)
 
     data_path = resolve_data_path(args.data)
@@ -285,6 +296,25 @@ def main(argv: List[str] | None = None) -> int:
             f"\n完成：ok={stats['ok']}，no_magnet={stats['no_magnet']}，"
             f"failed={stats['failed']}（total={stats['total']}）"
         )
+        # 落盘后通知 gallery 服务重读
+        if args.reload:
+            reload_url = args.gallery_url.rstrip("/") + "/api/wanted/reload"
+            logger.info(f"\n通知 gallery reload: POST {reload_url}")
+            try:
+                # 延迟导入：脚本默认不依赖 requests
+                import urllib.request
+                req = urllib.request.Request(
+                    reload_url,
+                    data=b"",  # 空 body
+                    method="POST",
+                    headers={"Content-Type": "application/json"},
+                )
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    body = resp.read().decode("utf-8", errors="replace")
+                logger.info(f"  ✅ gallery reload 响应：{body[:200]}")
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"  ⚠ gallery reload 失败（不影响 JSON 已落盘）：{e}")
+                logger.warning(f"    手动重启服务或调：curl -X POST {reload_url}")
     return 0
 
 
