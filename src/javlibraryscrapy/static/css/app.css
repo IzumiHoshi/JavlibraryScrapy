@@ -444,12 +444,25 @@
     font-size: 11px;
     font-weight: 600;
     line-height: 1;
+    /* 默认 nas-badge 是 <div> 状态徽章，不可点击；.clickable 覆盖为可点击按钮 */
     pointer-events: none;
   }
   .nas-badge.ok {
     background: rgba(62, 207, 142, 0.15);
     color: var(--ok);
     border: 1px solid rgba(62, 207, 142, 0.4);
+  }
+  /* 已下载且可整理：整个徽章是按钮（点了触发整理） */
+  .nas-badge.clickable {
+    cursor: pointer;
+    font-family: inherit;
+    line-height: 1;
+    pointer-events: auto;  /* 覆盖默认的 pointer-events: none，让按钮可点 */
+  }
+  .nas-badge.clickable:hover:not(:disabled) {
+    background: rgba(62, 207, 142, 0.28);
+    border-color: var(--ok);
+    transform: scale(1.04);
   }
   /* 已整理：本地库已收录（library scanner 检测到），区别于「已下载」（NAS 完成但未入库）
      用紫色系（介于蓝→绿之间）表示「处理过了」的中间态 */

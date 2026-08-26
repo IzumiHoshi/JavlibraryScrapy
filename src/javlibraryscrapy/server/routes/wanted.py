@@ -249,6 +249,94 @@ def register(app: FastAPI) -> None:
         )
         return result
 
+    @app.post("/api/wanted/{carid}/organize")
+    async def organize_one(carid: str, request: Request) -> Dict[str, Any]:
+        """把单部已下载的 wanted 影片从 wanted 目录整理到本地库。
+
+        前置条件：
+        - 已配置 ``LIBRARY_ROOT``（本地库根目录）
+        - 已配置 ``MOSTWANTED_LIBRARY_ROOT``（wanted 库根目录）
+        - 已配置 ``ZSPACE_DOWNLOAD_PATH``（NAS 下载目录挂载路径）
+
+        整理动作：
+        1. 在 ``<MOSTWANTED_LIBRARY_ROOT>/<CARID> <title>/`` 找源文件夹
+        2. 读 NFO 拿 title / release_date，算月份桶
+        3. 把整个源文件夹（nfo / poster / fanart / samples）复制到
+           ``<LIBRARY_ROOT>/<YYYY-MM>/<CARID> <title>/``
+        4. 在 ``<ZSPACE_DOWNLOAD_PATH>`` 下找含车牌的下载（取最大文件）
+        5. 移动 + 重命名为 ``<CARID> <title>.<ext>``
+        6. 如果下载是文件夹，删源文件夹
+        7. 触发 library scanner 更新索引
+
+        目标目录已存在 → ``ok=False`` + ``skipped="already_organized"``，
+        不覆盖用户数据。
+
+        返回 :func:`organize_movie` 的 dict，可直接 toast 展示。
+        """
+        from javlibraryscrapy.library.organizer import organize_movie
+
+        carid_norm = carid.strip().upper()
+        if not CARID_RE.fullmatch(carid_norm):
+            raise HTTPException(status_code=400, detail="非法的车牌")
+        normalized = normalize_carid(carid_norm)
+        if not normalized:
+            raise HTTPException(
+                status_code=400,
+                detail=f"非法的车牌：{carid!r}（应为 字母-数字 格式，如 IPZZ-907）",
+            )
+        if normalized != carid_norm:
+            logger.info(f"车牌 {carid_norm} 自动规范化 → {normalized}")
+            carid_norm = normalized
+
+        settings = request.app.state.settings
+        mw_root = getattr(settings, "mostwanted_library_root", None)
+        lib_root = getattr(settings, "library_root", None)
+        zspace_download_path = getattr(settings, "zspace_download_path", None)
+
+        missing = []
+        if not mw_root:
+            missing.append("MOSTWANTED_LIBRARY_ROOT")
+        if not lib_root:
+            missing.append("LIBRARY_ROOT")
+        if not zspace_download_path:
+            missing.append("ZSPACE_DOWNLOAD_PATH")
+        if missing:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"整理功能未配置（缺失：{', '.join(missing)}，"
+                    "在 .env 里设置并重启服务）"
+                ),
+            )
+
+        # library scanner 回调：整理成功后增量刷新索引，
+        # 让前端的「本地已有」徽章立刻亮起。
+        gallery = getattr(request.app.state, "gallery", None)
+
+        def _rescan():
+            if gallery is not None and hasattr(gallery, "start_rescan"):
+                gallery.start_rescan()
+
+        # 与 javbus 端点一致：放到 asyncio 线程池跑，避免阻塞事件循环
+        # （复制 / 移动可能涉及 NFS / SMB / NAS 大文件 IO，单次几秒到十几秒）
+        result = await asyncio.to_thread(
+            functools.partial(
+                organize_movie,
+                carid_norm,
+                Path(mw_root),
+                Path(lib_root),
+                Path(zspace_download_path),
+                on_library_change=_rescan,
+            )
+        )
+        logger.info(
+            f"整理 {carid_norm}: ok={result.get('ok')} "
+            f"videos_moved={result.get('videos_moved')} "
+            f"nas_source_removed={result.get('nas_source_removed')} "
+            f"skipped={result.get('skipped')} error={result.get('error')}"
+        )
+        return result
+
     @app.get("/api/wanted/months")
     async def months(request: Request) -> Dict[str, Any]:
         wanted: WantedService = request.app.state.wanted

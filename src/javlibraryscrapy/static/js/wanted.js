@@ -116,14 +116,13 @@ export async function initWanted() {
   }
 
   // NAS / 本地库状态徽章：放在卡片左下角（与右下角的 sample-badge 对称）。
-  // 优先级：下载中 > 已整理 > 已下载 > 无徽章。
+  // 优先级：下载中 > 已整理 > 已下载（可整理） > 无徽章。
   // 三个状态语义：
-  //   - 「⬇ 下载中」   NAS 报告 active
-  //   - 「✅ 已下载」   NAS 报告 completed，但 library scanner 还没扫到盘
-  //                   （文件可能还在 NAS 下载目录，等 scanner / 用户搬到本地库）
-  //   - 「📁 已整理」   本地库已收录（library scanner 检测到 m.local_exists=true）
-  //                   右上角的「本地已有」也是这个语义（绿色徽章）
-  // 区别：「已下载」= 文件在 NAS 下载完；「已整理」= 文件已经搬到本地库并被 scanner 收录。
+  //   - 「⬇ 下载中」     NAS 报告 active
+  //   - 「✅ 已下载 · 整理」 NAS 报告 completed，但 library scanner 还没扫到盘
+  //                     （文件可能还在 NAS 下载目录，可点击触发「整理」搬到本地库）
+  //   - 「📁 已整理」    本地库已收录（library scanner 检测到 m.local_exists=true）
+  //                     右上角的「本地已有」也是这个语义（绿色徽章）
   function nasBadgeHtml(m) {
     const code = (m.code || '').toUpperCase();
     if (nasDownloading.has(code)) {
@@ -133,7 +132,9 @@ export async function initWanted() {
       return `<div class="nas-badge organized" data-code="${esc(m.code)}" title="本地库已收录（library scanner 检测到）">📁 已整理</div>`;
     }
     if (nasCompleted.has(code)) {
-      return `<div class="nas-badge ok" data-code="${esc(m.code)}" title="NAS 已下载完成（library scanner 还没扫到）">✅ 已下载</div>`;
+      // 已下载但未整理 → 整个徽章是按钮，点一下触发「整理到本地库」
+      return `<button class="nas-badge ok clickable" data-code="${esc(m.code)}"
+        title="点击整理：把 wanted 元数据 + NAS 下载视频搬到本地库">✅ 已下载 · 整理</button>`;
     }
     return '';
   }
@@ -522,6 +523,14 @@ export async function initWanted() {
       e.stopPropagation();
       e.preventDefault();
       sendOneToZspace(nasBtn);
+      return;
+    }
+    // 点击「✅ 已下载 · 整理」徽章 → 触发整理（复制 wanted 元数据 + 移动 NAS 视频到本地库）
+    const organizeBtn = e.target.closest('.nas-badge.clickable');
+    if (organizeBtn) {
+      e.stopPropagation();
+      e.preventDefault();
+      organizeOneMovie(organizeBtn);
       return;
     }
     // 点击单部 JavBus 重抓按钮 → 调 /api/wanted/{code}/javbus，成功后刷新当前页
@@ -923,6 +932,58 @@ export async function initWanted() {
     }
   }
   $('btn-send-zspace').addEventListener('click', sendToZspace);
+
+  // 单卡片「整理」：把 wanted 元数据 + NAS 视频搬到本地库
+  // 后端会触发 library scanner 更新索引，整理完成后 m.local_exists=true
+  async function organizeOneMovie(btn) {
+    if (btn.disabled) return;
+    const code = btn.dataset.code || '';
+    if (!code) return;
+
+    btn.disabled = true;
+    const orig = btn.textContent;
+    btn.textContent = '⏳ 整理中…';
+    try {
+      const res = await fetch(`/api/wanted/${encodeURIComponent(code)}/organize`, {
+        method: 'POST',
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || data.error || res.statusText);
+
+      if (data.skipped === 'already_organized') {
+        toast(`${code} 已整理过（${data.dest_folder ? data.dest_folder.split(/[\\/]/).pop() : ''}）`);
+        // 仍然更新一次本地状态，避免卡片显示与实际不符
+        const i = movies.findIndex((x) => x.code === code);
+        if (i >= 0) movies[i].local_exists = true;
+        renderCardInPlace(code);
+        return;
+      }
+      if (data.warning) {
+        // 元数据复制了但没找到 NAS 视频 → 部分成功
+        const videoNote = data.videos_moved > 0
+          ? `，已移 ${data.videos_moved} 个视频`
+          : ''; // 没找到视频是 warning 一部分，不重复说
+        toast(`${code} 部分完成：复制 ${data.files_copied} 个文件${videoNote}（${data.warning}）`);
+      } else {
+        const parts = [];
+        if (data.files_copied > 0) parts.push(`复制 ${data.files_copied} 个文件`);
+        if (data.videos_moved > 0) parts.push(`移 ${data.videos_moved} 个视频`);
+        if (data.nas_source_removed) parts.push('清理源文件夹');
+        toast(`${code} 整理完成（${parts.join('，') || '0 变更'}）`);
+      }
+
+      // 关键：把卡片的 m.local_exists 置 true，徽章自然变紫色「📁 已整理」，
+      // 右上角的「本地已有」也会亮起（refetchBtnHtml 在 local_exists=true 时
+      // 不再显示 ↻ 按钮，因为已经入库不需要再 refetch JavBus）
+      const i = movies.findIndex((x) => x.code === code);
+      if (i >= 0) movies[i].local_exists = true;
+      renderCardInPlace(code);
+    } catch (e) {
+      toast(`${code} 整理失败：${e.message}`, true);
+      btn.disabled = false;
+      btn.textContent = orig;
+    }
+  }
 
   $('btn-refresh').addEventListener('click', startRefresh);
   $('results').addEventListener('click', (e) => {
