@@ -249,6 +249,145 @@ def register(app: FastAPI) -> None:
         )
         return result
 
+    @app.post("/api/wanted/{carid}/organize")
+    async def organize_one(
+        carid: str,
+        request: Request,
+        dry_run: bool = Query(
+            default=False,
+            description="只预览不执行：列出所有计划动作但不实际写盘 / 移动 / 删除",
+        ),
+    ) -> Dict[str, Any]:
+        """把单部已下载的 wanted 影片从 wanted 目录整理到本地库。
+
+        前置条件：
+        - 已配置 ``LIBRARY_ROOT``（本地库根目录）
+        - 已配置 ``MOSTWANTED_LIBRARY_ROOT``（wanted 库根目录）
+        - 已配置 ``LOCAL_DOWNLOAD_PATH``（本地可访问的 NAS 下载目录，
+          例如 Windows 映射盘符或 UNC 路径；留空则回退 ``ZSPACE_DOWNLOAD_PATH``）
+
+        整理动作：
+        1. 在 ``<MOSTWANTED_LIBRARY_ROOT>/<CARID> <title>/`` 找源文件夹
+        2. 读 NFO 拿 title / release_date，算月份桶
+        3. 把整个源文件夹（nfo / poster / fanart / samples）复制到
+           ``<LIBRARY_ROOT>/<YYYY-MM>/<CARID> <title>/``
+        4. 在 ``<ZSPACE_DOWNLOAD_PATH>`` 下找含车牌的下载（取最大文件）
+        5. 移动 + 重命名为 ``<CARID> <title>.<ext>``
+        6. 如果下载是文件夹，删源文件夹
+        7. 触发 library scanner 更新索引
+
+        ``?dry_run=true`` 时只列计划动作，不实际写盘/移动/删除，
+        返回 dict 额外带 ``plan: [str, ...]`` 列出每一步要做什么。
+
+        目标目录已存在 → ``ok=False`` + ``skipped="already_organized"``，
+        不覆盖用户数据。
+
+        返回 :func:`organize_movie` 的 dict，可直接 toast 展示。
+        """
+        from javlibraryscrapy.library.organizer import organize_movie
+
+        carid_norm = carid.strip().upper()
+        if not CARID_RE.fullmatch(carid_norm):
+            raise HTTPException(status_code=400, detail="非法的车牌")
+        normalized = normalize_carid(carid_norm)
+        if not normalized:
+            raise HTTPException(
+                status_code=400,
+                detail=f"非法的车牌：{carid!r}（应为 字母-数字 格式，如 IPZZ-907）",
+            )
+        if normalized != carid_norm:
+            logger.info(f"车牌 {carid_norm} 自动规范化 → {normalized}")
+            carid_norm = normalized
+
+        settings = request.app.state.settings
+        mw_root = getattr(settings, "mostwanted_library_root", None)
+        lib_root = getattr(settings, "library_root", None)
+        # NAS 下载目录：优先用 local_download_path（Windows/局域网视角），
+        # 回退到 zspace_download_path（NAS 视角，如果本机也能访问的话）。
+        local_download_path = getattr(settings, "local_download_path", None)
+        zspace_download_path = getattr(settings, "zspace_download_path", None)
+        nas_download_path = local_download_path or zspace_download_path
+        # JavBus 抓取（NFO 兜底用）—— 跟单部刷新 /api/wanted/{code}/javbus 用同一份配置
+        javbus_url = getattr(settings, "javbus_url", None) or "https://www.javbus.com"
+        # proxy_javbus_enabled 开着才传 proxy（与 javbus 端点 / 单部 refresh 保持一致）
+        javbus_proxy = (
+            getattr(settings, "proxy", None)
+            if getattr(settings, "proxy_javbus_enabled", False)
+            else None
+        )
+
+        missing = []
+        if not mw_root:
+            missing.append("MOSTWANTED_LIBRARY_ROOT")
+        if not lib_root:
+            missing.append("LIBRARY_ROOT")
+        if not nas_download_path:
+            missing.append("LOCAL_DOWNLOAD_PATH 或 ZSPACE_DOWNLOAD_PATH")
+        if missing:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"整理功能未配置（缺失：{', '.join(missing)}，"
+                    "在 .env 里设置并重启服务）"
+                ),
+            )
+
+        # library scanner 回调：整理成功后增量刷新索引，
+        # 让前端的「本地已有」徽章立刻亮起。
+        # dry_run=True 时不调（不能给用户假预览预览），给个 no-op 即可。
+        gallery = getattr(request.app.state, "gallery", None)
+
+        def _rescan():
+            if not dry_run and gallery is not None and hasattr(gallery, "start_rescan"):
+                gallery.start_rescan()
+
+        # 与 javbus 端点一致：放到 asyncio 线程池跑，避免阻塞事件循环
+        # （复制 / 移动可能涉及 NFS / SMB / NAS 大文件 IO，单次几秒到十几秒）
+        result = await asyncio.to_thread(
+            functools.partial(
+                organize_movie,
+                carid_norm,
+                Path(mw_root),
+                Path(lib_root),
+                Path(nas_download_path),
+                on_library_change=_rescan,
+                dry_run=dry_run,
+                javbus_url=javbus_url,
+                javbus_proxy=javbus_proxy,
+            )
+        )
+
+        # 整理成功后立即失效 NAS 下载代码集缓存
+        # （源文件夹被删 / 任务标记 completed，下次 /api/zspace/codes 不该再返回该车牌）
+        # 否则前端会卡 30s 缓存内继续显示「✅ 已下载」按钮 / 「下载中」徽章
+        if not dry_run and result.get("ok"):
+            try:
+                from .zspace import _get_or_create_client as _get_zspace
+                zspace = _get_zspace(request)
+                zspace.invalidate_download_codes_cache()
+                logger.info(f"整理 {carid_norm}: 已失效 NAS 下载代码集缓存")
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"失效 NAS 缓存失败 {carid_norm}: {e}")
+
+            # 立即把刚整理的目录 upsert 到 in-memory library_index，
+            # 不等 scanner 跑完（scanner 全库 5 分钟），让前端「本地已有」立刻亮起。
+            # scanner 仍然会跑，做最终一致性兜底。
+            dest_folder_str = result.get("dest_folder")
+            if dest_folder_str and gallery is not None and hasattr(
+                gallery, "update_library_index_for_folder"
+            ):
+                try:
+                    gallery.update_library_index_for_folder(Path(dest_folder_str))
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"立即更新索引失败 {carid_norm}: {e}")
+        logger.info(
+            f"整理 {carid_norm}: ok={result.get('ok')} "
+            f"videos_moved={result.get('videos_moved')} "
+            f"nas_source_removed={result.get('nas_source_removed')} "
+            f"skipped={result.get('skipped')} error={result.get('error')}"
+        )
+        return result
+
     @app.get("/api/wanted/months")
     async def months(request: Request) -> Dict[str, Any]:
         wanted: WantedService = request.app.state.wanted
@@ -261,6 +400,7 @@ def register(app: FastAPI) -> None:
         page: int = Query(default=1, ge=1),
         size: int = Query(default=60, ge=1, le=200),
         include_missing: bool = Query(default=True),
+        q: str = Query(default="", description="搜索关键字（车牌/标题/演员，大小写不敏感）"),
     ) -> Dict[str, Any]:
         wanted: WantedService = request.app.state.wanted
         gallery = request.app.state.gallery
@@ -271,6 +411,7 @@ def register(app: FastAPI) -> None:
             page=page,
             size=size,
             include_missing=include_missing,
+            q=q,
         )
 
         # local_samples：NFS glob 单次几百毫秒～几秒，60 条串行扫 = 几十秒。
@@ -279,13 +420,26 @@ def register(app: FastAPI) -> None:
         counts = cache.counts_for(codes)
 
         # 封面代理：跟随 GalleryState 的 image_proxy 标志（与 /api/movies 共用同一 helper）
+        # local_exists：查 gallery.library_index（in-memory，O(1)）。整理完的车 →
+        # local_exists=true → 前端徽章变「📁 已整理」（紫色），点击按钮消失。
+        # 双向匹配（LibraryIndex.find_match 是 a.startswith(b) or b.startswith(a)），
+        # 兼容车牌 + 不同子编码前缀。
+        lib_index = getattr(gallery, "library_index", None)
         result["items"] = [
             {
                 **item,
                 "cover": proxied_url(item.get("cover_url") or item.get("cover"), gallery),
                 "local_samples": counts.get((item.get("code") or "").upper(), 0),
+                "local_exists": (
+                    lib_index.find_match(code) is not None
+                    if lib_index is not None and hasattr(lib_index, "find_match")
+                    else None
+                ),
             }
-            for item in result.get("items", [])
+            for item, code in zip(
+                result.get("items", []),
+                [item.get("code") or "" for item in result.get("items", [])],
+            )
         ]
         return result
 

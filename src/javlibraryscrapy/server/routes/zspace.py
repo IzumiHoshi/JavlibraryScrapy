@@ -1,10 +1,12 @@
-"""极空间 NAS 路由：状态 + 批量提交磁力 + 列出下载任务。
+"""极空间 NAS 路由：状态 + 批量提交磁力 + 列出下载任务 + 下载代码集。
 
 端点
 ----
     GET    /api/zspace/status    —— 是否启用 + host + 默认下载路径（前端按钮启用态）
     POST   /api/zspace/submit    —— 批量提交磁力到 NAS 下载器
     POST   /api/zspace/downloads —— 列出 NAS 当前下载任务（前端监控用）
+    GET    /api/zspace/codes     —— 已抓取的 car id 集合（downloading / completed），
+                                    wanted 卡片标 NAS 状态用，带 30s 内存缓存
 
 设计要点
 --------
@@ -15,13 +17,15 @@
   重建（lifespan 关闭 + 新实例），所以改了 .env 必须重启。
 - ``submit`` 串行提交每个 magnet：磁力提交是 NAS 后端写操作，并发可能触发
   它的反作弊限流。如果以后需要并发再加 ``asyncio.gather``。
+- ``submit`` 成功后 invalidate ``codes`` 缓存，让 wanted 页下次刷新看到新下载。
 """
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..services.zspace import ZSpaceClient, ZSpaceError
@@ -176,6 +180,14 @@ def register(app: FastAPI) -> None:
                 entry["raw"] = str(resp)[:300]
             results.append(entry)
 
+        # 至少一项成功 → 让 codes 缓存失效，下次 /api/zspace/codes 重新拉
+        # （让 wanted 卡片立刻看到新下载状态，不用等 30s 缓存过期）
+        if ok_count > 0:
+            try:
+                _get_or_create_client(request).invalidate_download_codes_cache()
+            except Exception:  # noqa: BLE001
+                pass
+
         return {
             "download_path": download_path,
             "total": len(body.items),
@@ -200,3 +212,55 @@ def register(app: FastAPI) -> None:
             # ZSpaceClient 已把 httpx 网络错误 / 解析错误 / 登录错误统一包装成 ZSpaceError，
             # 这里再统一映射成 502 让前端拿到 NAS 失败详情。
             raise HTTPException(status_code=502, detail=str(e))
+
+    @app.get("/api/zspace/codes")
+    async def list_download_codes(
+        request: Request,
+        refresh: bool = Query(default=False, description="强制刷新，跳过 30s 缓存"),
+    ) -> Dict[str, Any]:
+        """返回 NAS 下载任务里抽出的 car id 集合，wanted 卡片 NAS 徽章用。
+
+        形如：
+            {
+              "configured": true,
+              "downloading": ["ABF-340", "IPZZ-907"],
+              "completed":   ["SNOS-334", "HMN-880"],
+              "fetched_at": "2026-08-26T13:30:15"  # 缓存时间
+            }
+
+        - 未配置时返回 ``{"configured": false, ...空集}``（HTTP 200，让前端优雅降级）
+        - NAS 出错时同样返回 200 + 空集（避免单次失败把整个 wanted 列表搞 502）
+        """
+        store = _get_store(request)
+        cfg = store.get()
+        if not cfg.is_configured():
+            return {
+                "configured": False,
+                "downloading": [],
+                "completed": [],
+                "fetched_at": None,
+                "error": None,
+            }
+        client = _get_or_create_client(request)
+        try:
+            downloading, completed = await client.get_download_codes(
+                force_refresh=refresh
+            )
+        except ZSpaceError as e:
+            # 单次 NAS 失败不应让整个 wanted 页 502 —— 降级为空集
+            # （前端拿到空集 = 没 NAS 徽章，跟未配置一致）
+            logger.warning(f"获取 NAS 下载代码集失败：{e}")
+            return {
+                "configured": True,
+                "downloading": [],
+                "completed": [],
+                "fetched_at": None,
+                "error": str(e),
+            }
+        return {
+            "configured": True,
+            "downloading": sorted(downloading),
+            "completed": sorted(completed),
+            "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "error": None,
+        }

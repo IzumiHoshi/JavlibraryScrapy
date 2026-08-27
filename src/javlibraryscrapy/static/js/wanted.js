@@ -4,8 +4,8 @@
 //   1. 状态/URL/分页
 //   2. 选择（多选 + localStorage 持久化）
 //   3. 月份选择器（setupMonthPicker）
-//   4. 卡片 HTML 模板（displayTitle / localBadgeHtml / statusBadge /
-//      refetchBtnHtml / cardHtml）
+//   4. 卡片 HTML 模板（displayTitle / statusBadge /
+//      refetchBtnHtml / nasBadgeHtml / cardHtml）
 //   5. 渲染（render / applyLocalFilter / renderCardInPlace / cssEscape）
 //   6. 刷新状态（updateLastRefresh / phaseLabel）
 //   7. 数据加载（load / loadMonthsOnly / startRefresh / pollRefreshStatus）
@@ -43,6 +43,10 @@ export async function initWanted() {
   let pollTimer = null;
   let jobId = null;
   let lastItems = [];
+  // NAS 下载代码集（downloading / completed）；30s 服务端缓存，wanted load 时拉一次
+  let nasDownloading = new Set();
+  let nasCompleted = new Set();
+  let nasConfigured = false;
 
   // ---- URL 状态：month / page / q ----
   const params = new URLSearchParams(location.search);
@@ -111,6 +115,30 @@ export async function initWanted() {
     return `<div class="${cls}" data-code="${esc(m.code)}" title="本地库已收录">本地已有</div>`;
   }
 
+  // NAS / 本地库状态徽章：放在卡片左下角（与右下角的 sample-badge 对称）。
+  // 优先级：下载中 > 已整理 > 已下载（可整理） > 无徽章。
+  // 三个状态语义：
+  //   - 「⬇ 下载中」     NAS 报告 active
+  //   - 「✅ 已下载 · 整理」 NAS 报告 completed，但 library scanner 还没扫到盘
+  //                     （文件可能还在 NAS 下载目录，可点击触发「整理」搬到本地库）
+  //   - 「📁 已整理」    本地库已收录（library scanner 检测到 m.local_exists=true）
+  //                     右上角的「本地已有」也是这个语义（绿色徽章）
+  function nasBadgeHtml(m) {
+    const code = (m.code || '').toUpperCase();
+    if (nasDownloading.has(code)) {
+      return `<div class="nas-badge downloading" data-code="${esc(m.code)}" title="NAS 正在下载">⬇ 下载中</div>`;
+    }
+    if (m.local_exists) {
+      return `<div class="nas-badge organized" data-code="${esc(m.code)}" title="本地库已收录（library scanner 检测到）">📁 已整理</div>`;
+    }
+    if (nasCompleted.has(code)) {
+      // 已下载但未整理 → 整个徽章是按钮，点一下触发「整理到本地库」
+      return `<button class="nas-badge ok clickable" data-code="${esc(m.code)}"
+        title="点击整理：把 wanted 元数据 + NAS 下载视频搬到本地库">✅ 已下载 · 整理</button>`;
+    }
+    return '';
+  }
+
   function statusBadge(m) {
     if (m.missing_in_remote) {
       return '<div class="local-badge warn" title="远端 Most Wanted 已找不到">远端缺</div>';
@@ -145,9 +173,9 @@ export async function initWanted() {
         <input type="checkbox" ${selected.has(m.code) ? 'checked' : ''} tabindex="-1">
         ${(m.cover || m.cover_url) ? `<img class="cover" src="${esc(m.cover || m.cover_url)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.classList.add('broken')">`
                   : '<div class="cover"></div>'}
-        ${localBadgeHtml(m)}
         ${statusBadge(m)}
         ${refetchBtnHtml(m)}
+        ${nasBadgeHtml(m)}
         ${(m.local_samples|0) > 0 ? `<div class="sample-badge" title="本地已下载的 sample 圖片數量">${esc(m.local_samples)} 張樣品</div>` : ''}
         <div class="body">
           <div class="code">${esc(m.code)}</div>
@@ -251,16 +279,25 @@ export async function initWanted() {
     updateUrl();
     const qs = new URLSearchParams({ page, size });
     if (month) qs.set('month', month);
-    try {
-      const res = await fetch(`/api/wanted?${qs}`);
-      const text = await res.text();
-      // 非 2xx 时服务端可能返回 HTML 错误页，先尝试解析 JSON 拿 .detail/.error
-      if (!res.ok) {
-        let msg = res.statusText;
-        try { msg = (JSON.parse(text).detail || JSON.parse(text).error || msg); } catch {}
-        throw new Error(msg);
+    if (q) qs.set('q', q);  // 搜索关键字由服务端过滤（搜全部 129 部，不止当前页 60 部）
+    // wanted 列表 + NAS 下载代码集 并行拉（NAS 端走 30s 服务端缓存，快）
+    const moviesPromise = (async () => {
+      try {
+        const res = await fetch(`/api/wanted?${qs}`);
+        const text = await res.text();
+        if (!res.ok) {
+          let msg = res.statusText;
+          try { msg = (JSON.parse(text).detail || JSON.parse(text).error || msg); } catch {}
+          throw new Error(msg);
+        }
+        return JSON.parse(text);
+      } catch (e) {
+        throw e;
       }
-      const data = JSON.parse(text);
+    })();
+    const nasPromise = loadNasCodes().catch(() => null);  // NAS 失败不阻塞列表渲染
+    try {
+      const data = await moviesPromise;
       movies = data.items || [];
       months = data.months || [];
       missingCount = data.missing_in_remote_count || 0;
@@ -270,6 +307,39 @@ export async function initWanted() {
       render();
     } catch (e) {
       $('grid').innerHTML = `<div class="empty">加载失败：${esc(e.message)}</div>`;
+    }
+    await nasPromise;  // 等 NAS 拉完 → nasBadgeHtml() 才有数据
+    // NAS codes 是异步的（虽然和 movies 并行），重新渲一次让徽章出现
+    if (movies.length && nasConfigured) {
+      // 只重渲有 NAS 徽章的卡片（避免无谓的全表重绘）
+      document.querySelectorAll('.card').forEach((el) => {
+        const code = (el.dataset.code || '').toUpperCase();
+        if (nasDownloading.has(code) || nasCompleted.has(code)) {
+          const m = movies.find((x) => (x.code || '').toUpperCase() === code);
+          if (m) {
+            const tmp = document.createElement('div');
+            tmp.innerHTML = cardHtml(m).trim();
+            el.replaceWith(tmp.firstElementChild);
+          }
+        }
+      });
+    }
+  }
+
+  // 拉 NAS 下载代码集（downloading + completed）。
+  // 后端 30s 缓存，不会频繁摸 NAS。失败时静默降级（nasConfigured=false → 不画徽章）。
+  async function loadNasCodes() {
+    try {
+      const res = await fetch('/api/zspace/codes');
+      if (!res.ok) throw new Error(res.statusText);
+      const data = await res.json();
+      nasConfigured = !!data.configured;
+      nasDownloading = new Set((data.downloading || []).map((c) => c.toUpperCase()));
+      nasCompleted = new Set((data.completed || []).map((c) => c.toUpperCase()));
+    } catch {
+      nasConfigured = false;
+      nasDownloading = new Set();
+      nasCompleted = new Set();
     }
   }
 
@@ -454,6 +524,14 @@ export async function initWanted() {
       sendOneToZspace(nasBtn);
       return;
     }
+    // 点击「✅ 已下载 · 整理」徽章 → 触发整理（复制 wanted 元数据 + 移动 NAS 视频到本地库）
+    const organizeBtn = e.target.closest('.nas-badge.clickable');
+    if (organizeBtn) {
+      e.stopPropagation();
+      e.preventDefault();
+      organizeOneMovie(organizeBtn);
+      return;
+    }
     // 点击单部 JavBus 重抓按钮 → 调 /api/wanted/{code}/javbus，成功后刷新当前页
     const refetchBtn = e.target.closest('.refetch-btn');
     if (refetchBtn) {
@@ -602,16 +680,21 @@ export async function initWanted() {
       } else {
         toast(`${code} 抓取失败：${data.error || '未知错误'}`, true);
         if (data.movie) {
+          // 服务端返回了 entry（已存在的车牌失败 / 创建+失败但保留）→ 更新内存 + 重渲卡片
           const i = movies.findIndex((x) => x.code === code);
           if (i >= 0) movies[i] = data.movie;
           renderCardInPlace(code);
         } else {
-          await load();
+          // 服务端没返回 entry（创建+失败且已回滚）→ 卡片本就不该存在，从 DOM 移除
+          const i = movies.findIndex((x) => x.code === code);
+          if (i >= 0) movies.splice(i, 1);
+          const el = document.querySelector(`.card[data-code="${cssEscape(code)}"]`);
+          if (el) el.remove();
         }
         resetRefetchBtn(btn, 'failed');
       }
     } catch (e) {
-      // abort / 网络失败 / 超时都走这里
+      // abort / 网络失败 / 超时都走这里 —— 卡片内容保持原样，只更新按钮状态
       const isAbort = e && (e.name === 'AbortError' || controller.signal.aborted);
       if (isAbort && e.message && e.message !== 'timeout') {
         // 用户主动切换页面（pagehide）触发的 abort，不算失败
@@ -623,8 +706,6 @@ export async function initWanted() {
       } else {
         toast(`${code} ${isAbort ? '抓取超时（>5min）' : '请求失败：' + e.message}`, true);
         resetRefetchBtn(btn, 'failed');
-        // 失败后顺手 load 一次（让 UI 跟服务端实际状态对齐 —— 万一后端已完成但前端没收到响应）
-        await load();
       }
     }
   }
@@ -670,7 +751,23 @@ export async function initWanted() {
     if (e.target.closest('.local-badge')) hideTooltip();
   });
 
-  $('search').addEventListener('input', (e) => { q = e.target.value; applyLocalFilter(); });
+  // 搜索框 debounce：服务端过滤（搜全部 129 部），停止输入 250ms 后再重拉，
+// 避免每打一个字就发请求。回车 / clear 立即触发（不等 debounce）。
+  let searchDebounce = null;
+  $('search').addEventListener('input', (e) => {
+    q = e.target.value;
+    page = 1;  // 搜索条件变了 → 跳回第一页
+    clearTimeout(searchDebounce);
+    searchDebounce = setTimeout(() => load(), 250);
+  });
+  $('search').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      clearTimeout(searchDebounce);
+      page = 1;
+      load();
+    }
+  });
   $('btn-all').addEventListener('click', () => { visibleCards().forEach((c) => setSelected(c.dataset.code, true)); refreshCount(); });
   $('btn-none').addEventListener('click', () => {
     selected.clear();
@@ -834,6 +931,58 @@ export async function initWanted() {
     }
   }
   $('btn-send-zspace').addEventListener('click', sendToZspace);
+
+  // 单卡片「整理」：把 wanted 元数据 + NAS 视频搬到本地库
+  // 后端会触发 library scanner 更新索引，整理完成后 m.local_exists=true
+  async function organizeOneMovie(btn) {
+    if (btn.disabled) return;
+    const code = btn.dataset.code || '';
+    if (!code) return;
+
+    btn.disabled = true;
+    const orig = btn.textContent;
+    btn.textContent = '⏳ 整理中…';
+    try {
+      const res = await fetch(`/api/wanted/${encodeURIComponent(code)}/organize`, {
+        method: 'POST',
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || data.error || res.statusText);
+
+      if (data.skipped === 'already_organized') {
+        toast(`${code} 已整理过（${data.dest_folder ? data.dest_folder.split(/[\\/]/).pop() : ''}）`);
+        // 仍然更新一次本地状态，避免卡片显示与实际不符
+        const i = movies.findIndex((x) => x.code === code);
+        if (i >= 0) movies[i].local_exists = true;
+        renderCardInPlace(code);
+        return;
+      }
+      if (data.warning) {
+        // 元数据复制了但没找到 NAS 视频 → 部分成功
+        const videoNote = data.videos_moved > 0
+          ? `，已移 ${data.videos_moved} 个视频`
+          : ''; // 没找到视频是 warning 一部分，不重复说
+        toast(`${code} 部分完成：复制 ${data.files_copied} 个文件${videoNote}（${data.warning}）`);
+      } else {
+        const parts = [];
+        if (data.files_copied > 0) parts.push(`复制 ${data.files_copied} 个文件`);
+        if (data.videos_moved > 0) parts.push(`移 ${data.videos_moved} 个视频`);
+        if (data.nas_source_removed) parts.push('清理源文件夹');
+        toast(`${code} 整理完成（${parts.join('，') || '0 变更'}）`);
+      }
+
+      // 关键：把卡片的 m.local_exists 置 true，徽章自然变紫色「📁 已整理」，
+      // 右上角的「本地已有」也会亮起（refetchBtnHtml 在 local_exists=true 时
+      // 不再显示 ↻ 按钮，因为已经入库不需要再 refetch JavBus）
+      const i = movies.findIndex((x) => x.code === code);
+      if (i >= 0) movies[i].local_exists = true;
+      renderCardInPlace(code);
+    } catch (e) {
+      toast(`${code} 整理失败：${e.message}`, true);
+      btn.disabled = false;
+      btn.textContent = orig;
+    }
+  }
 
   $('btn-refresh').addEventListener('click', startRefresh);
   $('results').addEventListener('click', (e) => {

@@ -433,6 +433,56 @@
     pointer-events: none;
   }
 
+  /* NAS 下载状态徽章（左下角，跟右下角的 sample-badge 对称）
+     颜色：下载中 = accent 蓝（提示性）；已下载 = ok 绿（成功态）。
+     优先级低于 .local-badge（本地已有），所以 nasBadgeHtml 在 m.local_exists 时直接返回 ''。*/
+  .nas-badge {
+    position: absolute;
+    bottom: 6px; left: 6px;
+    padding: 3px 7px;
+    border-radius: 99px;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1;
+    /* 默认 nas-badge 是 <div> 状态徽章，不可点击；.clickable 覆盖为可点击按钮 */
+    pointer-events: none;
+  }
+  .nas-badge.ok {
+    background: rgba(62, 207, 142, 0.15);
+    color: var(--ok);
+    border: 1px solid rgba(62, 207, 142, 0.4);
+  }
+  /* 已下载且可整理：整个徽章是按钮（点了触发整理） */
+  .nas-badge.clickable {
+    cursor: pointer;
+    font-family: inherit;
+    line-height: 1;
+    pointer-events: auto;  /* 覆盖默认的 pointer-events: none，让按钮可点 */
+  }
+  .nas-badge.clickable:hover:not(:disabled) {
+    background: rgba(62, 207, 142, 0.28);
+    border-color: var(--ok);
+    transform: scale(1.04);
+  }
+  /* 已整理：本地库已收录（library scanner 检测到），区别于「已下载」（NAS 完成但未入库）
+     用紫色系（介于蓝→绿之间）表示「处理过了」的中间态 */
+  .nas-badge.organized {
+    background: rgba(167, 139, 250, 0.15);
+    color: #a78bfa;
+    border: 1px solid rgba(167, 139, 250, 0.4);
+  }
+  .nas-badge.downloading {
+    background: rgba(91, 159, 255, 0.15);
+    color: var(--accent, #5b9fff);
+    border: 1px solid rgba(91, 159, 255, 0.4);
+    /* 微动画：纯色 → 半透 → 纯色，让人一眼看出"还在跑" */
+    animation: nas-pulse 2s ease-in-out infinite;
+  }
+  @keyframes nas-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.55; }
+  }
+
   /* ---------- Tooltip ---------- */
   #tooltip {
     position: fixed;

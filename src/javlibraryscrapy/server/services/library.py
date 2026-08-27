@@ -290,6 +290,17 @@ class GalleryState:
         return self.rescan_queue.status_snapshot()
 
     def _refresh_index_after_rescan(self, folder: Path) -> None:
+        # 单部刷新队列的回调。直接走 update_library_index_for_folder。
+        self.update_library_index_for_folder(folder)
+
+    def update_library_index_for_folder(self, folder: Path) -> None:
+        """立即把单个影片目录 upsert 到 in-memory library_index。
+
+        用于：整理功能（POST /api/wanted/{code}/organize）完成后，
+        不等 scanner 跑完（scanner 全全 5 分钟），先把刚整理的目录加进去，
+        让前端的「本地已有」徽章立刻亮起。
+        scanner 之后还会跑一次全库扫，做最终一致性兜底。
+        """
         try:
             entry = scan_movie_folder(folder)
             if entry is None:

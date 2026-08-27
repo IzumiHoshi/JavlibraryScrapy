@@ -60,8 +60,10 @@
       order: 3;
       flex: 0 0 auto;
       margin-left: auto;
-      min-height: 40px; padding: 9px 14px;
-      font-size: 14px;
+      /* 与 btn-all/none/invert/refresh/export 同尺寸（min-height 32px + padding 5px10px + font 12px），
+         仅靠 .primary class 区分样式（accent 蓝填充 + 白字 + font-weight: 600） */
+      min-height: 32px; padding: 5px 10px;
+      font-size: 12px;
       white-space: nowrap;
     }
     #btn-all, #btn-none, #btn-invert {
