@@ -95,6 +95,7 @@ class ScanStats:
     duplicate_carids: List[str] = field(default_factory=list)  # 被舍弃的重复路径
     folders_without_nfo: List[str] = field(default_factory=list)
     folders_no_carid: List[str] = field(default_factory=list)  # 文件夹名无法解析为车牌
+    folders_no_video: List[str] = field(default_factory=list)  # 影片目录但没视频文件（organize 复制元数据后常见）
     errors: List[str] = field(default_factory=list)
     duration_seconds: float = 0.0
 
@@ -278,7 +279,21 @@ def scan_library(
             e.is_file() and e.suffix.lower() in VIDEO_EXTENSIONS
             for e in entries
         )
-        if has_video_here:
+        # 没有视频但有 NFO + cover 的目录也视为影片。
+        # 场景：整理功能刚把 wanted 元数据复制过来，但视频还没下完 / 下完还没搬过来；
+        # 此时不索引就会导致 organize 后卡片看不到「已整理」状态。
+        has_nfo = any(e.is_file() and e.name == "movie.nfo" for e in entries)
+        has_cover = any(
+            e.is_file() and e.name in {"cover.jpg", "cover.png", "poster.jpg", "poster.png"}
+            for e in entries
+        )
+        # 还有一类历史 wanted：NFO 缺失但 cover.jpg + samples 都在
+        # （旧 wanted refresh 流程在 MovieExporter 迁移 #10 之前的产物）。
+        # cover + sample 双信号 = 几乎可以确定是 wanted 整理过的目录。
+        has_samples = any(
+            e.is_file() and e.name.startswith("sample_") for e in entries
+        )
+        if has_video_here or (has_nfo and has_cover) or (has_cover and has_samples):
             movie_dirs.append(d)
             return  # 不再深入
 
@@ -310,9 +325,10 @@ def scan_library(
             stats.folders_no_carid.append(str(folder))
             continue
 
-        # 防御性：能走到这里说明 has_video=True
+        # 走到这里说明 walk() 判定为影片目录（has_video 或 has_nfo+has_cover）
+        # 没视频但有元数据 → 标记为「缺视频」便于 organize 后续补
         if not entry.has_video:
-            stats.folders_no_carid.append(str(folder))
+            stats.folders_no_video.append(str(folder))
 
         if not entry.has_nfo:
             stats.folders_without_nfo.append(str(folder))

@@ -396,13 +396,26 @@ def register(app: FastAPI) -> None:
         counts = cache.counts_for(codes)
 
         # 封面代理：跟随 GalleryState 的 image_proxy 标志（与 /api/movies 共用同一 helper）
+        # local_exists：查 gallery.library_index（in-memory，O(1)）。整理完的车 →
+        # local_exists=true → 前端徽章变「📁 已整理」（紫色），点击按钮消失。
+        # 双向匹配（LibraryIndex.find_match 是 a.startswith(b) or b.startswith(a)），
+        # 兼容车牌 + 不同子编码前缀。
+        lib_index = getattr(gallery, "library_index", None)
         result["items"] = [
             {
                 **item,
                 "cover": proxied_url(item.get("cover_url") or item.get("cover"), gallery),
                 "local_samples": counts.get((item.get("code") or "").upper(), 0),
+                "local_exists": (
+                    lib_index.find_match(code) is not None
+                    if lib_index is not None and hasattr(lib_index, "find_match")
+                    else None
+                ),
             }
-            for item in result.get("items", [])
+            for item, code in zip(
+                result.get("items", []),
+                [item.get("code") or "" for item in result.get("items", [])],
+            )
         ]
         return result
 
