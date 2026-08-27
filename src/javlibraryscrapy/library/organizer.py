@@ -34,7 +34,7 @@ from javlibraryscrapy.library.scanner import (
     FANART_NAMES,
     VIDEO_EXTENSIONS,
 )
-from javlibraryscrapy.utils.filesave import rename
+from javlibraryscrapy.utils.filesave import rename, write_xml
 
 logger = logging.getLogger("library_organizer")
 
@@ -202,10 +202,12 @@ def _copy_wanted_files(src_dir: Path, dst_dir: Path) -> Dict[str, int]:
     wanted_patterns.append("*.nfo")         # <carid>.nfo 这种兜底
     wanted_patterns.extend(["sample_*.jpg", "sample_*.png"])  # samples
 
+    seen: set[str] = set()  # dedupe（movie.nfo 同时匹配 "movie.nfo" 和 "*.nfo"）
     for pattern in wanted_patterns:
         for src_file in src_dir.glob(pattern):
-            if not src_file.is_file():
+            if not src_file.is_file() or src_file.name in seen:
                 continue
+            seen.add(src_file.name)
             dst_file = dst_dir / src_file.name
             if dst_file.exists():
                 # 已存在（之前整理过）→ 跳过，不覆盖
@@ -280,6 +282,90 @@ def _cleanup_empty_dir(path: Path) -> bool:
         return False
 
 
+def ensure_nfo(
+    wanted_dir: Path,
+    code: str,
+    javbus_url: str,
+    javbus_proxy: Optional[str] = None,
+) -> Tuple[bool, Optional[Dict[str, Any]]]:
+    """确保 wanted 目录里有 ``movie.nfo``，没有就实时从 JavBus 抓一份。
+
+    历史 wanted refresh（MovieExporter 迁移 #10 之前）经常漏写 movie.nfo，
+    导致后续 organize 时目标目录也缺 NFO（Plex/Kodi 读不到 metadata）。
+
+    实测「先抓 NFO → 再 organize」的模式：
+    - 已有 NFO → 立即返回 (True, None) 零开销
+    - 没 NFO → 跑一次 JavBus 详情页（带 timeout），只取 info dict 不下载封面/sample
+    - 写回 wanted 目录 ``movie.nfo``（也顺手补，让后续 refresh 不必重抓）
+    - 抓失败 → 返回 (False, error_str)，让上层决定怎么处理
+
+    返回 ``(nfo_ok, info_or_error)``：
+    - ``nfo_ok=True`` + ``info_or_error=None`` → 已有 NFO，无需抓
+    - ``nfo_ok=True`` + ``info_or_error=dict`` → 没 NFO 但刚补上了，dict 是 JavBus info
+    - ``nfo_ok=False`` + ``info_or_error=str`` → 抓失败，错误信息
+    """
+    nfo_path = wanted_dir / "movie.nfo"
+    if nfo_path.exists():
+        return True, None
+
+    logger.info(f"[{code}] wanted 目录缺 movie.nfo，从 JavBus 实时补一份")
+
+    try:
+        from javlibraryscrapy.scraping.javbus import JavbusSpider
+    except ImportError as e:
+        return False, f"导入 JavbusSpider 失败：{e}"
+
+    # JavbusSpider.parse() 内部会顺手调 download_cover 写到 root_dir/<carid>.png（cover temp）。
+    # 我们只需要 NFO，不想污染 wanted_dir → 临时把 root_dir 指向一个 tempdir，
+    # 抓完后清理掉 cover temp。
+    import asyncio
+    import concurrent.futures
+    import shutil as _shutil
+    import tempfile
+    from scrapling.fetchers import AsyncDynamicSession
+
+    with tempfile.TemporaryDirectory(prefix="javlibraryscrapy_ensure_nfo_") as tmp_root:
+        spider = JavbusSpider(root_dir=Path(tmp_root))
+        spider.proxy_enabled = javbus_proxy is not None
+        spider.proxy = javbus_proxy
+
+    async def _fetch() -> Optional[Dict[str, Any]]:
+        async with AsyncDynamicSession(
+            load_dom=spider.load_dom,
+            network_idle=spider.network_idle,
+            disable_resources=spider.disable_resources,
+            proxy=spider.proxy,
+            headless=spider.headless,
+            timeout=spider.timeout,
+        ) as session:
+            page = await session.fetch(f"{javbus_url.rstrip('/')}/{code}")
+            info = await spider.parse(page)
+            return info if isinstance(info, dict) else None
+
+    try:
+        # 在独立线程跑 asyncio.run（uvicorn 事件循环下不能直接 asyncio.run）
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            future = ex.submit(lambda: asyncio.run(_fetch()))
+            info = future.result(timeout=60)
+    except concurrent.futures.TimeoutError:
+        return False, "JavBus 抓取超时（>60s）"
+    except Exception as e:  # noqa: BLE001
+        return False, f"JavBus 抓取失败：{e}"
+
+    if not info or not info.get("title") or not info.get("carid"):
+        return False, "JavBus 抓取结果缺标题/车牌"
+
+    # 写 NFO 到 wanted 目录（不写其它文件 —— 调用方自己处理 cover/sample）
+    try:
+        wanted_dir.mkdir(parents=True, exist_ok=True)
+        write_xml(nfo_path, info)
+        logger.info(f"[{code}] 已补写 movie.nfo 到 {wanted_dir}")
+    except OSError as e:
+        return False, f"写 NFO 失败：{e}"
+
+    return True, info
+
+
 def organize_movie(
     code: str,
     mw_root: Path,
@@ -288,6 +374,8 @@ def organize_movie(
     *,
     on_library_change: Optional[Callable[[], None]] = None,
     dry_run: bool = False,
+    javbus_url: Optional[str] = None,
+    javbus_proxy: Optional[str] = None,
 ) -> Dict[str, Any]:
     """整理单部已下载 wanted 影片。
 
@@ -341,13 +429,40 @@ def organize_movie(
             "dry_run": dry_run,
         }
 
-    # 2) 读 NFO 拿 title + release_date
+    # 2) 读 NFO 拿 title + release_date。
+    # 如果 wanted 目录里没有 movie.nfo（历史 wanted refresh 漏写），
+    # 实时从 JavBus 抓一份补上 —— 否则目标目录会缺 NFO，Plex/Kodi 读不到 metadata。
     nfo_path = wanted_dir / "movie.nfo"
     title, release_date = parse_nfo(nfo_path)
     if not title:
-        # 没 NFO / NFO 解析失败 -> 用目录名兜底（"<CARID> title here"）
+        # 兜底：先尝试用目录名当 title，尝试 ensure_nfo 抓 JavBus
         dir_name = wanted_dir.name
-        title = dir_name[len(code_norm) + 1:].strip() if dir_name.upper().startswith(code_norm) else dir_name
+        fallback_title = dir_name[len(code_norm) + 1:].strip() if dir_name.upper().startswith(code_norm) else dir_name
+        if javbus_url:
+            # 不是 dry_run 才真抓；dry_run 也照样抓（用户预览时也想看到 NFO 来源信息）
+            ok, payload = ensure_nfo(
+                wanted_dir, code_norm, javbus_url, javbus_proxy
+            )
+            if ok and isinstance(payload, dict):
+                # 抓到了 → 重读 NFO
+                title, release_date = parse_nfo(nfo_path)
+            elif not ok:
+                # 抓失败 → 用目录名兜底，但 result 里写 warning 让前端知道
+                # 后续调用方把这个 warning 透传给前端 toast
+                logger.warning(f"[{code_norm}] ensure_nfo 失败：{payload}")
+                title = fallback_title
+        else:
+            # 没配 javbus_url（NFO 缺失但又不能联网）→ 兜底
+            title = fallback_title
+
+    # 最后兜底：title 还是空（NFO 缺、JavBus 也没抓到、目录名又解析失败）
+    if not title:
+        return {
+            "ok": False,
+            "code": code_norm,
+            "error": f"无法确定 {code_norm} 的标题（缺 movie.nfo 且 JavBus 也抓不到）",
+            "dry_run": dry_run,
+        }
 
     month = month_bucket(release_date, fallback_now=True)
 
@@ -368,18 +483,19 @@ def organize_movie(
     if dry_run:
         # dry_run 路径：只列计划，不实际写盘 / 不触发回调
         _add_plan(f"[mkdir] {dest_dir}")
-        # 列出 wanted 元数据文件将复制哪些
+        # 列出 wanted 元数据文件将复制哪些（用 set 去重：movie.nfo 同时匹配
+        # "movie.nfo" 和 "*.nfo" 两个 pattern，必须 dedupe 避免 plan 里出现两次）
+        planned_files: set[str] = set()
         wanted_patterns: List[str] = []
         wanted_patterns.extend(COVER_NAMES)
         wanted_patterns.extend(FANART_NAMES)
         wanted_patterns.append("movie.nfo")
         wanted_patterns.append("*.nfo")
         wanted_patterns.extend(["sample_*.jpg", "sample_*.png"])
-        planned_files = []
         for pattern in wanted_patterns:
             for src_file in wanted_dir.glob(pattern):
-                if src_file.is_file():
-                    planned_files.append(src_file.name)
+                if src_file.is_file() and src_file.name not in planned_files:
+                    planned_files.add(src_file.name)
                     _add_plan(f"[copy] {src_file.name} -> {dest_dir / src_file.name}")
         # NAS 下载
         nas_item, _ = find_nas_download(Path(nas_download_path), code_norm)

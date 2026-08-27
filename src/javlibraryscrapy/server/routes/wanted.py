@@ -263,7 +263,8 @@ def register(app: FastAPI) -> None:
         前置条件：
         - 已配置 ``LIBRARY_ROOT``（本地库根目录）
         - 已配置 ``MOSTWANTED_LIBRARY_ROOT``（wanted 库根目录）
-        - 已配置 ``ZSPACE_DOWNLOAD_PATH``（NAS 下载目录挂载路径）
+        - 已配置 ``LOCAL_DOWNLOAD_PATH``（本地可访问的 NAS 下载目录，
+          例如 Windows 映射盘符或 UNC 路径；留空则回退 ``ZSPACE_DOWNLOAD_PATH``）
 
         整理动作：
         1. 在 ``<MOSTWANTED_LIBRARY_ROOT>/<CARID> <title>/`` 找源文件夹
@@ -301,15 +302,27 @@ def register(app: FastAPI) -> None:
         settings = request.app.state.settings
         mw_root = getattr(settings, "mostwanted_library_root", None)
         lib_root = getattr(settings, "library_root", None)
+        # NAS 下载目录：优先用 local_download_path（Windows/局域网视角），
+        # 回退到 zspace_download_path（NAS 视角，如果本机也能访问的话）。
+        local_download_path = getattr(settings, "local_download_path", None)
         zspace_download_path = getattr(settings, "zspace_download_path", None)
+        nas_download_path = local_download_path or zspace_download_path
+        # JavBus 抓取（NFO 兜底用）—— 跟单部刷新 /api/wanted/{code}/javbus 用同一份配置
+        javbus_url = getattr(settings, "javbus_url", None) or "https://www.javbus.com"
+        # proxy_javbus_enabled 开着才传 proxy（与 javbus 端点 / 单部 refresh 保持一致）
+        javbus_proxy = (
+            getattr(settings, "proxy", None)
+            if getattr(settings, "proxy_javbus_enabled", False)
+            else None
+        )
 
         missing = []
         if not mw_root:
             missing.append("MOSTWANTED_LIBRARY_ROOT")
         if not lib_root:
             missing.append("LIBRARY_ROOT")
-        if not zspace_download_path:
-            missing.append("ZSPACE_DOWNLOAD_PATH")
+        if not nas_download_path:
+            missing.append("LOCAL_DOWNLOAD_PATH 或 ZSPACE_DOWNLOAD_PATH")
         if missing:
             raise HTTPException(
                 status_code=503,
@@ -336,9 +349,11 @@ def register(app: FastAPI) -> None:
                 carid_norm,
                 Path(mw_root),
                 Path(lib_root),
-                Path(zspace_download_path),
+                Path(nas_download_path),
                 on_library_change=_rescan,
                 dry_run=dry_run,
+                javbus_url=javbus_url,
+                javbus_proxy=javbus_proxy,
             )
         )
         logger.info(

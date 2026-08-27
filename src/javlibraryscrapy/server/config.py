@@ -165,6 +165,21 @@ class Settings(BaseSettings):
             " sp_perms 查到。修改前先在 NAS 后台确认目录存在且可写。"
         ),
     )
+    local_download_path: Optional[str] = Field(
+        default=None,
+        description=(
+            "本地可访问的 NAS 下载目录（Windows / 局域网视角）。"
+            "ZSPACE_DOWNLOAD_PATH 是 NAS 文件系统内路径（/sata11/...），"
+            "Windows 机器直接读不到 —— 整理功能（POST /api/wanted/{code}/organize）"
+            "需要在本机文件系统里枚举 NAS 上的下载文件来匹配车牌，"
+            "所以这里必须填一个**指向同一物理目录**的 Windows / UNC 路径："
+            "  1. NAS 后台 SMB 共享该目录，Windows 映射成 Z:\\ 或直接用 UNC"
+            "     ``\\\\192.168.0.47\\团队文件-我的地盘\\Private\\UnScraper``"
+            "  2. 或在 .env 里写一个 windows 风格的映射路径"
+            "**留空则回退到 ZSPACE_DOWNLOAD_PATH**（如果该路径在本机也能访问）。"
+            "填错路径不会报错，整理时只会跳过「移动 NAS 视频」那步（warning 提示）。"
+        ),
+    )
 
     # ---- Scrapling 透传（原服务只透传给 JavbusSpider；这里保留供将来的 env 注入） ----
     scrapling_load_dom: bool = Field(default=True, alias="SCRAPLING_LOAD_DOM")
