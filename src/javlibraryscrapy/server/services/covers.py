@@ -1,12 +1,9 @@
-"""封面与本地资源：服务端代理拉图、本地库封面读取、用资源管理器打开目录。"""
+"""封面与本地资源：服务端代理拉图、本地库封面读取。"""
 
 from __future__ import annotations
 
 import hashlib
 import logging
-import os
-import subprocess
-import sys
 import urllib.parse
 from pathlib import Path
 from typing import Optional, Tuple
@@ -86,17 +83,6 @@ def find_local_cover(folder: Path, name: str = "") -> Optional[Path]:
         if p.is_file():
             return p
     return None
-
-
-def open_in_explorer(path: Path) -> None:
-    """用系统资源管理器打开本地文件夹。"""
-    path_str = str(path)
-    if sys.platform == "win32":
-        os.startfile(path_str)  # type: ignore[attr-defined]
-    elif sys.platform == "darwin":
-        subprocess.run(["open", path_str], check=True)
-    else:
-        subprocess.run(["xdg-open", path_str], check=True)
 
 
 def guess_cover_content_type(suffix: str) -> str:

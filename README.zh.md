@@ -526,7 +526,7 @@ output/
   - `GalleryState.library_root` / `library_index` / `scan_state`：启动时按需加载索引（root 不一致则等手动刷新），后台线程扫描
   - `/library` 页面 + `/api/library*` 端点（列表/详情/状态/重扫/报警）；`/api/movies` 返回时附加 `local_exists` / `library_folder`
   - `/api/scrape` 自动跳过本地已存在的车牌（**不入 `magnets_links.txt`**，但 `magnets.json` v2 仍记录 `status=local_skip` 与 `library_folder`）
-  - `/api/local-cover` 读本地 `poster.jpg`（按 poster/folder/cover 顺序自动挑选，受 `library_root` 越界检查保护）；`/api/open-folder` 调 `os.startfile` 打开目录
+  - `/api/local-cover` 读本地 `poster.jpg`（按 poster/folder/cover 顺序自动挑选，受 `library_root` 越界检查保护）
 
 设计文档：[`docs/library-feature.md`](docs/library-feature.md)
 

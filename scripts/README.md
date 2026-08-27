@@ -72,7 +72,7 @@ uv run python -m javlibraryscrapy.cli.gallery --port 8000 --data output/javlibra
 
 ## Docker 画廊（容器化部署）
 
-容器只装 FastAPI 画廊（前端 + API + 调度）和 Scrapling 浏览器；爬虫/CLI 工作流仍在宿主机跑（robocopy、`os.startfile`、PowerShell 脚本都依赖 Windows）。
+容器只装 FastAPI 画廊（前端 + API + 调度）和 Scrapling 浏览器；爬虫/CLI 工作流仍在宿主机跑（robocopy、PowerShell 脚本都依赖 Windows）。
 
 **架构**
 - `Dockerfile`：python:3.11-slim + uv，三层缓存（依赖 → chromium → 代码）
@@ -116,8 +116,7 @@ pwsh scripts/Start-DockerGallery.ps1 -Action Down            # 停容器（卷�
 **代理：** 容器内 `PROXY=http://host.docker.internal:10808`（不是 `127.0.0.1`）。`docker-compose.yml` 已配 `extra_hosts: host-gateway`，让 host.docker.internal 解析到宿主网关。
 
 **容器里不可用的功能：**
-- `/api/open-folder` → `os.startfile` 仅 Windows，调用会报错（不影响其他功能）
-- `cli/move_videos.py` 的 robocopy 分支、`scripts/*.ps1`（除 Start-DockerGallery） → 继续在宿主机跑
+- `cli/move_videos.py` 的 robocopy 分支、`scripts/*.ps1`（除 Start-DockerGallery 外） → 继续在宿主机跑
 
 ## export_mostwanted
 

@@ -9,7 +9,6 @@
   - /api/library/status 扫描状态
   - /api/library/rescan 触发扫描
   - /api/local-cover 安全读取
-  - /api/open-folder 越界防护
   - /api/scrape 自动跳过本地已有车牌
 
 运行：

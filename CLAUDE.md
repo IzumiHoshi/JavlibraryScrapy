@@ -202,7 +202,7 @@ uv run python tests/integration/test_gallery_server_library.py # 离线跑画廊
   - `GalleryState.library_root` / `library_index` / `scan_state`：启动时按需加载索引（root 不一致则等手动刷新），后台线程扫描
   - `/library` 页面 + `/api/library*` 端点（列表/详情/状态/重扫/报警）；`/api/movies` 返回时附加 `local_exists` / `library_folder`；`/api/scrape` 自动跳过本地已存在的车牌（**不入 `magnets_links.txt`**，但 `magnets.json` v2 仍记录 `status=local_skip` 与 `library_folder`）
   - **路径归一化**（commit `c0ab1d7`）：用户传入的 `LIBRARY_ROOT` 和索引里已存的路径可能一个用映射盘（`Z:\JAV`）一个用 UNC（`\\nas\JAV`），形参上看着不一样但其实指向同一物理卷；服务启动 / 扫描 / 查询时统一走规范化比较，避免"索引被判定为 root 不一致 → 强制重扫"的误判。
-  - `/api/local-cover` 读本地 `poster.jpg`（按 poster/folder/cover 顺序自动挑选，受 `library_root` 越界检查保护）；`/api/open-folder` 调 `os.startfile` 打开目录
+  - `/api/local-cover` 读本地 `poster.jpg`（按 poster/folder/cover 顺序自动挑选，受 `library_root` 越界检查保护）
   - 前端入口 `src/javlibraryscrapy/static/index.html` 重构为支持 `/wanted` + `/library` 双路由 + 顶部导航 + badge tooltip + 搜索/分页/翻页/打开文件夹 + 双页面共用的海报灯箱（commit `0471157`）。原 117 KB 单 HTML 拆为 `static/index.html`（入口 HTML）+ `css/{app,responsive}.css` + `js/{main,utils,month-picker,tooltip,lightbox,wanted,library}.js`，每个 JS 文件 <900 行，最大文件是 `wanted.js`（869 行）而非 2901 行。
 - `scripts/Sync-LibraryCoverNames.ps1` — 一次性工具：把本地库里 `<carid> <title>-poster.jpg` / `...-fanart.jpg` / `<carid> <title>.nfo` 这类本机实际命名，复制一份成 `library_scanner` 识别的标准名（`poster.jpg` / `fanart.jpg` / `movie.nfo`）。原文件不动；`-DryRun` 只打印计划，`-Force` 覆盖已存在的标准名文件。一次 `Get-ChildItem` 拿齐文件夹内容再做批量决策，避免大量 PSObject 实例化。
 

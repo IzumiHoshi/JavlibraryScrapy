@@ -302,7 +302,6 @@ sequenceDiagram
 | `library.py` | `library.*` | 双向前缀匹配查询 |
 | `covers.py` | `covers.proxy_cover` | `.cover_cache/` 缓存 |
 | `pages.py` | 模板渲染 | 从磁盘读，热加载 |
-| `folder.py` | `os.startfile` | Windows-only |
 
 ---
 
