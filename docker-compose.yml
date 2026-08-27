@@ -1,0 +1,27 @@
+services:
+  gallery:
+    build: .
+    image: javlibraryscrapy:latest
+    container_name: javlibraryscrapy-gallery
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env.docker            # 见 .env.docker.example，复制改名后使用
+    volumes:
+      # 本地影片库（只读足够：画廊只扫描 + 读封面）
+      - ${LIBRARY_HOST_PATH:-./output/library}:/data/JAV:ro
+      # Most Wanted 数据根目录（javlibrary_movies.json、<CODE> <title>/ 都写这里 → 必须可写）
+      - ${MOSTWANTED_HOST_PATH:-./output/mostwanted}:/data/MostWanted
+      # NAS 下载目录（wanted 整理功能要枚举文件来匹配车牌）
+      - ${DOWNLOAD_HOST_PATH:-./output/downloads}:/data/UnScraper
+      # 临时数据：日志、封面缓存、magnet scratch
+      - gallery-output:/app/output
+    # Playwright/chromium 在容器里需要更大的 /dev/shm，否则渲染页面会随机崩
+    shm_size: "1gb"
+    # 让容器内的 PROXY=http://host.docker.internal:10808 能命中宿主机代理
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  gallery-output:
