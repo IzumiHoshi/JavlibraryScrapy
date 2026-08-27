@@ -287,6 +287,7 @@ def organize_movie(
     nas_download_path: Path,
     *,
     on_library_change: Optional[Callable[[], None]] = None,
+    dry_run: bool = False,
 ) -> Dict[str, Any]:
     """整理单部已下载 wanted 影片。
 
@@ -297,6 +298,9 @@ def organize_movie(
     lib_root : 本地影片库根目录（``LIBRARY_ROOT``）
     nas_download_path : NAS 下载目录（``ZSPACE_DOWNLOAD_PATH`` 的本地挂载路径）
     on_library_change : 整理成功后回调（通常是触发 library scanner）
+    dry_run : True 时只读不写，返回每一步「将要做什么」但不实际执行
+             （copy / move / rmtree / mkdir 全部跳过）；返回 dict 额外带
+             ``dry_run: True`` + ``plan: [str, ...]`` 列出所有计划动作。
 
     返回 dict（直接 jsonify）：
         {
@@ -306,19 +310,26 @@ def organize_movie(
             "wanted_folder": str | None,
             "dest_folder": str | None,
             "month": "2026-08",
-            "files_copied": int,
+            "files_copied": int,        # dry_run 时 = 预计复制数
             "files_skipped": int,
             "files_errored": int,
-            "videos_moved": int,
+            "videos_moved": int,        # dry_run 时 = 预计移动数
             "videos_skipped": int,
             "nas_source": str | None,
-            "nas_source_removed": bool,
+            "nas_source_removed": bool, # dry_run 时固定 False
             "error": str | None,
+            "warning": str | None,
+            "dry_run": bool,
+            "plan": [str, ...],         # dry_run=True 时才有
         }
     """
+    plan: List[str] = []
+    def _add_plan(msg: str) -> None:
+        plan.append(msg)
+        logger.info(f"[DRY-RUN] {msg}")
     code_norm = (code or "").strip().upper()
     if not code_norm:
-        return {"ok": False, "code": code_norm, "error": "空车牌"}
+        return {"ok": False, "code": code_norm, "error": "空车牌", "dry_run": dry_run}
 
     # 1) 找 wanted 目录
     wanted_dir = find_wanted_folder(Path(mw_root), code_norm)
@@ -327,6 +338,7 @@ def organize_movie(
             "ok": False,
             "code": code_norm,
             "error": f"wanted 目录里没找到 {code_norm} 文件夹",
+            "dry_run": dry_run,
         }
 
     # 2) 读 NFO 拿 title + release_date
@@ -350,6 +362,56 @@ def organize_movie(
             "code": code_norm,
             "dest_folder": str(dest_dir),
             "error": f"目标目录已存在（{dest_dir.name}），跳过",
+            "dry_run": dry_run,
+        }
+
+    if dry_run:
+        # dry_run 路径：只列计划，不实际写盘 / 不触发回调
+        _add_plan(f"[mkdir] {dest_dir}")
+        # 列出 wanted 元数据文件将复制哪些
+        wanted_patterns: List[str] = []
+        wanted_patterns.extend(COVER_NAMES)
+        wanted_patterns.extend(FANART_NAMES)
+        wanted_patterns.append("movie.nfo")
+        wanted_patterns.append("*.nfo")
+        wanted_patterns.extend(["sample_*.jpg", "sample_*.png"])
+        planned_files = []
+        for pattern in wanted_patterns:
+            for src_file in wanted_dir.glob(pattern):
+                if src_file.is_file():
+                    planned_files.append(src_file.name)
+                    _add_plan(f"[copy] {src_file.name} -> {dest_dir / src_file.name}")
+        # NAS 下载
+        nas_item, _ = find_nas_download(Path(nas_download_path), code_norm)
+        if nas_item is None:
+            _add_plan(f"[scan] 未在 NAS 下载目录找到 {code_norm} 的下载文件")
+        else:
+            src_was_dir = nas_item.is_dir()
+            if src_was_dir:
+                _add_plan(f"[move-folder] {nas_item} -> {dest_dir}")
+            videos = _collect_videos(nas_item)
+            for v in videos:
+                ext = v.suffix.lower()
+                dst_name = f"{code_norm} {safe_title}{ext}"
+                _add_plan(f"[move+rename] {v.name} -> {dest_dir / dst_name}")
+            if src_was_dir:
+                _add_plan(f"[rmtree] {nas_item}")
+        return {
+            "ok": True,
+            "code": code_norm,
+            "wanted_folder": str(wanted_dir),
+            "dest_folder": str(dest_dir),
+            "month": month,
+            "files_copied": len(planned_files),
+            "files_skipped": 0,
+            "files_errored": 0,
+            "videos_moved": 0,  # 仅预览，不算实际
+            "videos_skipped": 0,
+            "nas_source": str(nas_item) if nas_item else None,
+            "nas_source_removed": False,
+            "error": None,
+            "dry_run": True,
+            "plan": plan,
         }
 
     # 4) 复制 wanted 元数据文件
@@ -378,6 +440,7 @@ def organize_movie(
             "nas_source": None,
             "nas_source_removed": False,
             "warning": f"未在 NAS 下载目录找到 {code_norm} 的下载文件",
+            "dry_run": dry_run,
         }
 
     # 6) 收集视频文件 + 移动 + 重命名
@@ -433,6 +496,7 @@ def organize_movie(
         "nas_source": str(nas_item),
         "nas_source_removed": source_removed,
         "error": None,
+        "dry_run": dry_run,
     }
 
 

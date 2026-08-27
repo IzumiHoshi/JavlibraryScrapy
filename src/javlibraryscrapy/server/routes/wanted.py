@@ -250,7 +250,14 @@ def register(app: FastAPI) -> None:
         return result
 
     @app.post("/api/wanted/{carid}/organize")
-    async def organize_one(carid: str, request: Request) -> Dict[str, Any]:
+    async def organize_one(
+        carid: str,
+        request: Request,
+        dry_run: bool = Query(
+            default=False,
+            description="只预览不执行：列出所有计划动作但不实际写盘 / 移动 / 删除",
+        ),
+    ) -> Dict[str, Any]:
         """把单部已下载的 wanted 影片从 wanted 目录整理到本地库。
 
         前置条件：
@@ -267,6 +274,9 @@ def register(app: FastAPI) -> None:
         5. 移动 + 重命名为 ``<CARID> <title>.<ext>``
         6. 如果下载是文件夹，删源文件夹
         7. 触发 library scanner 更新索引
+
+        ``?dry_run=true`` 时只列计划动作，不实际写盘/移动/删除，
+        返回 dict 额外带 ``plan: [str, ...]`` 列出每一步要做什么。
 
         目标目录已存在 → ``ok=False`` + ``skipped="already_organized"``，
         不覆盖用户数据。
@@ -311,10 +321,11 @@ def register(app: FastAPI) -> None:
 
         # library scanner 回调：整理成功后增量刷新索引，
         # 让前端的「本地已有」徽章立刻亮起。
+        # dry_run=True 时不调（不能给用户假预览预览），给个 no-op 即可。
         gallery = getattr(request.app.state, "gallery", None)
 
         def _rescan():
-            if gallery is not None and hasattr(gallery, "start_rescan"):
+            if not dry_run and gallery is not None and hasattr(gallery, "start_rescan"):
                 gallery.start_rescan()
 
         # 与 javbus 端点一致：放到 asyncio 线程池跑，避免阻塞事件循环
@@ -327,6 +338,7 @@ def register(app: FastAPI) -> None:
                 Path(lib_root),
                 Path(zspace_download_path),
                 on_library_change=_rescan,
+                dry_run=dry_run,
             )
         )
         logger.info(
