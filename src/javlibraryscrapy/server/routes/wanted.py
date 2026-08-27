@@ -356,6 +356,30 @@ def register(app: FastAPI) -> None:
                 javbus_proxy=javbus_proxy,
             )
         )
+
+        # 整理成功后立即失效 NAS 下载代码集缓存
+        # （源文件夹被删 / 任务标记 completed，下次 /api/zspace/codes 不该再返回该车牌）
+        # 否则前端会卡 30s 缓存内继续显示「✅ 已下载」按钮 / 「下载中」徽章
+        if not dry_run and result.get("ok"):
+            try:
+                from .zspace import _get_or_create_client as _get_zspace
+                zspace = _get_zspace(request)
+                zspace.invalidate_download_codes_cache()
+                logger.info(f"整理 {carid_norm}: 已失效 NAS 下载代码集缓存")
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"失效 NAS 缓存失败 {carid_norm}: {e}")
+
+            # 立即把刚整理的目录 upsert 到 in-memory library_index，
+            # 不等 scanner 跑完（scanner 全库 5 分钟），让前端「本地已有」立刻亮起。
+            # scanner 仍然会跑，做最终一致性兜底。
+            dest_folder_str = result.get("dest_folder")
+            if dest_folder_str and gallery is not None and hasattr(
+                gallery, "update_library_index_for_folder"
+            ):
+                try:
+                    gallery.update_library_index_for_folder(Path(dest_folder_str))
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"立即更新索引失败 {carid_norm}: {e}")
         logger.info(
             f"整理 {carid_norm}: ok={result.get('ok')} "
             f"videos_moved={result.get('videos_moved')} "

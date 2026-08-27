@@ -4,8 +4,8 @@
 //   1. 状态/URL/分页
 //   2. 选择（多选 + localStorage 持久化）
 //   3. 月份选择器（setupMonthPicker）
-//   4. 卡片 HTML 模板（displayTitle / localBadgeHtml / statusBadge /
-//      refetchBtnHtml / cardHtml）
+//   4. 卡片 HTML 模板（displayTitle / statusBadge /
+//      refetchBtnHtml / nasBadgeHtml / cardHtml）
 //   5. 渲染（render / applyLocalFilter / renderCardInPlace / cssEscape）
 //   6. 刷新状态（updateLastRefresh / phaseLabel）
 //   7. 数据加载（load / loadMonthsOnly / startRefresh / pollRefreshStatus）
@@ -173,7 +173,6 @@ export async function initWanted() {
         <input type="checkbox" ${selected.has(m.code) ? 'checked' : ''} tabindex="-1">
         ${(m.cover || m.cover_url) ? `<img class="cover" src="${esc(m.cover || m.cover_url)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.classList.add('broken')">`
                   : '<div class="cover"></div>'}
-        ${localBadgeHtml(m)}
         ${statusBadge(m)}
         ${refetchBtnHtml(m)}
         ${nasBadgeHtml(m)}
