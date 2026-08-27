@@ -1,0 +1,30 @@
+# 构建上下文瘦身：镜像只需要 pyproject/uv.lock/src/scripts。
+.git
+.gitignore
+.venv
+venv
+__pycache__
+**/__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+.mypy_cache
+
+# 运行时 / 历史产物，绝不进镜像
+output
+temp
+deprecated
+tests
+docs
+.claude
+
+# 本地密钥与配置：容器里用 compose 的 env_file / environment 注入
+.env
+.env.*
+!.env.example
+
+*.md
+!README.md
+Dockerfile
+.dockerignore
+docker-compose*.yml

@@ -10,7 +10,6 @@ from fastapi import FastAPI
 
 from . import (
     covers as _covers,
-    folder as _folder,
     library as _library,
     movies as _movies,
     pages as _pages,
@@ -37,5 +36,4 @@ def register_routes(app: FastAPI) -> None:
     _rescan.register(app)        # 先注册精确路径
     _library.register(app)       # 再注册 {carid} path-param
     _wanted.register(app)        # 精确路径 + {carid} 都在同一个文件里
-    _folder.register(app)
     _zspace.register(app)        # /api/zspace/* — 极空间 NAS 集成

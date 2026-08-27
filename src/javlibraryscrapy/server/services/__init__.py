@@ -1,7 +1,7 @@
 """画廊服务层：状态与业务逻辑。"""
 
 from .library import GalleryState, load_movies, normalize_path_for_compare
-from .covers import fetch_cover, find_local_cover, open_in_explorer
+from .covers import fetch_cover, find_local_cover
 from .proxy import proxied_url, COVER_PROXY_PREFIX
 
 __all__ = [
@@ -10,7 +10,6 @@ __all__ = [
     "normalize_path_for_compare",
     "fetch_cover",
     "find_local_cover",
-    "open_in_explorer",
     "proxied_url",
     "COVER_PROXY_PREFIX",
 ]

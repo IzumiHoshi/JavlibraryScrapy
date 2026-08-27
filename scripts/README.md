@@ -70,6 +70,54 @@ uv run python -m javlibraryscrapy.cli.gallery --port 8000 --data output/javlibra
 
 > 代理、超时、User-Agent 等都读 `.env`，与 `javlibraryscrapy.scraping.javbus` 共用一套配置。同一时间只允许一个抓取任务。
 
+## Docker 画廊（容器化部署）
+
+容器只装 FastAPI 画廊（前端 + API + 调度）和 Scrapling 浏览器；爬虫/CLI 工作流仍在宿主机跑（robocopy、PowerShell 脚本都依赖 Windows）。
+
+**架构**
+- `Dockerfile`：python:3.11-slim + uv，三层缓存（依赖 → chromium → 代码）
+- `docker-compose.yml`：端口 `8000:8000`、`shm_size=1gb`（Playwright 必需）、`extra_hosts: host.docker.internal`（让容器内 `PROXY` 命中宿主代理）、卷挂载：`{JAV,MostWanted,UnScraper}` 三个卷 + `gallery-output` 命名卷承载 `/app/output`（日志/封面缓存/库索引）
+- `.env.docker.example`：容器版配置模板，复制为 `.env.docker` 后填宿主路径
+- `scripts/Start-DockerGallery.ps1`：一键打包/启停脚本
+
+**首次跑：**
+
+```powershell
+# 1. 镜像构建（首次 5-10 分钟，主要装 chromium）
+pwsh scripts/Start-DockerGallery.ps1 -Action Build
+
+# 2. 准备配置：复制模板并编辑挂载源路径
+Copy-Item .env.docker.example .env.docker
+notepad .env.docker
+#   必须按本机情况改：LIBRARY_HOST_PATH / MOSTWANTED_HOST_PATH / DOWNLOAD_HOST_PATH
+#   Windows 上不要填映射盘 Z:，Docker Desktop 认不出；用 UNC (//nas/...) 或本地盘 (D:/JAV)
+
+# 3. 后台启动
+pwsh scripts/Start-DockerGallery.ps1 -Action Up
+# 浏览器打开 http://localhost:8000
+
+# 4. 后续常用
+pwsh scripts/Start-DockerGallery.ps1 -Action Status          # 容器/镜像/端口
+pwsh scripts/Start-DockerGallery.ps1 -Action Logs -Tail 100   # 跟踪日志
+pwsh scripts/Start-DockerGallery.ps1 -Action Restart         # 仅重启容器
+pwsh scripts/Start-DockerGallery.ps1 -Action Down            # 停容器（卷保留）
+```
+
+**路径映射规则（容易踩坑）：**
+| 宿主机 | 容器内 | 说明 |
+|---|---|---|
+| `${LIBRARY_HOST_PATH}` | `/data/JAV` | 本地影片库（ro 挂载） |
+| `${MOSTWANTED_HOST_PATH}` | `/data/MostWanted` | wanted JSON + `<CARID> <title>/`（必须可写） |
+| `${DOWNLOAD_HOST_PATH}` | `/data/UnScraper` | NAS 下载目录（wanted 整理要枚举） |
+| `gallery-output` 命名卷 | `/app/output` | 临时数据 |
+
+`LIBRARY_ROOT` / `MOSTWANTED_LIBRARY_ROOT` / `LOCAL_DOWNLOAD_PATH` 在 `.env.docker` 里一律填**容器内路径**（`/data/...`），不是宿主的 `Z:/`。
+
+**代理：** 容器内 `PROXY=http://host.docker.internal:10808`（不是 `127.0.0.1`）。`docker-compose.yml` 已配 `extra_hosts: host-gateway`，让 host.docker.internal 解析到宿主网关。
+
+**容器里不可用的功能：**
+- `cli/move_videos.py` 的 robocopy 分支、`scripts/*.ps1`（除 Start-DockerGallery 外） → 继续在宿主机跑
+
 ## export_mostwanted
 
 把 JAVLibrary「最想要」列表导出到本地库：每部影片一个文件夹，命名 `<CARID> <title>/`，内含：

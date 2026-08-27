@@ -15,8 +15,6 @@ $tests = @(
     @{ method = "POST"; path = "/api/scrape"; body = '{"codes":[]}'; expected = 400 },
     @{ method = "POST"; path = "/api/scrape"; body = '{"codes":["!!!"]}'; expected = 400 },
     @{ method = "POST"; path = "/api/scrape"; body = 'not json'; expected = 400 },
-    @{ method = "POST"; path = "/api/open-folder"; body = '{}'; expected = 400 },
-    @{ method = "POST"; path = "/api/open-folder"; body = '{"folder":"C:/Windows"}'; expected = 403 },
     @{ method = "GET"; path = "/api/cover"; expected = 404 },
     @{ method = "GET"; path = "/api/local-cover"; expected = 400 },
     @{ method = "POST"; path = "/api/library/rescan"; expected = 200 },

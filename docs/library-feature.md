@@ -55,7 +55,6 @@
 | Q8 | `/wanted` 卡片可勾选抓磁力；`/library` 只读浏览 |
 | Q6 | `/wanted` 卡片右下角显示「✓ 本地已有」绿色 badge |
 | Q7 | badge 鼠标悬停 tooltip：本地路径 / 视频总大小 / 视频格式 / NFO+poster+fanart 勾选 / NFO 修改时间 / 演员前 3 |
-| Q25 | `/library` 卡片**点击用 `os.startfile` 打开本地文件夹**（跨平台用 `subprocess.run(["open", path])` / `xdg-open`） |
 
 ### 2.3 搜索 / 分页 / 排序
 
@@ -273,9 +272,8 @@ def is_local_match(target_code, local_code):
 ## 10. 风险与未决问题
 
 1. **首次扫描阻塞启动时长**：2000+ 部 + 网络盘可能 1–5 分钟。Q14 决策是后台扫描，但 UI 会在 `/library` 显示「loading-initial」状态。
-2. **`os.startfile` 仅 Windows**：CLAUDE.md 已确认本项目主平台 Windows，不做 macOS/Linux 兼容（虽然代码会用条件分支）。
-3. **Z 盘拔除时的部分索引**：扫描中捕获 `OSError`，partial 落盘。下次启动重扫。
-4. **未来增量扫描**：v1.0 不做，全量扫。性能边界足够时不必优化。
+2. **Z 盘拔除时的部分索引**：扫描中捕获 `OSError`，partial 落盘。下次启动重扫。
+3. **未来增量扫描**：v1.0 不做，全量扫。性能边界足够时不必优化。
 5. **NFO 字段缺失**：当前只读 `title` / `releasedate` / `actor/name`。若需 `genre` / `studio` 等可在后续版本扩展。
 
 ## 11. 实现顺序
@@ -309,11 +307,7 @@ v1.0 设计稿与最终实现之间的偏差：
 
 理由：路由层薄，业务逻辑可单测；其他模块（wanted / scrape / covers）也共用这套布局。
 
-### 12.2 `os.startfile` 平台分支
-
-设计稿提到"用条件分支做 macOS/Linux 兼容"，实际**仍为 Windows-only**。`server/services/library.py` 里没有 `subprocess.run(['open', ...])` 分支，CLAUDE.md 已说明本项目主平台 Windows。
-
-### 12.3 决策清单实际落实情况
+### 12.2 决策清单实际落实情况
 
 | 决策 | 落实 | 备注 |
 | --- | --- | --- |
@@ -331,7 +325,6 @@ v1.0 设计稿与最终实现之间的偏差：
 | Q21 状态机 | ✅ | `loading-initial/rescan/empty/error/normal/search-empty` |
 | Q22 顶部显示上次扫描时间 | ✅ | `library_stats` / `library_scanned_at` |
 | Q23 `magnets.json` v2 | ✅ | 含 `local_exists` / `library_folder` |
-| Q25 `os.startfile` | ✅ | Windows-only |
 | Q26 UNC/特殊字符/长路径 | ✅ | 全部 `pathlib` 标准库 |
 | Q26 LIBRARY_ROOT 未设 → 报错 | ✅ | 启动检测 |
 | Q27 路径归一化（`c0ab1d7`） | ✅ | `normcase + realpath` |
