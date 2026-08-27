@@ -43,6 +43,14 @@ pwsh scripts/Start-GalleryServer.ps1 -Action Stop      # 优雅停止（PID 文�
 pwsh scripts/Start-GalleryServer.ps1 -Action Restart   # Stop 后自动 Start
 pwsh scripts/Start-GalleryServer.ps1 -Action Start -Port 8080 -LibraryRoot "Z:\\JAV" -OpenBrowser  # 默认不打开浏览器，加 -OpenBrowser 才打开
 
+# Docker 一键打包 / 启停（容器内只跑 FastAPI 画廊，爬虫/CLI 工作流仍在宿主机）
+pwsh scripts/Start-DockerGallery.ps1 -Action Build      # 首次构建镜像（装 chromium，约 5-10 分钟）
+pwsh scripts/Start-DockerGallery.ps1 -Action Up         # 后台启动（首次会自动从 .env.docker.example 复制成 .env.docker）
+pwsh scripts/Start-DockerGallery.ps1 -Action Status     # 容器/镜像/端口探测
+pwsh scripts/Start-DockerGallery.ps1 -Action Restart     # 仅重启容器
+pwsh scripts/Start-DockerGallery.ps1 -Action Logs -Tail 100   # 跟踪画廊日志
+pwsh scripts/Start-DockerGallery.ps1 -Action Down       # 停掉容器（数据卷保留）
+
 # 单独跑本地库扫描（不启动 server）：
 uv run python -m javlibraryscrapy.library.scanner --root "Z:\\JAV" --index output/library_index.json
 # 把本地库的 "<carid> <title>-poster.jpg" 之类命名复制成 scanner 识别的标准名（PowerShell）：
