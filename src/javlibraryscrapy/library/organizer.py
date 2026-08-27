@@ -34,6 +34,7 @@ from javlibraryscrapy.library.scanner import (
     FANART_NAMES,
     VIDEO_EXTENSIONS,
 )
+from javlibraryscrapy.utils.fanart import split_poster_from_fanart
 from javlibraryscrapy.utils.filesave import rename, write_xml
 
 logger = logging.getLogger("library_organizer")
@@ -219,7 +220,65 @@ def _copy_wanted_files(src_dir: Path, dst_dir: Path) -> Dict[str, int]:
             except OSError as e:
                 logger.warning(f"复制 {src_file.name} -> {dst_file} 失败：{e}")
                 out["errors"] += 1
+
+    # --- 后处理：保证 dest_dir 里 fanart.jpg + poster.jpg 都存在 ---
+    # 历史 wanted refresh（MovieExporter 迁移 #10 之前）写的是 cover.jpg，不是
+    # fanart.jpg / poster.jpg。library/refresher.refresh_library_movie 跟我们要做的
+    # 一样：从 cover.jpg 派生 fanart.jpg（重命名）+ poster.jpg（split）。
+    # 这里复用同一逻辑，让组织出来的目录三种封面都有，Plex/Kodi 读起来一致。
+    _ensure_fanart_and_poster(dst_dir, out)
     return out
+
+
+def _ensure_fanart_and_poster(dst_dir: Path, out: Dict[str, int]) -> None:
+    """如果 dest_dir 里 fanart.jpg / poster.jpg 不存在，尝试从 cover.jpg 派生。
+
+    派生策略（与 library/refresher.refresh_library_movie 保持一致）：
+    - 有 cover.jpg / cover.png + 无 fanart.* → 重命名为 fanart.jpg / fanart.png
+    - 有 fanart.* + 无 poster.* → split_poster_from_fanart 派生 poster
+
+    fanart/poster 都缺 + 也没有 cover：跳过（cover 由 JavBus 抓，理论上整理时已存在）。
+    """
+    # 找 cover（j优先 jpg）
+    cover_jpg = dst_dir / "cover.jpg"
+    cover_png = dst_dir / "cover.png"
+    cover = cover_jpg if cover_jpg.exists() else (cover_png if cover_png.exists() else None)
+
+    if cover is not None:
+        # 决定 fanart 后缀
+        ext = cover.suffix.lower()  # .jpg 或 .png
+        fanart_dst = dst_dir / f"fanart{ext}"
+        if not fanart_dst.exists():
+            try:
+                # shutil.copy2 + unlink cover（fanart 才是标准命名）
+                shutil.copy2(cover, fanart_dst)
+                try:
+                    cover.unlink()
+                except OSError:
+                    pass
+                out["copied"] += 1
+                logger.info(f"从 cover 派生 fanart：{fanart_dst.name}")
+            except OSError as e:
+                logger.warning(f"派生 fanart 失败 {cover} → {fanart_dst}: {e}")
+
+    # 找 fanart（j优先 jpg）
+    fanart_jpg = dst_dir / "fanart.jpg"
+    fanart_png = dst_dir / "fanart.png"
+    fanart = fanart_jpg if fanart_jpg.exists() else (fanart_png if fanart_png.exists() else None)
+
+    # 找 poster（j优先 jpg）
+    poster_jpg = dst_dir / "poster.jpg"
+    poster_png = dst_dir / "poster.png"
+    poster = poster_jpg if poster_jpg.exists() else (poster_png if poster_png.exists() else None)
+
+    if fanart is not None and poster is None:
+        # 用 jpg 后缀的 poster
+        try:
+            split_poster_from_fanart(fanart, dst_dir / "poster.jpg")
+            out["copied"] += 1
+            logger.info(f"从 fanart 派生 poster：{dst_dir / 'poster.jpg'}")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"派生 poster 失败 {fanart}: {e}")
 
 
 def _move_videos(
