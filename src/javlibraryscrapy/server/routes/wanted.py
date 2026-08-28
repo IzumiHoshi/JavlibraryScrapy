@@ -401,8 +401,9 @@ def register(app: FastAPI) -> None:
         size: int = Query(default=60, ge=1, le=200),
         include_missing: bool = Query(default=True),
         q: str = Query(default="", description="搜索关键字（车牌/标题/演员，大小写不敏感）"),
-        status_filter: str = Query(
+        status: str = Query(
             default="",
+            alias="status",
             description=(
                 "按 NAS / 本地库状态筛选。可选：downloading / downloaded / "
                 "organized / none（无标记）；空字符串 = 不过滤"
@@ -410,11 +411,11 @@ def register(app: FastAPI) -> None:
         ),
     ) -> Dict[str, Any]:
         from ..services.wanted import STATUS_VALUES as _STATUS_VALUES
-        # 校验 status_filter：非法值视同未传（前端误传容错）
-        if status_filter and status_filter not in _STATUS_VALUES:
+        # 校验 status：非法值视同未传（前端误传容错）
+        if status and status not in _STATUS_VALUES:
             raise HTTPException(
                 status_code=400,
-                detail=f"非法的 status_filter={status_filter!r}（可选：{', '.join(_STATUS_VALUES)}）",
+                detail=f"非法的 status={status!r}（可选：{', '.join(_STATUS_VALUES)}）",
             )
         wanted: WantedService = request.app.state.wanted
         gallery = request.app.state.gallery
@@ -456,7 +457,7 @@ def register(app: FastAPI) -> None:
             size=size,
             include_missing=include_missing,
             q=q,
-            status_filter=status_filter,
+            status_filter=status,
             nas_downloading=nas_downloading,
             nas_completed=nas_completed,
             local_exists_by_code=local_exists_by_code,
