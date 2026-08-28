@@ -426,12 +426,15 @@ def register(app: FastAPI) -> None:
         # 但页面其它功能（月份/搜索）照常工作。
         nas_downloading: set = set()
         nas_completed: set = set()
-        zspace_client = getattr(request.app.state, "zspace", None)
-        if zspace_client is not None:
-            try:
-                nas_downloading, nas_completed = await zspace_client.get_download_codes()
-            except Exception as e:  # noqa: BLE001
-                logger.debug(f"list_wanted: NAS codes 不可用 ({e})，按空集处理")
+        try:
+            # 跟 /api/zspace/* 路由共用同一个懒加载单例。直接 getattr 会
+            # 错过首次访问的初始化（app.state.zspace 在首个 /api/zspace/*
+            # 请求时才被创建），导致 wanted 列表上的 status_filter 永远是空集。
+            from .zspace import _get_or_create_client
+            zspace_client = _get_or_create_client(request)
+            nas_downloading, nas_completed = await zspace_client.get_download_codes()
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"list_wanted: NAS codes 不可用 ({e})，按空集处理")
 
         # local_exists set（O(N)，in-memory library_index 扫描）。
         # 整理完的车牌 → 走 LibraryIndex.find_match 双向前缀匹配，
