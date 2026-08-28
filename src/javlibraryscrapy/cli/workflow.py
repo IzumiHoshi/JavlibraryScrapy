@@ -291,7 +291,7 @@ async def step3_scrape_from_paths(
             # step1 已移走，但被外部脚本删了；不影响其他视频
             skipped += 1
             continue
-        car_id = find_car_bus(path.name, _LIST_SUREN_CAR)
+        car_id = find_car_bus(path.name.upper(), _LIST_SUREN_CAR)
         if car_id:
             cars.append((car_id, str(path)))
         else:

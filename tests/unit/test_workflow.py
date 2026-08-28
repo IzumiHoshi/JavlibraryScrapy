@@ -632,6 +632,46 @@ def test_step3_no_recognizable_codes_returns_false():
         print("✅ test_step3_no_recognizable_codes_returns_false")
 
 
+def test_step3_handles_lowercase_filename():
+    """小写文件名（含 ``snos-309ch`` 这种小写前缀）也能被 find_car_bus 识别。
+
+    回归保护：之前 ``step3`` 直接传 ``path.name`` 给 ``find_car_bus``，但
+    ``find_car_bus`` 内部正则假设大写（``javbuscar`` 内部会 ``.upper()``），
+    造成小写前缀的车号（如 ``snos-``、``cawd-`` 等）无法识别。
+    """
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        output = root / "output"
+        staging = output / _STAGING_DIR
+        staging.mkdir(parents=True)
+
+        # 小写前缀的车牌
+        v1 = staging / "snos-309ch.mp4"
+        v1.write_bytes(b"x")
+        v2 = staging / "snos-323ch.mp4"
+        v2.write_bytes(b"x")
+        # 大写对照组
+        v3 = staging / "ABF-375.mp4"
+        v3.write_bytes(b"x")
+
+        with patch("javlibraryscrapy.cli.workflow.MovieExporter") as MockExporter:
+            mock_instance = MockExporter.return_value
+            mock_instance.export_movies = AsyncMock(return_value={
+                "total": 3, "written": 3, "failed": 0, "skipped": 0, "magnets_collected": 3,
+            })
+            asyncio.run(step3_scrape_from_paths(output, [v1, v2, v3]))
+
+        # 三个都被识别（不再因小写前缀漏识别）
+        call_args = mock_instance.export_movies.call_args
+        cars = call_args.args[0] if call_args.args else call_args.kwargs["car_list"]
+        car_codes = [c[0] for c in cars]
+        assert "SNOS-309" in car_codes
+        assert "SNOS-323" in car_codes
+        assert "ABF-375" in car_codes
+        assert len(car_codes) == 3
+        print("✅ test_step3_handles_lowercase_filename")
+
+
 # --------------------------------------------------------------------------- #
 # main
 # --------------------------------------------------------------------------- #
@@ -660,4 +700,5 @@ if __name__ == "__main__":
     test_step2_empty_list()
     test_step3_builds_car_list_and_calls_exporter()
     test_step3_no_recognizable_codes_returns_false()
+    test_step3_handles_lowercase_filename()
     print("\n🎉 ALL TESTS PASSED")
