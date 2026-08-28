@@ -4,9 +4,12 @@ javlibraryscrapy.cli.workflow 的单元测试。
 覆盖：
   1. ``find_video_files`` 递归扫描下载根（含任意深度子目录）+ 大小过滤
   2. ``_cleanup_empty_parents`` 视频移走后清理变空的原父目录（含嵌套空目录）
-  3. ``step1_move_videos`` 端到端（含清理 + dry-run + 返回 moved_paths）
+  3. ``step1_move_videos`` 端到端（含清理 + dry-run + 返回 moved_paths；视频落到
+     ``<output_path>/_staging/`` 子目录避免污染顶层）
   4. ``step2_clean_at_prefix_for_paths`` 精准去 @ 前缀（只处理传入列表，不误伤旧文件）
-  5. ``step3_scrape_from_paths`` 从指定文件列表构建 car_list（mock MovieExporter）
+  5. ``step3_scrape_from_paths`` 从指定文件列表构建 car_list，验证：
+     - MovieExporter 用 ``bucket_by_month=True``
+     - 结束后清理 _staging/
 
 完全离线：step1/2 用 tempfile.TemporaryDirectory 隔离；step3 用 patch 避免真实网络。
 
@@ -30,6 +33,7 @@ if str(_SRC) not in sys.path:
 
 from javlibraryscrapy.cli.workflow import (  # noqa: E402
     _cleanup_empty_parents,
+    _STAGING_DIR,
     find_video_files,
     step1_move_videos,
     step2_clean_at_prefix_for_paths,
@@ -278,7 +282,7 @@ def test_cleanup_empty_parents_stops_at_non_empty():
 # step1_move_videos：端到端（含清理 + 返回 moved_paths）
 # --------------------------------------------------------------------------- #
 def test_step1_move_videos_cleans_empty_parents():
-    """端到端：移动 → 清理空目录 → output 拿到视频，原父目录被删。"""
+    """端到端：移动 → 清理空目录 → _staging 拿到视频，原父目录被删；output 顶层干净。"""
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         download = root / "downloads"
@@ -292,14 +296,18 @@ def test_step1_move_videos_cleans_empty_parents():
         _write_big_file(video, mb=600)
 
         moved = step1_move_videos(download, output, min_size_mb=500)
-        # 视频出现在 output
-        assert (output / "ABF-340-C.mp4").is_file()
+        staging = output / _STAGING_DIR
+        # 视频出现在 _staging（不是 output 顶层！）
+        assert (staging / "ABF-340-C.mp4").is_file()
         # 原父目录被删
         assert not sub.exists()
         # downloads 根还在
         assert download.exists()
-        # 返回的列表包含目标路径
+        # output 顶层没有被污染
+        assert not (output / "ABF-340-C.mp4").exists()
+        # 返回的列表包含 staging 下的目标路径
         assert any(p.name == "ABF-340-C.mp4" for p in moved)
+        assert all(p.parent == staging for p in moved)
         print("✅ test_step1_move_videos_cleans_empty_parents")
 
 
@@ -320,19 +328,20 @@ def test_step1_move_videos_keeps_non_empty_parents():
 
         step1_move_videos(download, output, min_size_mb=500)
 
-        assert (output / "ABF-340-C.mp4").is_file()
+        assert (output / _STAGING_DIR / "ABF-340-C.mp4").is_file()
         assert sub.exists()  # 还有 info.txt，未删
         assert (sub / "info.txt").exists()
         print("✅ test_step1_move_videos_keeps_non_empty_parents")
 
 
 def test_step1_move_videos_returns_moved_paths():
-    """返回的 list[Path] 顺序稳定，可直接传给 step2/step3。"""
+    """返回的 list[Path] 顺序稳定，可直接传给 step2/step3；路径都在 _staging 下。"""
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         download = root / "downloads"
         download.mkdir()
         output = root / "output"
+        staging = output / _STAGING_DIR
 
         # 故意按非字母序的文件名创建（验证 find_video_files 排序后顺序稳定）
         _write_big_file(download / "z.mp4", mb=600)
@@ -344,8 +353,8 @@ def test_step1_move_videos_returns_moved_paths():
         # 按字母序
         names = [p.name for p in moved]
         assert names == ["a.mp4", "m.mp4", "z.mp4"]
-        # 所有路径都在 output 下
-        assert all(p.parent == output for p in moved)
+        # 所有路径都在 _staging 下（不是 output 顶层）
+        assert all(p.parent == staging for p in moved)
         print("✅ test_step1_move_videos_returns_moved_paths")
 
 
@@ -359,19 +368,50 @@ def test_step1_move_videos_no_videos_returns_empty_list():
 
         moved = step1_move_videos(download, output, min_size_mb=500)
         assert moved == []
+        # _staging 不应被创建
+        assert not (output / _STAGING_DIR).exists()
         print("✅ test_step1_move_videos_no_videos_returns_empty_list")
+
+
+def test_step1_move_videos_does_not_pollute_output_top():
+    """已有 output 顶层有用户数据时，step1 不能在那里落视频。"""
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        download = root / "downloads"
+        download.mkdir()
+        output = root / "output"
+        output.mkdir()
+        # 模拟 output 顶层已经有用户数据
+        (output / "2010-07").mkdir()
+        (output / "2010-07" / "OLD-001 keep.mp4").write_bytes(b"keep")
+
+        sub = download / "ABF-340-C"
+        sub.mkdir()
+        video = sub / "ABF-340-C.mp4"
+        _write_big_file(video, mb=600)
+
+        step1_move_videos(download, output, min_size_mb=500)
+
+        # 顶层未污染
+        assert not (output / "ABF-340-C.mp4").exists()
+        # 但 _staging 有
+        assert (output / _STAGING_DIR / "ABF-340-C.mp4").is_file()
+        # 用户数据未动
+        assert (output / "2010-07" / "OLD-001 keep.mp4").read_bytes() == b"keep"
+        print("✅ test_step1_move_videos_does_not_pollute_output_top")
 
 
 # --------------------------------------------------------------------------- #
 # dry-run：只打印计划，不动文件
 # --------------------------------------------------------------------------- #
 def test_step1_move_videos_dry_run_does_not_modify():
-    """dry_run=True 时：源文件不动、原父目录不删、output 无文件落地。"""
+    """dry_run=True 时：源文件不动、原父目录不删、output/_staging 无文件落地。"""
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         download = root / "downloads"
         download.mkdir()
         output = root / "output"
+        staging = output / _STAGING_DIR
 
         sub = download / "ABF-340-C"
         sub.mkdir()
@@ -386,11 +426,11 @@ def test_step1_move_videos_dry_run_does_not_modify():
         assert video.is_file()
         # 原父目录未删
         assert sub.exists()
-        # output 未落地任何文件
-        assert not list(output.glob("*"))
-        # 但返回的列表仍然包含计划路径
+        # _staging 没创建
+        assert not staging.exists()
+        # 但返回的列表仍然包含计划路径（指向 _staging）
         assert len(moved) == 1
-        assert moved[0] == output / "ABF-340-C.mp4"
+        assert moved[0] == staging / "ABF-340-C.mp4"
         print("✅ test_step1_move_videos_dry_run_does_not_modify")
 
 
@@ -401,22 +441,23 @@ def test_step1_move_videos_dry_run_skips_existing():
         download = root / "downloads"
         download.mkdir()
         output = root / "output"
-        output.mkdir()
+        staging = output / _STAGING_DIR
+        staging.mkdir(parents=True)
 
         sub = download / "ABF-340-C"
         sub.mkdir()
         video = sub / "ABF-340-C.mp4"
         _write_big_file(video, mb=600)
         # 目标已存在
-        (output / "ABF-340-C.mp4").write_bytes(b"existing")
+        (staging / "ABF-340-C.mp4").write_bytes(b"existing")
 
         moved = step1_move_videos(
             download, output, min_size_mb=500, dry_run=True,
         )
         # 源文件未动
         assert video.is_file()
-        # 中间文件仍是原内容
-        assert (output / "ABF-340-C.mp4").read_bytes() == b"existing"
+        # staging 里文件仍是原内容
+        assert (staging / "ABF-340-C.mp4").read_bytes() == b"existing"
         # 跳过的文件不在返回值里
         assert moved == []
         print("✅ test_step1_move_videos_dry_run_skips_existing")
@@ -505,19 +546,30 @@ def test_step2_empty_list():
 # step3_scrape_from_paths：从指定文件列表构建 car_list
 # --------------------------------------------------------------------------- #
 def test_step3_builds_car_list_and_calls_exporter():
-    """从 source_paths 提取车牌，调用 MovieExporter；output 已有旧子目录不被扫。"""
+    """从 source_paths 提取车牌，调用 MovieExporter；output 已有旧子目录不被扫。
+
+    验证 MovieExporter 的调用方式：
+      - output_root = <output>/_staging/
+      - bucket_by_month=True
+      - magnets_index = <output>/magnets.json
+    跑完 _staging/ 被清理（兜底）。
+    """
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         output = root / "output"
         output.mkdir()
+        staging = output / _STAGING_DIR
+        staging.mkdir()
+        # 让 _staging 里先放一个无关文件 →验证兜底逻辑会清掉
+        (staging / "leftover.txt").write_bytes(b"x")
 
-        # step1/2 处理后落在 output 顶层的视频
-        v1 = output / "ABF-340-C.mp4"
+        # step1/2 处理后落在 _staging 顶层的视频
+        v1 = staging / "ABF-340-C.mp4"
         v1.write_bytes(b"x")
-        v2 = output / "MIAB-001.mp4"
+        v2 = staging / "MIAB-001.mp4"
         v2.write_bytes(b"x")
         # 无法识别车号
-        v3 = output / "random.mp4"
+        v3 = staging / "random.mp4"
         v3.write_bytes(b"x")
 
         # output 下已有之前整理好的旧文件夹（不应被扫）
@@ -538,14 +590,24 @@ def test_step3_builds_car_list_and_calls_exporter():
         assert ok is True
         # MockExporter 被调用一次
         assert MockExporter.call_count == 1
+        # 验证调用参数：output_root = staging, bucket_by_month=True
+        call_kwargs = MockExporter.call_args.kwargs
+        assert call_kwargs["output_root"] == staging
+        assert call_kwargs["bucket_by_month"] is True
+        assert call_kwargs["move_video"] is True
+        assert call_kwargs["download_samples"] is True
+        assert call_kwargs["collect_magnets"] is True
+        assert call_kwargs["magnets_index"] == output / "magnets.json"
         # cars 是 [(car_id, video_path), ...] 结构
-        call_args = mock_instance.export_movies.call_args
-        cars = call_args.args[0] if call_args.args else call_args.kwargs["car_list"]
+        export_args = mock_instance.export_movies.call_args
+        cars = export_args.args[0] if export_args.args else export_args.kwargs["car_list"]
         car_codes = [c[0] for c in cars]
         # 没把 OLD-001（旧子目录里的）一起算进去
         assert "OLD-001" not in car_codes
         # 第三个文件（random.mp4）被跳过
         assert len(cars) == 2
+        # _staging 兜底清理（leftover.txt + 子目录应该都清掉）
+        assert not staging.exists()
         print("✅ test_step3_builds_car_list_and_calls_exporter")
 
 
@@ -556,9 +618,10 @@ def test_step3_no_recognizable_codes_returns_false():
         output = root / "output"
         output.mkdir()
 
-        v1 = output / "random1.mp4"
+        v1 = output / _STAGING_DIR / "random1.mp4"
+        v1.parent.mkdir(parents=True)
         v1.write_bytes(b"x")
-        v2 = output / "random2.mp4"
+        v2 = output / _STAGING_DIR / "random2.mp4"
         v2.write_bytes(b"x")
 
         with patch("javlibraryscrapy.cli.workflow.MovieExporter") as MockExporter:
@@ -588,6 +651,7 @@ if __name__ == "__main__":
     test_step1_move_videos_keeps_non_empty_parents()
     test_step1_move_videos_returns_moved_paths()
     test_step1_move_videos_no_videos_returns_empty_list()
+    test_step1_move_videos_does_not_pollute_output_top()
     test_step1_move_videos_dry_run_does_not_modify()
     test_step1_move_videos_dry_run_skips_existing()
     test_step2_cleans_at_prefix_in_list()

@@ -1,13 +1,16 @@
 """
-工作流：下载目录 → 最终目录（每部一个 <CARID> <title>/ 子目录）
+工作流：下载目录 → 最终目录（按 release_date 推月份桶，<YYYY-MM>/<CARID> <title>/）
 
 流程：
-1. 从下载目录（含所有子目录）移动视频到最终目录顶层（按大小过滤），
-   移走后清理已空的原父目录。返回移走的文件路径列表。
-2. 对刚移来的视频去 @ 前缀（精准处理，不扫整个 output 目录避免误伤旧文件）
-3. 抓 JAVBus 元数据，把视频按 <CARID> <title>/ 整理 + 写 NFO + 下 cover/samples
+1. 从下载目录（含所有子目录）移动视频到最终目录的临时 ``_staging/`` 子目录
+   （按大小过滤），移走后清理已空的原父目录。返回移走的文件路径列表。
+2. 对刚移来的视频去 @ 前缀（精准处理，不扫整个 staging 目录）
+3. 抓 JAVBus 元数据 → 视频按 ``<YYYY-MM>/<CARID> <title>/`` 整理到最终目录
+   顶层（bucket_by_month=True）→ 写 NFO + 下 cover/samples
+4. 清理 ``_staging/`` 残留（应该已经空了，作为兜底）
 
-步骤 1/2/3 之间用内部变量传递"刚移来的文件路径列表"，无需独立的中间目录。
+步骤 1/2/3 之间用内部变量传递"刚移来的文件路径列表"；最终输出按 release_date
+月份桶布局，跟 ``LIBRARY_ROOT/<YYYY-MM>/...`` 一致。
 """
 
 import argparse
@@ -34,6 +37,10 @@ DEFAULT_MIN_SIZE_MB = 500
 # 传给 ``find_car_bus`` 的厂牌白名单：JAVBus 上没这些厂牌的页面，跳过。
 # 跟 ``javbuscar`` 默认值一致；放模块级避免每次调用重建列表。
 _LIST_SUREN_CAR = ["LUXU", "MIUM"]
+
+# step1 / step2 用的临时子目录：藏到点号开头，避免被 find_video_files /
+# 用户脚本误处理；MovieExporter 跑完会清空它。
+_STAGING_DIR = "_staging"
 
 
 def find_video_files(source_path: Path, min_size_mb: int) -> list[Path]:
@@ -130,12 +137,16 @@ def step1_move_videos(
     *,
     dry_run: bool = False,
 ) -> list[Path]:
-    """步骤1：移动视频文件到 ``output_path`` 顶层（保留原文件名）。
+    """步骤1：移动视频文件到 ``<output_path>/_staging/`` 顶层（保留原文件名）。
+
+    staging 子目录是为了避免视频临时落到 ``output_path``（= 用户本地库）顶层
+    污染月份桶布局；MovieExporter 在 step3 会从 staging 取视频，再按月份桶
+    写到 ``output_path/<YYYY-MM>/<CARID> <title>/``，跑完兜底清空 staging。
 
     - 递归扫描下载根 + 所有子目录里的视频
     - 移动后若视频原父目录（及上层空目录）变空，自动删到下载根为止
     - 返回 ``[Path, ...]``：实际（或 dry-run 计划）移走的文件路径列表，传给
-      step2 / step3 做精准处理（不扫整个 output 目录）
+      step2 / step3 做精准处理（不扫整个 staging 目录）
 
     ``dry_run=True`` 时只打印计划，不实际 ``shutil.move``，也不清理原父目录
     （清理逻辑依赖实际移动后父目录变空的前提）。返回的列表是计划路径。
@@ -144,22 +155,29 @@ def step1_move_videos(
     logger.info("步骤1：移动视频文件" + ("（DRY-RUN）" if dry_run else ""))
     logger.info(f"  下载目录: {download_path}")
     logger.info(f"  最终目录: {output_path}")
+    logger.info(f"  临时子目录: {_STAGING_DIR}/")
     logger.info(f"  最小文件大小: {min_size_mb} MB")
     logger.info("=" * 50)
 
     output_path.mkdir(parents=True, exist_ok=True)
+    staging = output_path / _STAGING_DIR
     files = find_video_files(download_path, min_size_mb)
 
     if not files:
+        # 没视频 → 不创建 _staging（避免污染 output 顶层）
         logger.warning("未找到符合条件的视频文件")
         return []
+
+    # 有视频才创建 staging
+    if not dry_run:
+        staging.mkdir(parents=True, exist_ok=True)
 
     logger.info(f"找到 {len(files)} 个视频文件")
     moved_paths: list[Path] = []
     moved, skipped, failed, cleaned_dirs = 0, 0, 0, 0
 
     for src in files:
-        dst = output_path / src.name
+        dst = staging / src.name
         file_size_mb = src.stat().st_size / (1024 * 1024)
         # 在 move 之前记录原父目录：move 后 src 仍指向同一 Path 对象，
         # 但显式保留原 parent 更直观、避免对失效路径的歧义。
@@ -245,17 +263,24 @@ async def step3_scrape_from_paths(
 ) -> bool:
     """步骤3：从 step1/2 处理后的视频文件列表构建 car_list，调用 MovieExporter 削刮。
 
-    视频已经在 ``output_path`` 顶层（被 step1 移来的）。MovieExporter 拿到
-    ``car_list=[(car_id, video_path), ...]`` 后会把每部视频从 ``video_path``
-    移到 ``<output_path>/<CARID> <title>/`` 下，再写 NFO + 下 cover/samples。
+    视频在 ``<output_path>/_staging/`` 顶层（被 step1 移来的）。MovieExporter 拿到
+    ``car_list=[(car_id, video_path), ...]`` 后会用 ``bucket_by_month=True`` 把每
+    部视频按 ``release_date`` 推到月份桶：
+
+        <output_path>/<YYYY-MM>/<CARID> <title>/<CARID> <title>.<ext>
+        <output_path>/<YYYY-MM>/<CARID> <title>/movie.nfo
+        <output_path>/<YYYY-MM>/<CARID> <title>/poster.jpg / fanart.jpg / sample_NNN.jpg
+
+    跟 ``LIBRARY_ROOT/<YYYY-MM>/`` 布局一致。
 
     与旧实现的差别：旧 ``step3_scrape`` 用 ``javbuscar(intermediate_path)`` 扫整个
-    目录，会把 output 下之前已整理好的 ``<CARID> <title>/`` 也一起扫一遍（重复
+    目录，会把 staging 下之前已整理好的 ``<CARID> <title>/`` 也一起扫一遍（重复
     抓取）。新实现用 ``find_car_bus`` 单文件提取车牌，只处理 step1/2 移来的视频。
     """
     logger.info("=" * 50)
     logger.info("步骤3：削刮 JAVBus")
     logger.info(f"  最终目录: {output_path}")
+    logger.info(f"  临时子目录: {_STAGING_DIR}/（MovieExporter 取走后清空）")
     logger.info(f"  待处理视频: {len(source_paths)} 个")
     logger.info("=" * 50)
 
@@ -281,14 +306,36 @@ async def step3_scrape_from_paths(
     for car_id, path in cars:
         logger.info(f"  {car_id}: {path}")
 
+    # MovieExporter 用 staging 作 output_root：cover/sample 临时文件落地这里；
+    # bucket_by_month=True 让 save_dir 推到 <YYYY-MM>/<CARID> <title>/，最终落在
+    # output_path 顶层（= 用户本地库），跟 LIBRARY_ROOT/<YYYY-MM>/ 布局一致。
+    staging = output_path / _STAGING_DIR
     exporter = MovieExporter(
-        output_root=output_path,
+        output_root=staging,
         move_video=True,
         download_samples=True,
         collect_magnets=True,
         magnets_index=output_path / "magnets.json",
+        bucket_by_month=True,
     )
     stats = await exporter.export_movies(cars)
+
+    # 兜底清理 staging：MovieExporter 会把视频挪到月份桶，cover temp/sample temp
+    # 由 export_movies 末尾的 _cleanup_temp_pngs 清掉；但车号识别失败等异常路径
+    # 可能漏掉，这里再扫一次。
+    if staging.exists():
+        for leftover in staging.iterdir():
+            try:
+                if leftover.is_dir():
+                    shutil.rmtree(leftover)
+                else:
+                    leftover.unlink()
+            except OSError as e:
+                logger.warning(f"清理 staging 残留失败 {leftover}: {e}")
+        try:
+            staging.rmdir()
+        except OSError:
+            pass
 
     logger.info(
         f"削刮完成：written={stats['written']}，failed={stats['failed']}，"
@@ -352,14 +399,20 @@ async def workflow(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="JAVBus 工作流：从下载目录（含子目录）移动视频 → 去 @ 前缀 → 削刮 → 最终目录",
+        description=(
+            "JAVBus 工作流：从下载目录（含子目录）移动视频 → 去 @ 前缀 → 削刮 → "
+            "按 release_date 月份桶写入最终目录 <output_path>/<YYYY-MM>/<CARID> <title>/"
+        ),
     )
     parser.add_argument(
         "download_path", type=Path, help="下载目录（含子目录里的视频）",
     )
     parser.add_argument(
         "output_path", type=Path,
-        help="最终输出目录（每部影片 → <CARID> <title>/；视频先临时落到顶层）",
+        help=(
+            "最终输出目录（按月份桶：<YYYY-MM>/<CARID> <title>/；"
+            "视频先临时落到 _staging/ 子目录，削刮完自动清空）"
+        ),
     )
     parser.add_argument(
         "--min-size", type=int, default=DEFAULT_MIN_SIZE_MB,

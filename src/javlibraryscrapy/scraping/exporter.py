@@ -3,7 +3,7 @@
 把 `cli/workflow.py` step3、`cli/export_mostwanted.py`、`server/services/wanted_refresh.py`
 三套并行的削刮代码合并到 ``MovieExporter``。所有"按车号削刮并写本地库"的场景都走这个类。
 
-输出布局（每部影片）：
+输出布局（每部影片，默认）：
     <output_root>/<CARID> <title>/
         ├── <CARID> <title>.<ext>    # 视频（move_video=True 时）
         ├── movie.nfo                # NFO（Kodi/Plex 兼容）
@@ -11,21 +11,28 @@
         ├── fanart.jpg               # JAVBus 原图
         └── sample_NNN.jpg           # JAVBus sample waterfall（NN 从 001 起）
 
+输出布局（``bucket_by_month=True`` 时）：
+    <output_root>/<YYYY-MM>/<CARID> <title>/
+        └── ... 同上 ...
+  月份桶从 ``release_date``（"YYYY-MM-DD"）前缀推；解析失败归 ``unknown``。
+
 集中输出（collect_magnets=True 时）：
     <output_root>/magnets.json       # schema_version=2
     <output_root>/magnets_links.txt  # 一行一条 magnet（仅 status=ok）
 
-调用方差异靠 4 个开关表达：
+调用方差异靠 5 个开关表达：
     - move_video:        workflow=True，其它=False
     - download_samples:  wanted_refresh=False，其它=True
     - collect_magnets:   全 True
     - magnets_index:     默认 <output_root>/magnets.json
+    - bucket_by_month:   workflow=True（CLI 端到端流水），其它=False
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 import shutil
 import warnings
 from datetime import datetime
@@ -51,6 +58,23 @@ _JAVLIBRARY_REFERER = "https://www.javlibrary.com/cn/"
 _MAGNET_OK = "ok"
 _MAGNET_NO_MAGNET = "no_magnet"
 _MAGNET_FAILED = "failed"
+
+# 月份桶键格式：YYYY-MM。``release_date`` 通常是 ``"2023-07-22"`` 这种，
+# 取前 7 位即可。无法解析（空串 / 非标准格式）→ ``unknown``。
+_BUCKET_RE = re.compile(r"^(\d{4})-(\d{2})")
+
+
+def bucket_for_release_date(release_date: Optional[str]) -> str:
+    """把 ``"2023-07-22"`` 变成 ``"2023-07"``；无法解析返回 ``"unknown"``。
+
+    跟 ``wanted_refresh._bucket_for_release_date`` 同语义；提到模块顶层
+    供 ``MovieExporter`` 复用，避免 ``cli/workflow.py`` 跟 ``server/services``
+    互相 import。
+    """
+    if not release_date:
+        return "unknown"
+    m = _BUCKET_RE.match(release_date.strip())
+    return f"{m.group(1)}-{m.group(2)}" if m else "unknown"
 
 
 class MovieExporter(JavbusSpider):
@@ -89,6 +113,7 @@ class MovieExporter(JavbusSpider):
         collect_magnets: bool = True,
         magnets_index: Optional[Path] = None,
         javlibrary_proxy: Optional[str] = None,
+        bucket_by_month: bool = False,
     ):
         # 把 output_root 同时设到 root_dir：JavbusSpider.download_cover
         # 会把临时 ``<CARID>.png`` 落到这里，方便我们后续 rename 到 fanart.jpg。
@@ -106,6 +131,10 @@ class MovieExporter(JavbusSpider):
         # 默认沿用 JAVBus proxy（向后兼容：旧 MostWantedExporter 把同一份 proxy
         # 给 JAVLibrary 缩略图用）
         self.javlibrary_proxy = javlibrary_proxy if javlibrary_proxy is not None else self.proxy
+        # 是否按 release_date 推月份桶布局：
+        #   False（默认）：<output_root>/<CARID> <title>/   ← wanted / export_mostwanted
+        #   True：<output_root>/<YYYY-MM>/<CARID> <title>/   ← workflow 端到端
+        self.bucket_by_month = bucket_by_month
 
         # 每次 export_movies 调用前重置
         self._magnet_results: List[Dict[str, Any]] = []
@@ -213,7 +242,13 @@ class MovieExporter(JavbusSpider):
             return
 
         try:
-            save_dir = self.output_root / f"{carid} {title}"
+            if self.bucket_by_month:
+                # 按 release_date 推月份桶：<output_root>/<YYYY-MM>/<CARID> <title>/
+                # 解析失败归 ``unknown``，跟 wanted_refresh 的 _bucket_for_release_date 同语义
+                bucket = bucket_for_release_date(info.get("release_date") or "")
+                save_dir = self.output_root / bucket / f"{carid} {title}"
+            else:
+                save_dir = self.output_root / f"{carid} {title}"
             save_dir.mkdir(parents=True, exist_ok=True)
 
             # 1. 移动视频（可选）
