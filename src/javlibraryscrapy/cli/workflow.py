@@ -2,7 +2,8 @@
 工作流：下载目录 → 中间目录(移动+去@前缀) → 最终目录(削刮)
 
 流程：
-1. 从下载目录移动视频到中间目录（按大小过滤）
+1. 从下载目录（含所有子目录）移动视频到中间目录（按大小过滤），
+   移走后清理已空的原父目录
 2. 清理中间目录文件名（去除 @ 前缀）
 3. 从中间目录削刮 JAVBus 信息，输出到最终目录（用 MovieExporter 统一削刮）
 """
@@ -10,6 +11,7 @@
 import argparse
 import asyncio
 import logging
+import os
 import shutil
 from pathlib import Path
 import sys
@@ -29,18 +31,98 @@ DEFAULT_MIN_SIZE_MB = 500
 
 
 def find_video_files(source_path: Path, min_size_mb: int) -> list[Path]:
-    """递归查找所有符合条件的视频文件"""
+    """递归查找下载目录（含所有子目录）中 ≥min_size_mb 的视频文件。
+
+    用 ``os.walk`` 而不是 ``Path.rglob``：
+      - 单个目录 stat 失败（权限 / 符号链接）只影响该目录，不中断整体扫描
+      - 显式跳过 ``.`` 开头的隐藏目录（``.git`` / ``.cache`` / 客户端缓存）
+      - 日志明确报扫到多少子目录，便于确认递归生效
+    """
     min_bytes = min_size_mb * 1024 * 1024
-    files = []
-    for ext in VIDEO_EXTENSIONS:
-        for file in source_path.rglob(f"*{ext}"):
-            if file.is_file() and file.stat().st_size >= min_bytes:
-                files.append(file)
+    files: list[Path] = []
+    scanned_dirs = 0
+
+    if not source_path.is_dir():
+        logger.warning(f"下载目录不存在或不是目录：{source_path}")
+        return files
+
+    for root, dirs, filenames in os.walk(source_path):
+        scanned_dirs += 1
+        # 原地修改 dirs 以阻止 os.walk 进入隐藏目录
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        for name in filenames:
+            file_path = Path(root) / name
+            ext = file_path.suffix.lower()
+            if ext not in VIDEO_EXTENSIONS:
+                continue
+            try:
+                size = file_path.stat().st_size
+            except OSError as e:
+                logger.warning(f"无法 stat {file_path}：{e}")
+                continue
+            if size >= min_bytes:
+                files.append(file_path)
+
+    files.sort()
+    logger.info(
+        f"递归扫描完成：扫了 {scanned_dirs} 个目录，"
+        f"找到 {len(files)} 个 ≥{min_size_mb}MB 的视频"
+    )
     return files
 
 
+def _cleanup_empty_parents(original_parent: Path, *, stop_at: Path) -> int:
+    """视频移走后，若其原父目录（含祖先）已空则删；向上递归直到 stop_at。
+
+    用于处理 qBittorrent / 115 浏览器等下载器"一个种子一个文件夹"的布局：
+    视频被移走后那个 ``<torrent_name>/`` 目录只剩元数据或直接空了，整目录删掉。
+
+    安全约束：
+      - ``stop_at`` 自身永不删除（避免把下载根整个干掉）
+      - 非 ``stop_at`` 子目录拒绝操作（防止跨下载根误删）
+      - 只删空目录（``rmdir`` 在非空时抛 OSError 自动停止向上）
+
+    Returns:
+        实际删除的空目录数。
+    """
+    try:
+        stop_resolved = stop_at.resolve()
+    except OSError:
+        stop_resolved = stop_at
+
+    try:
+        parent_resolved = original_parent.resolve()
+    except OSError:
+        return 0
+
+    # 视频本身就在 stop_at 根下：没父目录可清
+    if parent_resolved == stop_resolved:
+        return 0
+    try:
+        parent_resolved.relative_to(stop_resolved)
+    except ValueError:
+        logger.warning(f"跳过清理：{parent_resolved} 不在 {stop_resolved} 下")
+        return 0
+
+    removed = 0
+    current = parent_resolved
+    while current != stop_resolved:
+        try:
+            current.rmdir()  # 仅删空目录；非空抛 OSError 自动跳出
+        except OSError:
+            break
+        logger.info(f"已删除空目录：{current}")
+        removed += 1
+        current = current.parent
+    return removed
+
+
 def step1_move_videos(download_path: Path, intermediate_path: Path, min_size_mb: int):
-    """步骤1：移动视频文件到中间目录"""
+    """步骤1：移动视频文件到中间目录。
+
+    - 递归扫描下载根 + 所有子目录里的视频
+    - 移动后若视频原父目录（及上层空目录）变空，自动删到下载根为止
+    """
     logger.info("=" * 50)
     logger.info("步骤1：移动视频文件")
     logger.info(f"  下载目录: {download_path}")
@@ -56,11 +138,14 @@ def step1_move_videos(download_path: Path, intermediate_path: Path, min_size_mb:
         return False
 
     logger.info(f"找到 {len(files)} 个视频文件")
-    moved, skipped, failed = 0, 0, 0
+    moved, skipped, failed, cleaned_dirs = 0, 0, 0, 0
 
     for src in files:
         dst = intermediate_path / src.name
         file_size_mb = src.stat().st_size / (1024 * 1024)
+        # 在 move 之前记录原父目录：move 后 src 仍指向同一 Path 对象，
+        # 但显式保留原 parent 更直观、避免对失效路径的歧义。
+        original_parent = src.parent
 
         if dst.exists():
             logger.warning(f"跳过（已存在）: {src.name}")
@@ -71,11 +156,16 @@ def step1_move_videos(download_path: Path, intermediate_path: Path, min_size_mb:
             shutil.move(str(src), str(dst))
             logger.info(f"已移动: {src.name} ({file_size_mb:.1f} MB)")
             moved += 1
+            # 移动成功 → 清理变空的原父目录（及上层空目录）
+            cleaned_dirs += _cleanup_empty_parents(original_parent, stop_at=download_path)
         except Exception as e:
             logger.error(f"移动失败: {src.name} - {e}")
             failed += 1
 
-    logger.info(f"移动完成: 成功 {moved}, 跳过 {skipped}, 失败 {failed}")
+    logger.info(
+        f"移动完成: 成功 {moved}, 跳过 {skipped}, 失败 {failed}, "
+        f"清理空目录 {cleaned_dirs} 个"
+    )
     return moved > 0
 
 
