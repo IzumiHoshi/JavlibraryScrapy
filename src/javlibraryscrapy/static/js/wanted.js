@@ -164,7 +164,7 @@ export async function initWanted() {
   // NAS / 本地库状态徽章：放在卡片左下角（与右下角的 sample-badge 对称）。
   // 优先级：下载中 > 已整理 > 已下载（可整理） > 无徽章。
   // 三个状态语义：
-  //   - 「⬇ 下载中」     NAS 报告 active
+  //   - 「⬇ 下载中」     NAS 报告 active（附带进度条 %）
   //   - 「✅ 已下载 · 整理」 NAS 报告 completed，但 library scanner 还没扫到盘
   //                     （文件可能还在 NAS 下载目录，可点击触发「整理」搬到本地库）
   //   - 「📁 已整理」    本地库已收录（library scanner 检测到 m.local_exists=true）
@@ -172,7 +172,13 @@ export async function initWanted() {
   function nasBadgeHtml(m) {
     const code = (m.code || '').toUpperCase();
     if (nasDownloading.has(code)) {
-      return `<div class="nas-badge downloading" data-code="${esc(m.code)}" title="NAS 正在下载">⬇ 下载中</div>`;
+      // 后端 nas_progress 0-100 浮点；缺省 / 未知 → 0（画进度条但不显示百分比）
+      const pct = Math.max(0, Math.min(100, Number(m.nas_progress) || 0));
+      const pctText = pct > 0 ? ` ${Math.round(pct)}%` : '';
+      return `<div class="nas-badge downloading" data-code="${esc(m.code)}" title="NAS 正在下载${pctText ? '：' + Math.round(pct) + '%' : ''}">
+        <span class="nas-badge-label">⬇ 下载中${pctText}</span>
+        <span class="nas-badge-bar"><i style="width:${pct.toFixed(1)}%"></i></span>
+      </div>`;
     }
     if (m.local_exists) {
       return `<div class="nas-badge organized" data-code="${esc(m.code)}" title="本地库已收录（library scanner 检测到）">📁 已整理</div>`;

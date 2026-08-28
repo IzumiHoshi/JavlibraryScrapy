@@ -89,7 +89,7 @@ class _DummyZSpaceClient:
     async def get_download_codes(
         self, *, force_refresh: bool = False
     ):
-        return set(), set()
+        return set(), set(), {}
 
     def invalidate_download_codes_cache(self) -> None:
         pass

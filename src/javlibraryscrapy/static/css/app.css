@@ -167,6 +167,45 @@
   }
   .active-filters .chip-x:hover { color: var(--err); }
 
+  /* ---------- NAS 下载中徽章：文字 + 进度条 ---------- */
+  .nas-badge.downloading {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
+    min-width: 70px;
+    max-width: 100%;
+    padding: 3px 6px 4px;
+  }
+  .nas-badge.downloading .nas-badge-label {
+    font-size: 11px;
+    line-height: 1.1;
+  }
+  .nas-badge.downloading .nas-badge-bar {
+    display: block;
+    position: relative;
+    width: 100%;
+    height: 3px;
+    background: rgba(255, 255, 255, 0.25);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .nas-badge.downloading .nas-badge-bar i {
+    display: block;
+    height: 100%;
+    background: #fff;
+    border-radius: 2px;
+    transition: width 0.4s ease;
+  }
+  @media (prefers-color-scheme: dark) {
+    .nas-badge.downloading .nas-badge-bar {
+      background: rgba(0, 0, 0, 0.25);
+    }
+    .nas-badge.downloading .nas-badge-bar i {
+      background: rgba(255, 255, 255, 0.9);
+    }
+  }
+
   /* ---------- 状态筛选 chips（/wanted） ---------- */
   .status-filter {
     display: inline-flex; align-items: center; gap: 4px;

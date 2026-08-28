@@ -427,13 +427,16 @@ def register(app: FastAPI) -> None:
         # 但页面其它功能（月份/搜索）照常工作。
         nas_downloading: set = set()
         nas_completed: set = set()
+        nas_downloading_progress: dict = {}
         try:
             # 跟 /api/zspace/* 路由共用同一个懒加载单例。直接 getattr 会
             # 错过首次访问的初始化（app.state.zspace 在首个 /api/zspace/*
             # 请求时才被创建），导致 wanted 列表上的 status_filter 永远是空集。
             from .zspace import _get_or_create_client
             zspace_client = _get_or_create_client(request)
-            nas_downloading, nas_completed = await zspace_client.get_download_codes()
+            (nas_downloading, nas_completed, nas_downloading_progress) = (
+                await zspace_client.get_download_codes()
+            )
         except Exception as e:  # noqa: BLE001
             logger.debug(f"list_wanted: NAS codes 不可用 ({e})，按空集处理")
 
@@ -462,6 +465,25 @@ def register(app: FastAPI) -> None:
             nas_completed=nas_completed,
             local_exists_by_code=local_exists_by_code,
         )
+
+        # 把 NAS 下载进度附加到每张卡（仅 downloading 的车有；其它车缺省 None）
+        # 前端 nasBadgeHtml 据此决定是否画进度条
+        if nas_downloading_progress:
+            result["items"] = [
+                {
+                    **item,
+                    "nas_progress": nas_downloading_progress.get(
+                        (item.get("code") or "").upper()
+                    ),
+                }
+                for item in result.get("items", [])
+            ]
+        else:
+            # 没进度数据时也要把字段加上（前端 type-safe）
+            result["items"] = [
+                {**item, "nas_progress": None}
+                for item in result.get("items", [])
+            ]
 
         # local_samples：NFS glob 单次几百毫秒～几秒，60 条串行扫 = 几十秒。
         # 走 SampleCountCache：命中即返，未命中并发 glob（thread pool）。

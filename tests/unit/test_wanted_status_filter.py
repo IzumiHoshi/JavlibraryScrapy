@@ -210,3 +210,98 @@ def test_empty_nas_sets_falls_back_to_none(wanted_service):
 def test_status_values_constant():
     """导出常量稳定。"""
     assert STATUS_VALUES == ("none", "downloading", "downloaded", "organized")
+
+
+# -------------------- _parse_download_codes 进度 --------------------
+# 下载进度（百分比 0-100）从 NAS list 响应里抽出，前端 wanted 卡片徽章
+# 用这个画进度条。覆盖关键字段名 + 边界。
+import sys as _sys
+_sys.path.insert(0, str(ROOT / "src")) if str(ROOT / "src") not in _sys.path else None
+from javlibraryscrapy.server.services.zspace import _parse_download_codes
+
+
+def test_parse_progress_from_percent_field():
+    """progress 字段直接读。"""
+    raw = {
+        "data": {
+            "list": [
+                {"name": "ABF-340 torrent", "status": 0, "progress": 42.5},
+            ]
+        }
+    }
+    downloading, completed, progress = _parse_download_codes(raw)
+    assert "ABF-340" in downloading
+    assert progress["ABF-340"] == 42.5
+
+
+def test_parse_progress_from_complete_total_bytes():
+    """completeSize / totalSize 兜底算百分比。"""
+    raw = {
+        "data": {
+            "list": [
+                {"name": "IPZZ-907-C", "status": 0,
+                 "completeSize": 500 * 1024 * 1024,
+                 "totalSize": 1000 * 1024 * 1024},
+            ]
+        }
+    }
+    downloading, _, progress = _parse_download_codes(raw)
+    assert downloading == {"IPZZ-907"}
+    assert progress["IPZZ-907"] == 50.0
+
+
+def test_parse_progress_clamped_to_100():
+    """NAS 上报的 progress 可能超过 100（99.x 但四舍五入、size 溢出），
+    clamp 到 0-100。"""
+    raw = {
+        "data": {
+            "list": [
+                {"name": "SNOS-999", "status": 0, "progress": 150.0},
+            ]
+        }
+    }
+    _, _, progress = _parse_download_codes(raw)
+    assert progress["SNOS-999"] == 100.0
+
+
+def test_parse_progress_missing_field_defaults_zero():
+    """没有 progress 字段 → 进度 0（前端画进度条但不显示百分比）。"""
+    raw = {
+        "data": {
+            "list": [
+                {"name": "MIBB-084", "status": 0},  # 无 progress
+            ]
+        }
+    }
+    _, _, progress = _parse_download_codes(raw)
+    assert progress["MIBB-084"] == 0.0
+
+
+def test_parse_completed_not_in_progress_dict():
+    """completed 集合的车不放进度 dict（前端不需要：completed 进度总是 100）。"""
+    raw = {
+        "data": {
+            "list": [
+                {"name": "DOWN-001", "status": 0, "progress": 30.0},
+                {"name": "DONE-002", "status": 13, "progress": 100.0},  # completed
+            ]
+        }
+    }
+    downloading, completed, progress = _parse_download_codes(raw)
+    assert downloading == {"DOWN-001"}
+    assert completed == {"DONE-002"}
+    assert "DOWN-001" in progress
+    assert "DONE-002" not in progress
+
+
+def test_parse_isfinished_false_still_records_progress():
+    """isFinished=false (可能 progress=99.7% 还没标记 completed) → 进度照记。"""
+    raw = {
+        "data": {
+            "list": [
+                {"name": "PPPE-435", "isFinished": False, "progress": 99.7},
+            ]
+        }
+    }
+    _, _, progress = _parse_download_codes(raw)
+    assert progress["PPPE-435"] == 99.7
