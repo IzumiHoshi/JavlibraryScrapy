@@ -106,10 +106,13 @@
     font-size: 13px;
   }
   /* NSFW toggle：跟 .toolbar button 同高（前面 inherit button 默认 padding），
-     * 这里显式设 min-height 防别的规则覆盖掉。 */
+     * 这里显式设 min-height 防别的规则覆盖掉。
+   * 触屏：label 隐藏，只显示 🔞 图标（节省 toolbar 空间）。
+   * 桌面端：label 显示（更直观的语义）。由 .nsfw-label display 切换。 */
   .nsfw-toggle {
     min-height: 40px;
   }
+  .nsfw-toggle .nsfw-label { display: none; }
   .spacer {
     display: none;
   }

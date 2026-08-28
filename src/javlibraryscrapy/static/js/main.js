@@ -24,11 +24,15 @@ const NSFW_KEY = 'jav-gallery-nsfw-hidden';
 function applyNsfwState(hidden) {
   document.body.classList.toggle('nsfw-hidden', !!hidden);
   // 同步两个按钮的 aria-pressed + 文案
-  const labelOn = '🔞 NSFW 显示';     // 当前是 hidden，按钮是"切回显示"
-  const labelOff = '🔞 NSFW 隐藏';
+  // HTML 结构：<button><span class=nsfw-icon>🔞</span><span class=nsfw-label>...</span></button>
+  // 触屏 CSS 隐藏 .nsfw-label（只显示图标，节省 toolbar 空间），
+  // 桌面端两者都显示。
+  const labelOn = 'NSFW 显示';     // 当前是 hidden，按钮是"切回显示"
+  const labelOff = 'NSFW 隐藏';
   document.querySelectorAll('.nsfw-toggle').forEach((btn) => {
     btn.setAttribute('aria-pressed', hidden ? 'true' : 'false');
-    btn.textContent = hidden ? labelOn : labelOff;
+    const labelEl = btn.querySelector('.nsfw-label');
+    if (labelEl) labelEl.textContent = hidden ? labelOn : labelOff;
     btn.title = hidden
       ? '点击显示海报原图（当前已隐藏）'
       : '点击模糊海报（当前显示原图）';

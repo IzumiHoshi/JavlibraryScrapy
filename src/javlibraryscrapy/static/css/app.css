@@ -181,57 +181,26 @@
   .active-filters .chip-x:hover { color: var(--err); }
 
   /* ---------- NSFW 开关（wanted/library 通用） ----------
- * 默认 nsfw-hidden 类挂在 <body> 上 → 所有 .cover 图片 blur(20px) + 灰度
- * + scale(1.05) 隐藏细节；用户点工具栏「🔞 NSFW 隐藏」按钮 → 移除类
- * → 图片清晰显示。状态 localStorage 持久化（关闭浏览器再开仍生效）。
- */
-  /* ---------- NSFW 开关（wanted/library 通用） ----------
- * 默认 nsfw-hidden 类挂在 <body> 上 → 所有 .cover 图片 blur(20px) + 灰度
- * + scale(1.05) 隐藏细节；用户点工具栏「🔞 NSFW 隐藏」按钮 → 移除类
- * → 图片清晰显示。状态 localStorage 持久化（关闭浏览器再开仍生效）。
- */
+   * 默认 nsfw-hidden 类挂在 <body> 上 → 所有 .cover 图片 blur(20px) + 灰度
+   * + scale(1.05) 隐藏细节；用户点工具栏「🔞 NSFW 隐藏」按钮 → 移除类
+   * → 图片清晰显示。状态 localStorage 持久化（关闭浏览器再开仍生效）。
+   * 触屏只显示图标（节省 toolbar 空间），桌面端显示 🔞 + label。
+   */
   body.nsfw-hidden .cover {
     filter: blur(20px) grayscale(0.8);
     transform: scale(1.08);  /* 放大抵消 blur 边缘透明感 */
     transition: filter .25s ease, transform .25s ease;
   }
-  .nas-badge.downloading {
-    display: flex;
-    flex-direction: column;
-    align-items: stretch;
-    gap: 2px;
-    min-width: 70px;
-    max-width: 100%;
-    padding: 3px 6px 4px;
+  .nsfw-toggle {
+    cursor: pointer;
+    white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
   }
-  .nas-badge.downloading .nas-badge-label {
-    font-size: 11px;
-    line-height: 1.1;
-  }
-  .nas-badge.downloading .nas-badge-bar {
-    display: block;
-    position: relative;
-    width: 100%;
-    height: 3px;
-    background: rgba(255, 255, 255, 0.25);
-    border-radius: 2px;
-    overflow: hidden;
-  }
-  .nas-badge.downloading .nas-badge-bar i {
-    display: block;
-    height: 100%;
-    background: #fff;
-    border-radius: 2px;
-    transition: width 0.4s ease;
-  }
-  @media (prefers-color-scheme: dark) {
-    .nas-badge.downloading .nas-badge-bar {
-      background: rgba(0, 0, 0, 0.25);
-    }
-    .nas-badge.downloading .nas-badge-bar i {
-      background: rgba(255, 255, 255, 0.9);
-    }
-  }
+  /* 桌面端显示 label，触屏由 responsive.css 隐藏（只留图标） */
+  .nsfw-toggle .nsfw-label { display: inline; }
+
 
   /* ---------- 状态筛选 chips（/wanted） ----------
    * 高度统一：外框 padding+border = 3px，chip 内 padding 5x10 + 13px 字 ≈ 30px，
