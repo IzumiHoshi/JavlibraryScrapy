@@ -84,6 +84,79 @@ def find_video_files(source_path: Path, min_size_mb: int) -> list[Path]:
     return files
 
 
+def _collect_staging_videos(staging: Path) -> list[Path]:
+    """收集 staging 顶层已有的视频文件（用于恢复路径：跳过 step1+step2）。
+
+    返回按文件名排序的视频 Path 列表。如果 staging 不存在或为空，返回空列表。
+    月份桶子目录（``YYYY-MM/``）里的内容不收集 —— 那部分由 step3 通过
+    MovieExporter 正常处理。
+    """
+    if not staging.is_dir():
+        return []
+    videos: list[Path] = []
+    for p in staging.iterdir():
+        if p.is_file() and p.suffix.lower() in VIDEO_EXTENSIONS:
+            videos.append(p)
+    videos.sort(key=lambda p: p.name)
+    return videos
+
+
+def _collect_completed_movie_dirs(staging: Path) -> list[Path]:
+    """收集 staging 下已完整的 ``<bucket>/<CARID> <title>/`` 子目录。
+
+    "完整" = 月份桶子目录下含一个含 .mp4 的子目录（之前 workflow 跑到
+    MovieExporter.process_movie 落地的状态）。返回这些子目录的 Path 列表。
+
+    恢复路径：把整个目录从 staging 移到 output_path 顶层对应位置，**省去
+    重新抓 JAVBus + 下 cover/samples**（文件已经完整）。
+    """
+    import re as _re
+    if not staging.is_dir():
+        return []
+    completed: list[Path] = []
+    for bucket_dir in staging.iterdir():
+        if not bucket_dir.is_dir() or not _re.match(r"^\d{4}-\d{2}$", bucket_dir.name):
+            continue
+        for movie_dir in bucket_dir.iterdir():
+            if not movie_dir.is_dir():
+                continue
+            # 找 .mp4 或 .mkv 等视频文件 → 算"完整"
+            has_video = any(
+                p.is_file() and p.suffix.lower() in VIDEO_EXTENSIONS
+                for p in movie_dir.iterdir()
+            )
+            if has_video:
+                completed.append(movie_dir)
+    return completed
+
+
+def _move_completed_movie_dirs(
+    completed: list[Path],
+    output_path: Path,
+) -> list[Path]:
+    """把 staging 里已完整的子目录直接移到 output_path 顶层月份桶。
+
+    返回成功移动的目录列表（用于日志）。如果目标位置已存在，**不覆盖**跳过。
+    """
+    moved: list[Path] = []
+    for movie_dir in completed:
+        bucket = movie_dir.parent.name  # YYYY-MM
+        target = output_path / bucket / movie_dir.name
+        if target.exists():
+            logger.warning(
+                f"跳过：{target} 已存在，不覆盖（staging 残留：{movie_dir}）"
+            )
+            continue
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(movie_dir), str(target))
+            logger.info(f"恢复已完整影片：{movie_dir.parent.name}/{movie_dir.name}")
+            moved.append(target)
+        except OSError as e:
+            logger.error(f"移动 {movie_dir} 失败：{e}")
+    return moved
+
+
 def _cleanup_empty_parents(original_parent: Path, *, stop_at: Path) -> int:
     """视频移走后，若其原父目录（含祖先）已空则删；向上递归直到 stop_at。
 
@@ -300,6 +373,8 @@ async def step3_scrape_from_paths(
 
     if not cars:
         logger.warning("未找到任何车牌")
+        # 即使没识别到任何车号，也要执行 staging 兜底清理（保留用户视频）
+        _cleanup_staging(output_path / _STAGING_DIR)
         return False
 
     logger.info(f"找到 {len(cars)} 个车牌（跳过 {skipped} 个）")
@@ -324,30 +399,61 @@ async def step3_scrape_from_paths(
         magnets_index=output_path / "magnets.json",
         bucket_by_month=True,
     )
-    stats = await exporter.export_movies(cars)
-
-    # 兜底清理 staging：视频已被 MovieExporter 移到月份桶，cover/sample temp
-    # 由 export_movies 末尾的 _cleanup_temp_pngs 清掉。staging 应该已经空了
-    # （或只剩零星 cover temp/sample temp 残留），这里再扫一次兜底。
-    if staging.exists():
-        for leftover in staging.iterdir():
-            try:
-                if leftover.is_dir():
-                    shutil.rmtree(leftover)
-                else:
-                    leftover.unlink()
-            except OSError as e:
-                logger.warning(f"清理 staging 残留失败 {leftover}: {e}")
-        try:
-            staging.rmdir()
-        except OSError:
-            pass
+    try:
+        stats = await exporter.export_movies(cars)
+    finally:
+        # 无论成功 / 异常 / 部分失败，**都执行** staging 兜底清理
+        # （用户恢复的顶层视频文件会被保留）
+        _cleanup_staging(staging)
 
     logger.info(
         f"削刮完成：written={stats['written']}，failed={stats['failed']}，"
         f"magnets_ok={stats['magnets_collected']}"
     )
     return stats["written"] > 0
+
+
+def _cleanup_staging(staging: Path) -> None:
+    """step3 末尾兜底清理 staging（保守版）：
+
+    - 月份桶子目录（``YYYY-MM/``）是 MovieExporter 写的框架 → **删**
+    - 顶层文件（用户从回收站恢复的 / 之前漏移的视频本体）→ **保留**
+    - 顶层非视频文件（cover temp / sample temp 等）→ 删
+    - 如果最后 staging 只剩用户恢复的顶层视频文件，**不删 staging 自身**，
+      让用户看到自己恢复的数据没有被 workflow 二次清掉
+    - 如果 staging 已空（含只有用户视频被保留）→ 删 staging 自身
+    """
+    import re as _re
+    if not staging.exists():
+        return
+    video_exts = {".mp4", ".mkv", ".avi", ".mov", ".flv", ".wmv", ".webm", ".m4v", ".ts", ".mpg", ".mpeg", ".3gp"}
+    for leftover in staging.iterdir():
+        try:
+            if leftover.is_file():
+                # 顶层视频文件（用户恢复）→ 保留；其它临时文件 → 删
+                if leftover.suffix.lower() in video_exts:
+                    logger.info(f"保留 staging 视频: {leftover.name}")
+                    continue
+                leftover.unlink()
+                continue
+            if leftover.is_dir() and _re.match(r"^\d{4}-\d{2}$", leftover.name):
+                # MovieExporter 写的月份桶子目录框架 → 删
+                shutil.rmtree(leftover)
+                continue
+            # 其它子目录（不认识的格式）→ 留，让用户自查
+            logger.info(f"保留 staging 未知子目录: {leftover}")
+        except OSError as e:
+            logger.warning(f"清理 staging 残留失败 {leftover}: {e}")
+    # 如果 staging 已空，删 staging 自身；否则保留（让用户看到自己恢复的）
+    try:
+        next(staging.iterdir())
+        logger.info("staging 仍有内容，保留 staging/")
+    except StopIteration:
+        try:
+            staging.rmdir()
+            logger.info("staging 已空，已删 staging/")
+        except OSError:
+            pass
 
 
 async def workflow(
@@ -367,12 +473,19 @@ async def workflow(
 
     注意：CLI 不再有独立的 intermediate_path 步骤。视频临时落到 ``output_path``
     顶层（保留原名），step2/3 通过内部 ``moved_paths`` 列表精准处理这一批视频。
+
+    **恢复路径**：如果 ``<output_path>/_staging/`` 已有视频文件（用户从
+    NAS 回收站恢复 / 之前 workflow 跑过的残留 / 手动 cp 进去的），自动检测
+    并跳过 step1+step2，直接用 staging 顶层的视频作为源跑 step3。step3 末尾
+    兜底清理也会**保留** staging 顶层的视频文件（只清月份桶子目录框架和
+    零星临时文件），避免事故复现。
     """
     if not download_path.exists():
         logger.error(f"下载目录不存在: {download_path}")
         return
 
     output_path.mkdir(parents=True, exist_ok=True)
+    staging = output_path / _STAGING_DIR
 
     logger.info("\n" + "=" * 60)
     logger.info("JAVBus 工作流开始" + ("（DRY-RUN）" if dry_run else ""))
@@ -380,20 +493,42 @@ async def workflow(
     logger.info(f"最终目录:   {output_path}")
     logger.info("=" * 60)
 
-    # 步骤1：移动视频（dry_run=True 时只打印计划；返回移走的文件列表）
-    moved_paths = step1_move_videos(
-        download_path, output_path, min_size_mb, dry_run=dry_run,
-    )
-    if not moved_paths:
-        logger.error("步骤1失败（无视频可处理），终止工作流")
-        return
+    # 恢复路径：检测 _staging 已有内容 → 跳过 step1+step2，直接用 staging 顶层视频
+    existing_videos = _collect_staging_videos(staging)
+    completed_dirs = _collect_completed_movie_dirs(staging)
+    if existing_videos or completed_dirs:
+        logger.info(
+            f"⚠ 检测到 _staging 已有内容：{len(existing_videos)} 个顶层视频 + "
+            f"{len(completed_dirs)} 个已完整影片目录"
+        )
+        # 先把已完整的子目录（之前 workflow 跑过的）从 staging 移到 output_path
+        if completed_dirs:
+            moved_completed = _move_completed_movie_dirs(completed_dirs, output_path)
+            logger.info(f"→ 已恢复 {len(moved_completed)} 部完整影片到月份桶")
+        if existing_videos:
+            logger.info(
+                f"→ 跳过 step1+step2，直接用 {len(existing_videos)} 个 _staging 顶层视频跑 step3"
+            )
+            moved_paths = existing_videos
+        else:
+            # 没有顶层视频可处理（只有完整子目录）→ 全跑完了
+            logger.info("→ 无顶层视频需要处理，workflow 结束")
+            return
+    else:
+        # 步骤1：移动视频（dry_run=True 时只打印计划；返回移走的文件列表）
+        moved_paths = step1_move_videos(
+            download_path, output_path, min_size_mb, dry_run=dry_run,
+        )
+        if not moved_paths:
+            logger.error("步骤1失败（无视频可处理），终止工作流")
+            return
 
-    if dry_run:
-        logger.info("DRY-RUN 模式，跳过步骤2/3")
-        return
+        if dry_run:
+            logger.info("DRY-RUN 模式，跳过步骤2/3")
+            return
 
-    # 步骤2：只对刚移来的视频去 @ 前缀（精准处理，不扫整个 output 目录）
-    step2_clean_at_prefix_for_paths(moved_paths)
+        # 步骤2：只对刚移来的视频去 @ 前缀（精准处理，不扫整个 staging 目录）
+        step2_clean_at_prefix_for_paths(moved_paths)
 
     # 步骤3：抓元数据，把视频按 <CARID> <title>/ 整理
     await step3_scrape_from_paths(output_path, moved_paths)

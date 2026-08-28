@@ -33,11 +33,13 @@ if str(_SRC) not in sys.path:
 
 from javlibraryscrapy.cli.workflow import (  # noqa: E402
     _cleanup_empty_parents,
+    _collect_staging_videos,
     _STAGING_DIR,
     find_video_files,
     step1_move_videos,
     step2_clean_at_prefix_for_paths,
     step3_scrape_from_paths,
+    workflow,
 )
 
 
@@ -607,8 +609,15 @@ def test_step3_builds_car_list_and_calls_exporter():
         assert "OLD-001" not in car_codes
         # 第三个文件（random.mp4）被跳过
         assert len(cars) == 2
-        # _staging 兜底清理（leftover.txt + 子目录应该都清掉）
-        assert not staging.exists()
+        # _staging 兜底清理：leftover.txt（非视频）被删；视频文件保留 → staging 还在
+        assert not (staging / "leftover.txt").exists(), "leftover.txt 应被删"
+        # 视频文件 v1/v2 仍在（保留用户数据 / 未被识别的 v3 也保留为视频）
+        assert v1.exists()
+        assert v2.exists()
+        # 顶层月份桶子目录被删
+        assert not (staging / "2026-08").exists()
+        # staging 整体还在（因为有视频文件）
+        assert staging.exists()
         print("✅ test_step3_builds_car_list_and_calls_exporter")
 
 
@@ -673,9 +682,108 @@ def test_step3_output_root_is_user_library_not_staging():
         assert call_kwargs["bucket_by_month"] is True
         # magnets_index 写到 output 顶层（不依赖 output_root）
         assert call_kwargs["magnets_index"] == output / "magnets.json"
-        # staging 已被清理（兜底）
-        assert not staging.exists()
+        # staging 里的视频被保留（v1 = ABF-340.mp4 在 staging 顶层，是视频文件）→
+        # staging 整体仍在（恢复路径的预期行为）
+        assert v1.exists(), "用户视频 v1 必须保留在 staging"
+        assert staging.exists(), "staging 里有视频文件时应保留"
         print("✅ test_step3_output_root_is_user_library_not_staging")
+
+
+def test_collect_staging_videos_empty_when_no_staging():
+    """_staging 不存在或空时返回空列表。"""
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        # staging 不存在
+        assert _collect_staging_videos(root / "_staging") == []
+        # staging 存在但空
+        (root / "_staging").mkdir()
+        assert _collect_staging_videos(root / "_staging") == []
+
+
+def test_collect_staging_videos_returns_only_top_level_videos():
+    """只收顶层视频文件；月份桶子目录里的视频不收（由 step3 处理）。"""
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        staging = root / "_staging"
+        staging.mkdir()
+        # 顶层视频（被收集）
+        (staging / "ABF-340.mp4").write_bytes(b"x")
+        (staging / "DSOD-001.wmv").write_bytes(b"x")
+        # 月份桶子目录（不收集）
+        sub = staging / "2026-08"
+        sub.mkdir()
+        (sub / "ABF-375 inside.mp4").write_bytes(b"x")
+        # 非视频文件（不收集）
+        (staging / "readme.txt").write_text("x")
+        (staging / "cover.png").write_bytes(b"x")
+
+        videos = _collect_staging_videos(staging)
+        names = [p.name for p in videos]
+        assert names == ["ABF-340.mp4", "DSOD-001.wmv"]
+        print("✅ test_collect_staging_videos_returns_only_top_level_videos")
+
+
+def test_workflow_resume_from_existing_staging():
+    """恢复路径：_staging 已有视频时跳过 step1+step2，直接用 staging 内容跑 step3。"""
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        download = root / "dl"
+        download.mkdir()
+        output = root / "out"
+        staging = output / _STAGING_DIR
+        staging.mkdir(parents=True)
+        # 用户恢复上来的视频
+        recovered = staging / "ABF-340.mp4"
+        recovered.write_bytes(b"x")
+
+        # mock step3：确认接收到的 moved_paths 来自 staging（不是 step1 移过来的）
+        with patch("javlibraryscrapy.cli.workflow.MovieExporter") as M:
+            M.return_value.export_movies = AsyncMock(return_value={
+                "total": 1, "written": 1, "failed": 0, "skipped": 0, "magnets_collected": 1,
+            })
+            # mock step1 + step2 验证它们没被调用
+            with patch("javlibraryscrapy.cli.workflow.step1_move_videos") as mock_step1, \
+                 patch("javlibraryscrapy.cli.workflow.step2_clean_at_prefix_for_paths") as mock_step2:
+                asyncio.run(workflow(download, output, min_size_mb=500))
+
+        # 关键：step1/step2 必须**没被调用**（恢复路径跳过）
+        mock_step1.assert_not_called()
+        mock_step2.assert_not_called()
+        # step3 必须被调用，且 cars 来源是 staging 里的文件
+        M.assert_called_once()
+        call_args = M.return_value.export_movies.call_args
+        cars = call_args.args[0] if call_args.args else call_args.kwargs["car_list"]
+        assert len(cars) == 1
+        car_id, video_path = cars[0]
+        assert car_id == "ABF-340"
+        assert Path(video_path) == recovered
+        # 用户恢复的视频还在 staging（step3 末尾保留顶层视频文件）
+        assert recovered.exists()
+        print("✅ test_workflow_resume_from_existing_staging")
+
+
+def test_workflow_no_staging_runs_step1_and_step2():
+    """常规路径：_staging 空时走 step1+step2+step3。"""
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        download = root / "dl"
+        download.mkdir()
+        output = root / "out"
+        # _staging 不存在
+
+        with patch("javlibraryscrapy.cli.workflow.MovieExporter") as M:
+            M.return_value.export_movies = AsyncMock(return_value={
+                "total": 0, "written": 0, "failed": 0, "skipped": 0, "magnets_collected": 0,
+            })
+            with patch("javlibraryscrapy.cli.workflow.step1_move_videos") as mock_step1, \
+                 patch("javlibraryscrapy.cli.workflow.step2_clean_at_prefix_for_paths") as mock_step2:
+                mock_step1.return_value = []  # 没视频
+                asyncio.run(workflow(download, output, min_size_mb=500))
+
+        # step1 被调用，step2 没被调用（因为 step1 返回空）
+        mock_step1.assert_called_once()
+        mock_step2.assert_not_called()
+        print("✅ test_workflow_no_staging_runs_step1_and_step2")
 
 
 def test_step3_handles_lowercase_filename():
@@ -748,4 +856,8 @@ if __name__ == "__main__":
     test_step3_no_recognizable_codes_returns_false()
     test_step3_output_root_is_user_library_not_staging()
     test_step3_handles_lowercase_filename()
+    test_collect_staging_videos_empty_when_no_staging()
+    test_collect_staging_videos_returns_only_top_level_videos()
+    test_workflow_resume_from_existing_staging()
+    test_workflow_no_staging_runs_step1_and_step2()
     print("\n🎉 ALL TESTS PASSED")
