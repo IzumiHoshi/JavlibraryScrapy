@@ -306,12 +306,18 @@ async def step3_scrape_from_paths(
     for car_id, path in cars:
         logger.info(f"  {car_id}: {path}")
 
-    # MovieExporter 用 staging 作 output_root：cover/sample 临时文件落地这里；
+    # MovieExporter 的 output_root = 用户本地库（不是 staging）：
     # bucket_by_month=True 让 save_dir 推到 <YYYY-MM>/<CARID> <title>/，最终落在
-    # output_path 顶层（= 用户本地库），跟 LIBRARY_ROOT/<YYYY-MM>/ 布局一致。
+    # output_path 顶层。video 源路径（info["path"]）仍在 staging 里，MovieExporter
+    # 从 staging 取视频移到月份桶。cover/sample 临时文件落到用户本地库顶层
+    # （MovieExporter.root_dir = output_root），由 export_movies 末尾 _cleanup_temp_pngs
+    # 清掉。
+    #
+    # 重要：不要把 staging 当 output_root —— 那样 save_dir 变成
+    # ``staging/<bucket>/<CARID> <title>/``，会被下面的兜底清理 rmtree 掉 → 视频丢失！
     staging = output_path / _STAGING_DIR
     exporter = MovieExporter(
-        output_root=staging,
+        output_root=output_path,
         move_video=True,
         download_samples=True,
         collect_magnets=True,
@@ -320,9 +326,9 @@ async def step3_scrape_from_paths(
     )
     stats = await exporter.export_movies(cars)
 
-    # 兜底清理 staging：MovieExporter 会把视频挪到月份桶，cover temp/sample temp
-    # 由 export_movies 末尾的 _cleanup_temp_pngs 清掉；但车号识别失败等异常路径
-    # 可能漏掉，这里再扫一次。
+    # 兜底清理 staging：视频已被 MovieExporter 移到月份桶，cover/sample temp
+    # 由 export_movies 末尾的 _cleanup_temp_pngs 清掉。staging 应该已经空了
+    # （或只剩零星 cover temp/sample temp 残留），这里再扫一次兜底。
     if staging.exists():
         for leftover in staging.iterdir():
             try:

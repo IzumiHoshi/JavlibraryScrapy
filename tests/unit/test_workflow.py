@@ -590,9 +590,10 @@ def test_step3_builds_car_list_and_calls_exporter():
         assert ok is True
         # MockExporter 被调用一次
         assert MockExporter.call_count == 1
-        # 验证调用参数：output_root = staging, bucket_by_month=True
+        # 验证调用参数：output_root = output（用户本地库，不是 staging；staging
+        # 只作为视频源 info["path"]）。bucket_by_month=True 让 save_dir 推月份桶。
         call_kwargs = MockExporter.call_args.kwargs
-        assert call_kwargs["output_root"] == staging
+        assert call_kwargs["output_root"] == output
         assert call_kwargs["bucket_by_month"] is True
         assert call_kwargs["move_video"] is True
         assert call_kwargs["download_samples"] is True
@@ -630,6 +631,51 @@ def test_step3_no_recognizable_codes_returns_false():
         assert ok is False
         MockExporter.assert_not_called()
         print("✅ test_step3_no_recognizable_codes_returns_false")
+
+
+def test_step3_output_root_is_user_library_not_staging():
+    """**关键回归测试** —— ``output_root`` 必须是用户本地库，不能是 staging。
+
+    Bug 复现：之前 ``MovieExporter(output_root=staging, bucket_by_month=True)`` 让
+    ``save_dir = staging/<bucket>/<CARID> <title>/``，视频落到 staging 子目录。
+    然后 step3 末尾兜底清理 ``shutil.rmtree(staging)`` 把视频连同整个 staging
+    树全部删掉 → **视频全部丢失**（UnScraper 已被 step1 移走，原文件没了）。
+
+    修复：``MovieExporter(output_root=output_path)``（用户本地库），staging 只作
+    为视频源（info["path"]）。``bucket_by_month=True`` 让 save_dir 推到
+    ``<output_path>/<YYYY-MM>/<CARID> <title>/``，跟 LIBRARY_ROOT/<YYYY-MM>/ 布局一致。
+    """
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        output = root / "library"  # 模拟 LIBRARY_ROOT
+        staging = output / _STAGING_DIR
+        staging.mkdir(parents=True)
+
+        # step1 已经把视频移到 staging
+        v1 = staging / "ABF-340.mp4"
+        v1.write_bytes(b"x")
+
+        with patch("javlibraryscrapy.cli.workflow.MovieExporter") as MockExporter:
+            mock_instance = MockExporter.return_value
+            mock_instance.export_movies = AsyncMock(return_value={
+                "total": 1, "written": 1, "failed": 0, "skipped": 0, "magnets_collected": 1,
+            })
+            asyncio.run(step3_scrape_from_paths(output, [v1]))
+
+        # **关键断言**：output_root 必须是 output（用户本地库），不是 staging
+        call_kwargs = MockExporter.call_args.kwargs
+        assert call_kwargs["output_root"] == output, (
+            f"BUG：output_root={call_kwargs['output_root']} 应该是 {output}。"
+            f"如果传 staging，bucket_by_month 会让 save_dir 落到 staging/<bucket>/... "
+            f"然后被 rmtree(staging) 删掉 → 视频丢失！"
+        )
+        # bucket_by_month 必须开
+        assert call_kwargs["bucket_by_month"] is True
+        # magnets_index 写到 output 顶层（不依赖 output_root）
+        assert call_kwargs["magnets_index"] == output / "magnets.json"
+        # staging 已被清理（兜底）
+        assert not staging.exists()
+        print("✅ test_step3_output_root_is_user_library_not_staging")
 
 
 def test_step3_handles_lowercase_filename():
@@ -700,5 +746,6 @@ if __name__ == "__main__":
     test_step2_empty_list()
     test_step3_builds_car_list_and_calls_exporter()
     test_step3_no_recognizable_codes_returns_false()
+    test_step3_output_root_is_user_library_not_staging()
     test_step3_handles_lowercase_filename()
     print("\n🎉 ALL TESTS PASSED")
