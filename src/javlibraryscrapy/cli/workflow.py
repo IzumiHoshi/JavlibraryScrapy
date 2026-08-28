@@ -1,11 +1,13 @@
 """
-工作流：下载目录 → 中间目录(移动+去@前缀) → 最终目录(削刮)
+工作流：下载目录 → 最终目录（每部一个 <CARID> <title>/ 子目录）
 
 流程：
-1. 从下载目录（含所有子目录）移动视频到中间目录（按大小过滤），
-   移走后清理已空的原父目录
-2. 清理中间目录文件名（去除 @ 前缀）
-3. 从中间目录削刮 JAVBus 信息，输出到最终目录（用 MovieExporter 统一削刮）
+1. 从下载目录（含所有子目录）移动视频到最终目录顶层（按大小过滤），
+   移走后清理已空的原父目录。返回移走的文件路径列表。
+2. 对刚移来的视频去 @ 前缀（精准处理，不扫整个 output 目录避免误伤旧文件）
+3. 抓 JAVBus 元数据，把视频按 <CARID> <title>/ 整理 + 写 NFO + 下 cover/samples
+
+步骤 1/2/3 之间用内部变量传递"刚移来的文件路径列表"，无需独立的中间目录。
 """
 
 import argparse
@@ -19,7 +21,7 @@ import sys
 from dotenv import load_dotenv
 from javlibraryscrapy._paths import REPO_ROOT as _project_root
 from javlibraryscrapy.scraping.exporter import MovieExporter
-from javlibraryscrapy.utils.car import javbuscar
+from javlibraryscrapy.utils.car import find_car_bus
 
 load_dotenv(_project_root / ".env")
 
@@ -28,6 +30,10 @@ logger = logging.getLogger(__name__)
 
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".flv", ".wmv", ".webm", ".m4v", ".ts", ".mpg", ".mpeg", ".3gp"}
 DEFAULT_MIN_SIZE_MB = 500
+
+# 传给 ``find_car_bus`` 的厂牌白名单：JAVBus 上没这些厂牌的页面，跳过。
+# 跟 ``javbuscar`` 默认值一致；放模块级避免每次调用重建列表。
+_LIST_SUREN_CAR = ["LUXU", "MIUM"]
 
 
 def find_video_files(source_path: Path, min_size_mb: int) -> list[Path]:
@@ -117,31 +123,43 @@ def _cleanup_empty_parents(original_parent: Path, *, stop_at: Path) -> int:
     return removed
 
 
-def step1_move_videos(download_path: Path, intermediate_path: Path, min_size_mb: int):
-    """步骤1：移动视频文件到中间目录。
+def step1_move_videos(
+    download_path: Path,
+    output_path: Path,
+    min_size_mb: int,
+    *,
+    dry_run: bool = False,
+) -> list[Path]:
+    """步骤1：移动视频文件到 ``output_path`` 顶层（保留原文件名）。
 
     - 递归扫描下载根 + 所有子目录里的视频
     - 移动后若视频原父目录（及上层空目录）变空，自动删到下载根为止
+    - 返回 ``[Path, ...]``：实际（或 dry-run 计划）移走的文件路径列表，传给
+      step2 / step3 做精准处理（不扫整个 output 目录）
+
+    ``dry_run=True`` 时只打印计划，不实际 ``shutil.move``，也不清理原父目录
+    （清理逻辑依赖实际移动后父目录变空的前提）。返回的列表是计划路径。
     """
     logger.info("=" * 50)
-    logger.info("步骤1：移动视频文件")
+    logger.info("步骤1：移动视频文件" + ("（DRY-RUN）" if dry_run else ""))
     logger.info(f"  下载目录: {download_path}")
-    logger.info(f"  中间目录: {intermediate_path}")
+    logger.info(f"  最终目录: {output_path}")
     logger.info(f"  最小文件大小: {min_size_mb} MB")
     logger.info("=" * 50)
 
-    intermediate_path.mkdir(parents=True, exist_ok=True)
+    output_path.mkdir(parents=True, exist_ok=True)
     files = find_video_files(download_path, min_size_mb)
 
     if not files:
         logger.warning("未找到符合条件的视频文件")
-        return False
+        return []
 
     logger.info(f"找到 {len(files)} 个视频文件")
+    moved_paths: list[Path] = []
     moved, skipped, failed, cleaned_dirs = 0, 0, 0, 0
 
     for src in files:
-        dst = intermediate_path / src.name
+        dst = output_path / src.name
         file_size_mb = src.stat().st_size / (1024 * 1024)
         # 在 move 之前记录原父目录：move 后 src 仍指向同一 Path 对象，
         # 但显式保留原 parent 更直观、避免对失效路径的歧义。
@@ -152,10 +170,20 @@ def step1_move_videos(download_path: Path, intermediate_path: Path, min_size_mb:
             skipped += 1
             continue
 
+        if dry_run:
+            logger.info(
+                f"[DRY-RUN] 计划移动: {src} → {dst} ({file_size_mb:.1f} MB)"
+            )
+            moved += 1
+            moved_paths.append(dst)
+            # 不实际移动 → 不清原父目录（清理依赖 move 副作用）
+            continue
+
         try:
             shutil.move(str(src), str(dst))
             logger.info(f"已移动: {src.name} ({file_size_mb:.1f} MB)")
             moved += 1
+            moved_paths.append(dst)
             # 移动成功 → 清理变空的原父目录（及上层空目录）
             cleaned_dirs += _cleanup_empty_parents(original_parent, stop_at=download_path)
         except Exception as e:
@@ -163,74 +191,93 @@ def step1_move_videos(download_path: Path, intermediate_path: Path, min_size_mb:
             failed += 1
 
     logger.info(
-        f"移动完成: 成功 {moved}, 跳过 {skipped}, 失败 {failed}, "
+        f"{'计划' if dry_run else '移动'}完成: "
+        f"{'会' if dry_run else ''}成功 {moved}, 跳过 {skipped}, 失败 {failed}, "
         f"清理空目录 {cleaned_dirs} 个"
     )
-    return moved > 0
+    return moved_paths
 
 
-def step2_clean_at_prefix(intermediate_path: Path, preview: bool = False):
-    """步骤2：去除文件名中 @ 符号之前的内容"""
+def step2_clean_at_prefix_for_paths(files: list[Path]) -> int:
+    """步骤2：对指定文件列表去 ``@`` 前缀。
+
+    只处理传入的 ``files``（step1 刚移来的视频），不扫整个 output 目录——
+    避免误伤 output 下之前已整理好的 ``<CARID> <title>/`` 里的旧文件。
+
+    文件名不含 ``@`` 时跳过；目标已存在时自动追加 ``_N`` 后缀。
+    返回实际清理（重命名）成功的文件数。
+    """
     logger.info("=" * 50)
     logger.info("步骤2：清理文件名 (@ 前缀)")
-    logger.info(f"  中间目录: {intermediate_path}")
+    logger.info(f"  待处理文件: {len(files)} 个")
     logger.info("=" * 50)
 
-    files = [f for f in intermediate_path.rglob("*") if f.is_file() and "@" in f.name]
-    if not files:
-        logger.info("未找到包含 @ 的文件")
-        return True
-
-    logger.info(f"找到 {len(files)} 个需要清理的文件")
-    cleaned, skipped, failed = 0, 0, 0
-
+    cleaned, failed = 0, 0
     for src in files:
+        # 移动后文件路径可能不再存在（被用户手动删了）；同时防御非文件
+        if not src.is_file() or "@" not in src.name:
+            continue
         new_name = src.name.split("@", 1)[1]
         dst = src.parent / new_name
 
         if dst.exists() and dst != src:
-            base = dst.stem
-            ext = dst.suffix
+            base, ext = dst.stem, dst.suffix
             counter = 1
             while dst.exists():
                 dst = dst.parent / f"{base}_{counter}{ext}"
                 counter += 1
 
         try:
-            if preview:
-                logger.info(f"预览: {src.name} → {dst.name}")
-            else:
-                src.rename(dst)
-                logger.info(f"已重命名: {src.name} → {dst.name}")
+            src.rename(dst)
+            logger.info(f"已重命名: {src.name} → {dst.name}")
             cleaned += 1
         except Exception as e:
             logger.error(f"重命名失败: {src.name} - {e}")
             failed += 1
 
     logger.info(f"清理完成: 成功 {cleaned}, 失败 {failed}")
-    return True
+    return cleaned
 
 
-async def step3_scrape(intermediate_path: Path, output_path: Path):
-    """步骤3：从中间目录削刮，输出到最终目录。
+async def step3_scrape_from_paths(
+    output_path: Path,
+    source_paths: list[Path],
+) -> bool:
+    """步骤3：从 step1/2 处理后的视频文件列表构建 car_list，调用 MovieExporter 削刮。
 
-    走统一的 :class:`MovieExporter`：
-        - move_video=True（把中间目录的视频移进子目录）
-        - download_samples=True
-        - collect_magnets=True（写 ``<output_path>/magnets.json`` + ``magnets_links.txt``）
+    视频已经在 ``output_path`` 顶层（被 step1 移来的）。MovieExporter 拿到
+    ``car_list=[(car_id, video_path), ...]`` 后会把每部视频从 ``video_path``
+    移到 ``<output_path>/<CARID> <title>/`` 下，再写 NFO + 下 cover/samples。
+
+    与旧实现的差别：旧 ``step3_scrape`` 用 ``javbuscar(intermediate_path)`` 扫整个
+    目录，会把 output 下之前已整理好的 ``<CARID> <title>/`` 也一起扫一遍（重复
+    抓取）。新实现用 ``find_car_bus`` 单文件提取车牌，只处理 step1/2 移来的视频。
     """
     logger.info("=" * 50)
     logger.info("步骤3：削刮 JAVBus")
-    logger.info(f"  中间目录: {intermediate_path}")
     logger.info(f"  最终目录: {output_path}")
+    logger.info(f"  待处理视频: {len(source_paths)} 个")
     logger.info("=" * 50)
 
-    cars = javbuscar(intermediate_path)
+    cars: list[tuple[str, str]] = []
+    skipped = 0
+    for path in source_paths:
+        if not path.is_file():
+            # step1 已移走，但被外部脚本删了；不影响其他视频
+            skipped += 1
+            continue
+        car_id = find_car_bus(path.name, _LIST_SUREN_CAR)
+        if car_id:
+            cars.append((car_id, str(path)))
+        else:
+            logger.warning(f"无法从文件名提取车牌：{path.name}")
+            skipped += 1
+
     if not cars:
         logger.warning("未找到任何车牌")
         return False
 
-    logger.info(f"找到 {len(cars)} 个车牌")
+    logger.info(f"找到 {len(cars)} 个车牌（跳过 {skipped} 个）")
     for car_id, path in cars:
         logger.info(f"  {car_id}: {path}")
 
@@ -250,44 +297,53 @@ async def step3_scrape(intermediate_path: Path, output_path: Path):
     return stats["written"] > 0
 
 
-async def workflow(download_path: Path, intermediate_path: Path, output_path: Path, min_size_mb: int, preview: bool = False):
+async def workflow(
+    download_path: Path,
+    output_path: Path,
+    min_size_mb: int,
+    dry_run: bool = False,
+):
     """
     执行完整工作流
 
     Args:
-        download_path: 下载目录
-        intermediate_path: 中间目录
-        output_path: 最终输出目录
+        download_path: 下载目录（含所有子目录里的视频）
+        output_path: 最终输出目录（每部影片 → <CARID> <title>/）
         min_size_mb: 最小文件大小 (MB)
-        preview: 预览模式（只执行步骤1-2，不执行削刮）
+        dry_run: 完全只读模式（步骤1 只打印计划不实际改文件 + 跳过步骤2/3）
+
+    注意：CLI 不再有独立的 intermediate_path 步骤。视频临时落到 ``output_path``
+    顶层（保留原名），step2/3 通过内部 ``moved_paths`` 列表精准处理这一批视频。
     """
     if not download_path.exists():
         logger.error(f"下载目录不存在: {download_path}")
         return
 
-    intermediate_path.mkdir(parents=True, exist_ok=True)
     output_path.mkdir(parents=True, exist_ok=True)
 
     logger.info("\n" + "=" * 60)
-    logger.info("JAVBus 工作流开始")
+    logger.info("JAVBus 工作流开始" + ("（DRY-RUN）" if dry_run else ""))
     logger.info(f"下载目录:   {download_path}")
-    logger.info(f"中间目录:   {intermediate_path}")
     logger.info(f"最终目录:   {output_path}")
     logger.info("=" * 60)
 
-    # 步骤1：移动视频
-    if not step1_move_videos(download_path, intermediate_path, min_size_mb):
-        logger.error("步骤1失败，终止工作流")
+    # 步骤1：移动视频（dry_run=True 时只打印计划；返回移走的文件列表）
+    moved_paths = step1_move_videos(
+        download_path, output_path, min_size_mb, dry_run=dry_run,
+    )
+    if not moved_paths:
+        logger.error("步骤1失败（无视频可处理），终止工作流")
         return
 
-    # 步骤2：清理文件名
-    step2_clean_at_prefix(intermediate_path, preview=preview)
-    if preview:
-        logger.info("预览模式，跳过削刮步骤")
+    if dry_run:
+        logger.info("DRY-RUN 模式，跳过步骤2/3")
         return
 
-    # 步骤3：削刮
-    await step3_scrape(intermediate_path, output_path)
+    # 步骤2：只对刚移来的视频去 @ 前缀（精准处理，不扫整个 output 目录）
+    step2_clean_at_prefix_for_paths(moved_paths)
+
+    # 步骤3：抓元数据，把视频按 <CARID> <title>/ 整理
+    await step3_scrape_from_paths(output_path, moved_paths)
 
     logger.info("\n" + "=" * 60)
     logger.info("工作流完成")
@@ -295,20 +351,31 @@ async def workflow(download_path: Path, intermediate_path: Path, output_path: Pa
 
 
 def main():
-    parser = argparse.ArgumentParser(description="JAVBus 工作流")
-    parser.add_argument("download_path", type=Path, help="下载目录")
-    parser.add_argument("intermediate_path", type=Path, help="中间目录")
-    parser.add_argument("output_path", type=Path, help="最终输出目录")
-    parser.add_argument("--min-size", type=int, default=DEFAULT_MIN_SIZE_MB, help=f"最小文件大小 (MB)，默认 {DEFAULT_MIN_SIZE_MB}")
-    parser.add_argument("--preview", action="store_true", help="预览模式（只移动+清理，不削刮）")
+    parser = argparse.ArgumentParser(
+        description="JAVBus 工作流：从下载目录（含子目录）移动视频 → 去 @ 前缀 → 削刮 → 最终目录",
+    )
+    parser.add_argument(
+        "download_path", type=Path, help="下载目录（含子目录里的视频）",
+    )
+    parser.add_argument(
+        "output_path", type=Path,
+        help="最终输出目录（每部影片 → <CARID> <title>/；视频先临时落到顶层）",
+    )
+    parser.add_argument(
+        "--min-size", type=int, default=DEFAULT_MIN_SIZE_MB,
+        help=f"最小文件大小 (MB)，默认 {DEFAULT_MIN_SIZE_MB}",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="完全只读模式：步骤1 只打印计划不实际改文件，跳过步骤2/3",
+    )
     args = parser.parse_args()
 
     asyncio.run(workflow(
         args.download_path,
-        args.intermediate_path,
         args.output_path,
         args.min_size,
-        args.preview,
+        args.dry_run,
     ))
 
 
