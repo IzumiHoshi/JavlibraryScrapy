@@ -273,7 +273,9 @@ def register(app: FastAPI) -> None:
             }
         client = _get_or_create_client(request)
         try:
-            downloading, completed = await client.get_download_codes(
+            # 3 元组：downloading / completed / downloading_progress。
+            # /api/zspace/codes 端点不返进度（避免 payload 膨胀），所以丢第 3 个。
+            downloading, completed, _progress = await client.get_download_codes(
                 force_refresh=refresh
             )
         except ZSpaceError as e:
