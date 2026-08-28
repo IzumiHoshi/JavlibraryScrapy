@@ -167,7 +167,21 @@
   }
   .active-filters .chip-x:hover { color: var(--err); }
 
-  /* ---------- NAS 下载中徽章：文字 + 进度条 ---------- */
+  /* ---------- NSFW 开关（wanted/library 通用） ----------
+ * 默认 nsfw-hidden 类挂在 <body> 上 → 所有 .cover 图片 blur(20px) + 灰度
+ * + scale(1.05) 隐藏细节；用户点工具栏「🔞 NSFW 隐藏」按钮 → 移除类
+ * → 图片清晰显示。状态 localStorage 持久化（关闭浏览器再开仍生效）。
+ */
+  /* ---------- NSFW 开关（wanted/library 通用） ----------
+ * 默认 nsfw-hidden 类挂在 <body> 上 → 所有 .cover 图片 blur(20px) + 灰度
+ * + scale(1.05) 隐藏细节；用户点工具栏「🔞 NSFW 隐藏」按钮 → 移除类
+ * → 图片清晰显示。状态 localStorage 持久化（关闭浏览器再开仍生效）。
+ */
+  body.nsfw-hidden .cover {
+    filter: blur(20px) grayscale(0.8);
+    transform: scale(1.08);  /* 放大抵消 blur 边缘透明感 */
+    transition: filter .25s ease, transform .25s ease;
+  }
   .nas-badge.downloading {
     display: flex;
     flex-direction: column;
