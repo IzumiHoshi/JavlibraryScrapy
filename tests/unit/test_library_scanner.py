@@ -22,6 +22,7 @@ if str(_SRC) not in sys.path:
 
 from javlibraryscrapy.library.scanner import (  # noqa: E402
     LibraryIndex,
+    MovieEntry,
     ScanProgress,
     load_index,
     save_index,
@@ -274,6 +275,96 @@ def main():
         sys.exit(1)
     else:
         print("PASS 所有测试通过")
+
+
+# -------------------- LibraryIndex dict-like 接口 --------------------
+#
+# 回归测试：wanted 路由用 lib_index.keys() 构造 local_exists_by_code set，
+# 之前 LibraryIndex 没实现 keys/items/values/__iter__ → AttributeError 被
+# except 静默吞掉 → status_filter 永远空集（commit 1a4c1a6 修）。
+# 这组测试守住「LibraryIndex 是 dict-like」这个隐式契约。
+
+import pytest
+
+
+def _mk_index():
+    """构造 3 条记录的 LibraryIndex（车牌大写、车牌大小写混着）。"""
+    return LibraryIndex(
+        {
+            "ABF-340": MovieEntry(carid="ABF-340", folder="/JAV/ABF-340 A"),
+            "IPZZ-907": MovieEntry(carid="IPZZ-907", folder="/JAV/IPZZ-907 B"),
+            # 重复测试 LibraryIndex.from_dict 内部 normalize 是否生效
+            # （entries 里的 key 已是大写，下面直接用）
+            "SNOS-334": MovieEntry(carid="SNOS-334", folder="/JAV/SNOS-334 C"),
+        }
+    )
+
+
+def test_library_index_keys_returns_carids():
+    """keys() 返回所有 car id（dict 视图对象）。"""
+    idx = _mk_index()
+    assert set(idx.keys()) == {"ABF-340", "IPZZ-907", "SNOS-334"}
+
+
+def test_library_index_values_returns_entries():
+    """values() 返回所有 MovieEntry。"""
+    idx = _mk_index()
+    vals = list(idx.values())
+    assert len(vals) == 3
+    assert all(isinstance(v, MovieEntry) for v in vals)
+    carids = {v.carid for v in vals}
+    assert carids == {"ABF-340", "IPZZ-907", "SNOS-334"}
+
+
+def test_library_index_items_returns_pairs():
+    """items() 返回 (carid, MovieEntry) 对。"""
+    idx = _mk_index()
+    pairs = dict(idx.items())
+    assert set(pairs.keys()) == {"ABF-340", "IPZZ-907", "SNOS-334"}
+    assert pairs["ABF-340"].folder == "/JAV/ABF-340 A"
+
+
+def test_library_index_iter_yields_carids():
+    """for code in idx 跟 dict 行为一致（yield car id）。"""
+    idx = _mk_index()
+    assert set(iter(idx)) == {"ABF-340", "IPZZ-907", "SNOS-334"}
+    assert set(code for code in idx) == {"ABF-340", "IPZZ-907", "SNOS-334"}
+
+
+def test_library_index_empty_index_dict_like():
+    """空索引的 dict-like 接口也必须可用（不抛异常）。"""
+    idx = LibraryIndex.empty()
+    assert list(idx.keys()) == []
+    assert list(idx.values()) == []
+    assert list(idx.items()) == []
+    assert list(idx) == []
+
+
+def test_library_index_contains_get_len_still_works():
+    """新增 dict-like 不能破坏既有的 __contains__ / get / __len__。"""
+    idx = _mk_index()
+    assert "ABF-340" in idx
+    assert "abf-340" in idx  # 大小写不敏感
+    assert "NOPE" not in idx
+    assert idx.get("IPZZ-907").folder == "/JAV/IPZZ-907 B"
+    assert idx.get("nope") is None
+    assert len(idx) == 3
+
+
+def test_library_index_round_trip_via_from_dict():
+    """LibraryIndex.from_dict() 出来的实例也支持 dict-like 接口（与 save/load 配合用）。"""
+    raw = {
+        "movies": {
+            "abf-340": {"carid": "abf-340", "folder": "/JAV/ABF-340", "videos": []},
+            "ipzz-907": {"carid": "ipzz-907", "folder": "/JAV/IPZZ-907", "videos": []},
+        },
+        "stats": {"movies_count": 2},
+        "schema_version": 1,
+    }
+    idx = LibraryIndex.from_dict(raw)
+    # keys 已归一为大写
+    assert set(idx.keys()) == {"ABF-340", "IPZZ-907"}
+    assert len(list(idx.items())) == 2
 
 
 if __name__ == "__main__":
