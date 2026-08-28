@@ -127,6 +127,8 @@ export async function initWanted() {
   function refreshCount() {
     $('sel-count').textContent = selected.size;
     $('btn-scrape').disabled = selected.size === 0;
+    // 触屏：选中数 > 0 时把「抓取选中的磁力」置底常驻（CSS 用 has-selection 类判断）
+    document.body.classList.toggle('has-selection', selected.size > 0);
     saveSelection();
   }
 

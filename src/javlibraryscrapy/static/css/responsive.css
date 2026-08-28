@@ -26,6 +26,48 @@
       font-size: 16px;
     }
     .toolbar button { touch-action: manipulation; }
+    /* status-filter 在触屏不让 5 个 chip 把 toolbar 撑爆 —— 横滚
+     * （scroll-snap 让手指一滑一卡，体验接近分段控件） */
+    .status-filter {
+      flex: 1 1 100%;
+      max-width: 100%;
+      min-width: 0;
+      overflow-x: auto;
+      scrollbar-width: none;       /* Firefox */
+      -ms-overflow-style: none;    /* IE 10+ */
+      scroll-snap-type: x proximity;
+      -webkit-overflow-scrolling: touch;
+    }
+    .status-filter::-webkit-scrollbar { display: none; }
+    .status-filter .chip-btn {
+      flex: 0 0 auto;
+      min-height: 32px;
+      padding: 5px 10px;
+      font-size: 12.5px;
+      scroll-snap-align: start;
+    }
+    /* 月份按钮：label 在窄屏缩成「全部月份」→「📅」图标，腾出空间 */
+    .month-trigger {
+      min-height: 40px;
+      padding: 7px 10px;
+      font-size: 13px;
+      flex: 0 0 auto;
+      max-width: 50vw;
+    }
+    .month-trigger .caret { font-size: 11px; }
+    #w-month-trigger-label,
+    #month-trigger-label {
+      max-width: 26vw;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    /* 全选/清空/反选 在窄屏挤掉反而妨碍主操作 —— 缩字号 + 缩 padding */
+    #btn-all, #btn-none, #btn-invert {
+      min-height: 32px;
+      padding: 5px 8px;
+      font-size: 12px;
+    }
     .spacer { display: none; }
     .count {
       order: 2;
@@ -49,6 +91,14 @@
     overflow-wrap: anywhere;
     max-width: 100%;
   }
+  /* /library 工具栏：sort select 在窄屏也要紧凑一点 */
+  #lib-sort {
+    min-height: 40px;
+    padding: 8px 10px !important;
+    font-size: 13px;
+    flex: 0 0 auto;
+    max-width: 38vw;
+  }
   #lib-status .ls-path {
     display: inline;
     max-width: none;
@@ -66,11 +116,31 @@
       font-size: 12px;
       white-space: nowrap;
     }
+    /* 触屏：「抓取选中的磁力」是最常用的主操作，置底常驻，
+     * 避免用户在卡片列表里翻完还要滚回顶部点。fixed 定位 + safe-area 适配。 */
+    body.page-wanted.has-selection #btn-scrape {
+      position: fixed;
+      left: 10px; right: 10px;
+      bottom: calc(10px + env(safe-area-inset-bottom));
+      z-index: 60;
+      min-height: 48px;
+      padding: 12px 16px;
+      font-size: 15px;
+      box-shadow: 0 4px 14px rgba(0,0,0,0.3);
+    }
+    /* 选中数 0 时不要置底（占位用 + 别挡卡片） */
+    body.page-wanted #btn-scrape { margin-bottom: 0; }
+    /* 置底时给 main 留出底部空白，避免最后一行卡片被遮挡 */
+    body.page-wanted.has-selection main {
+      padding-bottom: calc(72px + env(safe-area-inset-bottom));
+    }
     #btn-all, #btn-none, #btn-invert {
       order: 10;
       min-height: 32px; padding: 5px 10px;
       font-size: 12px;
     }
+    /* 触屏下月份 / 全选 / 清空 / 反选 / 导出 / 刷新挤在一行会撞车，
+     * 让它们全部 max-width + ellipsis 由各自样式控制（上面已设） */
     #btn-refresh {
       order: 20;
       min-height: 32px; padding: 5px 10px;
