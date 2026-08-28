@@ -249,6 +249,86 @@ def test_collect_magnets_true_writes_files():
         print("✅ test_collect_magnets_true_writes_files")
 
 
+def test_write_magnets_index_merges_with_existing():
+    """**关键回归**：写入 magnets.json 时必须合并旧记录，不能覆盖式重写。
+
+    Bug 历史：之前 _write_magnets_index 用 json.dump 直接重写整个文件，
+    每次跑都丢失之前抓的磁力。修复后读旧 → 按 code 去重合并 → 写回。
+    """
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        magnets_path = root / "magnets.json"
+        # 预先写一份旧 magnets.json
+        old_data = {
+            "schema_version": 2,
+            "scraped_at": "2026-08-29T01:00:00",
+            "items": [
+                {"code": "ABF-375", "title": "old title", "magnet": "magnet:?xt=old",
+                 "status": "ok", "release_date": "2026-08-07", "actors": "",
+                 "javbus_url": "https://www.javbus.com/ABF-375"},
+                {"code": "PPPE-435", "title": "to be kept", "magnet": "magnet:?xt=keep",
+                 "status": "ok", "release_date": "2026-08-14", "actors": "",
+                 "javbus_url": "https://www.javbus.com/PPPE-435"},
+            ],
+        }
+        magnets_path.write_text(
+            json.dumps(old_data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+        # 新跑只抓 2 部（1 部覆盖 ABF-375 旧记录，1 部新加 SNOS-309）
+        e = MovieExporter(output_root=root, collect_magnets=True, magnets_index=magnets_path)
+        e._magnet_results = [
+            {"code": "ABF-375", "title": "new title", "magnet": "magnet:?xt=new",
+             "status": "ok", "release_date": "2026-08-07", "actors": "",
+             "javbus_url": "https://www.javbus.com/ABF-375"},
+            {"code": "SNOS-309", "title": "fresh", "magnet": "magnet:?xt=fresh",
+             "status": "ok", "release_date": "2026-08-07", "actors": "",
+             "javbus_url": "https://www.javbus.com/SNOS-309"},
+        ]
+        e._write_magnets_index()
+
+        # 合并后应该有 3 条
+        result = json.loads(magnets_path.read_text(encoding="utf-8"))
+        items = result["items"]
+        codes = {it["code"] for it in items}
+        assert codes == {"ABF-375", "PPPE-435", "SNOS-309"}, codes
+        # ABF-375 被新抓的覆盖（magnet 变了）
+        abf375 = next(it for it in items if it["code"] == "ABF-375")
+        assert abf375["magnet"] == "magnet:?xt=new", "新抓的应该覆盖旧的"
+        assert abf375["title"] == "new title"
+        # PPPE-435 保留旧记录（没重抓）
+        pppe = next(it for it in items if it["code"] == "PPPE-435")
+        assert pppe["magnet"] == "magnet:?xt=keep", "未重抓的车应保留旧记录"
+        # SNOS-309 是新加的
+        snos = next(it for it in items if it["code"] == "SNOS-309")
+        assert snos["magnet"] == "magnet:?xt=fresh"
+
+        # magnets_links.txt：合并后的所有 ok magnet
+        links = (root / "magnets_links.txt").read_text(encoding="utf-8").strip().split("\n")
+        assert set(links) == {"magnet:?xt=new", "magnet:?xt=keep", "magnet:?xt=fresh"}
+        print("✅ test_write_magnets_index_merges_with_existing")
+
+
+def test_write_magnets_index_no_old_file_still_works():
+    """没有旧 magnets.json 时也能正常写入（首次跑 / 全新文件）。"""
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        magnets_path = root / "magnets.json"  # 不创建
+
+        e = MovieExporter(output_root=root, collect_magnets=True, magnets_index=magnets_path)
+        e._magnet_results = [
+            {"code": "ABF-375", "title": "t", "magnet": "magnet:?xt=ok",
+             "status": "ok", "release_date": "2026-08-07", "actors": "",
+             "javbus_url": "https://www.javbus.com/ABF-375"},
+        ]
+        e._write_magnets_index()
+
+        result = json.loads(magnets_path.read_text(encoding="utf-8"))
+        assert len(result["items"]) == 1
+        assert result["items"][0]["code"] == "ABF-375"
+        print("✅ test_write_magnets_index_no_old_file_still_works")
+
+
 def test_collect_magnets_false_no_files():
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -576,6 +656,8 @@ if __name__ == "__main__":
     test_download_samples_false()
     test_collect_magnets_true_writes_files()
     test_collect_magnets_false_no_files()
+    test_write_magnets_index_merges_with_existing()
+    test_write_magnets_index_no_old_file_still_works()
     test_magnet_status_mapping()
     test_existing_fanart_not_overwritten()
     test_cover_urls_triggers_poster_download()
