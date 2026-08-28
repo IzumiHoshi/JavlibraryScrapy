@@ -465,6 +465,65 @@ def test_idempotent_rerun():
 
 
 # --------------------------------------------------------------------------- #
+# Bug #1 回归：download_samples 部分失败时，sample idx 不错位、不缺失
+# --------------------------------------------------------------------------- #
+def test_download_samples_partial_failure_preserves_idx():
+    """download_samples 返回不连续 path 列表时，_move_samples_to_target 仍按 URL idx 命名。
+
+    场景：原 8 张 URL，下载时 idx=3 失败 → download_samples 返回 [path_1, path_2,
+    path_4, ..., path_8]（7 个，缺 idx=3）。修复前调用方用 enumerate(start=1)，
+    path_2 被命名为 sample_002.jpg（应该是 sample_003），idx=8 真的缺失。
+    修复后从 src.name 反推 idx → 各自归位，idx=3 留空（不假造文件）。
+    """
+    from javlibraryscrapy.scraping.javbus import JavbusSpider
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        cover_temp = root / "ABF-340.png"
+        cover_temp.write_bytes(_fake_png_bytes())
+
+        # Stub：模拟 idx=3 失败（其余成功）。每个 path 用不同字节便于断言谁是谁
+        def fake_download_samples_partial(self, sample_urls, car_id):
+            paths = []
+            for idx, _ in enumerate(sample_urls, start=1):
+                if idx == 3:
+                    continue  # 模拟失败 → 不在 paths 里
+                p = self.root_dir / f"{car_id}_sample_{idx:03d}.jpg"
+                p.write_bytes(f"sample_idx_{idx}".encode())
+                paths.append(p)
+            return paths
+
+        def fake_download_cover(self, img_url, car_id):
+            cover_temp.write_bytes(_fake_png_bytes())
+            return cover_temp
+
+        e = MovieExporter(output_root=root, download_samples=True)
+        with patch.object(JavbusSpider, "download_cover", fake_download_cover), \
+             patch.object(JavbusSpider, "download_samples", fake_download_samples_partial), \
+             _stub_javlibrary_cover(e, succeed=False):
+            urls = [f"https://x.com/s{i}.jpg" for i in range(1, 9)]  # 8 张
+            asyncio.run(e.process_movie(_make_info(
+                cover_path=str(cover_temp),
+                samples=urls,
+            )))
+
+        save_dir = root / "ABF-340 Test Title"
+        # 期望：sample_001.jpg 来自 idx=1，sample_002.jpg 来自 idx=2，
+        # sample_003.jpg 不存在（idx=3 失败），sample_004~008 各归其位
+        assert (save_dir / "sample_001.jpg").read_bytes() == b"sample_idx_1"
+        assert (save_dir / "sample_002.jpg").read_bytes() == b"sample_idx_2"
+        assert not (save_dir / "sample_003.jpg").exists(), "idx=3 真失败，不假造文件"
+        assert (save_dir / "sample_004.jpg").read_bytes() == b"sample_idx_4"
+        assert (save_dir / "sample_005.jpg").read_bytes() == b"sample_idx_5"
+        assert (save_dir / "sample_006.jpg").read_bytes() == b"sample_idx_6"
+        assert (save_dir / "sample_007.jpg").read_bytes() == b"sample_idx_7"
+        assert (save_dir / "sample_008.jpg").read_bytes() == b"sample_idx_8"
+        # 临时文件全部清理
+        assert not list(root.glob("ABF-340_sample_*.jpg"))
+        print("✅ test_download_samples_partial_failure_preserves_idx")
+
+
+# --------------------------------------------------------------------------- #
 # cleanup：临时 PNG 清理
 # --------------------------------------------------------------------------- #
 def test_cleanup_temp_pngs():
@@ -608,4 +667,5 @@ if __name__ == "__main__":
     test_magnets_index_custom_path()
     test_export_movies_calls_crawl_and_returns_stats()
     test_export_movies_on_progress_callback()
+    test_download_samples_partial_failure_preserves_idx()
     print("\n🎉 ALL TESTS PASSED")

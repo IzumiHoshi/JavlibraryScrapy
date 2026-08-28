@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import os
+from urllib.parse import urlparse
 from dotenv import load_dotenv
 from scrapling.fetchers import AsyncDynamicSession
 import asyncio
@@ -274,6 +275,10 @@ class JavbusSpider:
                 href = href.strip()
                 if href.lower().startswith("http"):
                     sample_urls.append(href)
+                elif href.startswith("//"):
+                    # protocol-relative URL：补 scheme（JAVBus 自己走 https）
+                    scheme = urlparse(self.javbus_base_url).scheme or "https"
+                    sample_urls.append(f"{scheme}:{href}")
                 elif href.startswith("/"):
                     sample_urls.append(self.javbus_base_url + href)
 

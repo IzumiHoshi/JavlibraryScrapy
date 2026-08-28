@@ -52,6 +52,12 @@ logger = logging.getLogger("gallery.wanted_refresh")
 # 该影片归入 ``_bucket="unknown"`` —— 前端可在 UI 中显示"日期未知"。
 _BUCKET_RE = re.compile(r"^(\d{4})-(\d{2})")
 
+# 从 ``download_samples`` 落地的临时文件名 ``<CARID>_sample_NNN.jpg`` 反推 idx。
+# 调用方不能用 ``enumerate(downloaded, start=1)``：download_samples 内部单张
+# 失败时 list 不连续（缺 idx 的位置没有 path），列表索引会跟原 URL idx 错位
+# → 文件名错位 + 部分 idx 真的没文件。
+_SAMPLE_IDX_RE = re.compile(r"_sample_(\d+)\.jpg$")
+
 
 def _bucket_for_release_date(release_date: Optional[str]) -> str:
     """把 ``"2023-07-22"`` 变成 ``"2023-07"``；无法解析返回 ``"unknown"``。"""
@@ -279,8 +285,15 @@ def _save_per_movie_folder(
             logger.warning(f"调用 download_samples 失败 {code}: {e}")
             downloaded = []
 
-        for i, src in enumerate(downloaded, start=1):
-            dest = folder / f"sample_{i:03d}.jpg"
+        for src in downloaded:
+            # ⚠️ 从 src.name 反推 idx（不用 enumerate(downloaded, start=1)）：
+            # download_samples 内部失败时 list 不连续，列表索引会跟原 URL idx 错位
+            # → sample 文件错位 + 部分 idx 缺失。
+            m = _SAMPLE_IDX_RE.search(src.name)
+            if not m:
+                continue
+            idx = int(m.group(1))
+            dest = folder / f"sample_{idx:03d}.jpg"
             if dest.exists():
                 try:
                     src.unlink()
@@ -292,7 +305,7 @@ def _save_per_movie_folder(
                     src.rename(dest)
                     result["samples"] += 1
             except OSError as e:
-                logger.warning(f"移动樣品 {i} 失败 {code}: {e}")
+                logger.warning(f"移动樣品 {idx} 失败 {code}: {e}")
 
         # 清理可能残留的 <CARID>_sample_NNN.jpg（download_samples 跳过/失败的）
         for leftover in spider.root_dir.glob(f"{code}_sample_*.jpg"):
@@ -752,19 +765,27 @@ def scrape_one_javbus(
     release_date = (info.get("release_date") or "").strip() if isinstance(info, dict) else ""
     ok = stats["written"] == 1 and bool(release_date)
 
-    # saved：写到本地的 fanart.jpg / poster.jpg 计数
+    # saved：写到本地的 fanart.jpg / poster.jpg / sample_*.jpg 计数
+    # 之前 ``samples: 0`` 硬编码 + ``cache.put(0)`` 是错的：MovieExporter 现在
+    # 是 download_samples=True，文件可能真的下了；但 cached 为 0 会让前端
+    # 灯箱永远打不开。这里写真实计数。
     saved: Optional[Dict[str, int]] = None
     if info.get("title") and output_root.exists():
         folder = output_root / f"{code} {info['title'].strip()}"
         if folder.exists():
+            samples_count = 0
+            try:
+                samples_count = sum(1 for _ in folder.glob("sample_*.jpg"))
+            except OSError as e:  # noqa: BLE001
+                logger.warning(f"枚举 sample_*.jpg 失败 {folder}: {e}")
             saved = {
                 "cover": 1 if (folder / "fanart.jpg").exists() else 0,
-                "samples": 0,  # download_samples=False
+                "samples": samples_count,
             }
-            # 回填 sample_cache（即使 samples=0 也写，避免下次冷扫）
+            # 回填 sample_cache（写真实计数；下次 list_wanted 不必冷扫 NFS）
             if sample_cache is not None:
                 try:
-                    sample_cache.put(code, 0, folder=folder)
+                    sample_cache.put(code, samples_count, folder=folder)
                 except OSError as e:  # noqa: BLE001
                     logger.warning(f"回填 cache 失败 {code}: {e}")
 
