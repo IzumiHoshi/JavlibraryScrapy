@@ -436,15 +436,43 @@ class MovieExporter(JavbusSpider):
         return _MAGNET_FAILED
 
     def _write_magnets_index(self) -> None:
-        """写 magnets.json (schema v2) + magnets_links.txt。"""
+        """写 magnets.json (schema v2) + magnets_links.txt。
+
+        **合并策略**：读旧 file → 按 ``code`` 去重（新抓的覆盖旧的）→ 写回。
+        避免覆盖式写入丢历史磁力记录。
+        """
         if not self._magnet_results:
             return
         self.magnets_index.parent.mkdir(parents=True, exist_ok=True)
 
+        # 读旧 items（按 code 索引）；失败时按空处理
+        existing: list[dict] = []
+        if self.magnets_index.exists():
+            try:
+                with open(self.magnets_index, encoding="utf-8") as f:
+                    old = json.load(f)
+                if isinstance(old, dict):
+                    existing = old.get("items") or []
+            except (OSError, json.JSONDecodeError) as e:
+                logger.warning(f"读旧 magnets.json 失败，按空处理：{e}")
+                existing = []
+
+        # 合并：按 code 去重，新抓的覆盖旧的（magnet + release_date 可能更新）
+        merged: dict[str, dict] = {
+            it.get("code"): it
+            for it in existing
+            if isinstance(it, dict) and it.get("code")
+        }
+        for it in self._magnet_results:
+            code = it.get("code")
+            if code:
+                merged[code] = it
+        items = list(merged.values())
+
         payload = {
             "schema_version": 2,
             "scraped_at": datetime.now().isoformat(timespec="seconds"),
-            "items": list(self._magnet_results),
+            "items": items,
         }
         try:
             with open(self.magnets_index, "w", encoding="utf-8") as f:
@@ -455,8 +483,9 @@ class MovieExporter(JavbusSpider):
 
         # magnets_links.txt：仅 status=ok 的 magnet；空时写空文件
         links_path = self.magnets_index.parent / "magnets_links.txt"
+        # 用合并后的 items（保留历史 ok 记录）
         links = [
-            r["magnet"] for r in self._magnet_results
+            r["magnet"] for r in items
             if r.get("status") == _MAGNET_OK and r.get("magnet")
         ]
         try:
@@ -468,7 +497,8 @@ class MovieExporter(JavbusSpider):
             return
 
         logger.info(
-            f"已写入 {self.magnets_index}（{len(self._magnet_results)} 条，"
+            f"已写入 {self.magnets_index}（合并后 {len(items)} 条，"
+            f"本次新增/覆盖 {len(self._magnet_results)} 条，"
             f"其中 ok={len(links)} 条磁力）"
         )
 
