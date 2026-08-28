@@ -111,6 +111,11 @@
   }
   button:hover:not(:disabled) { background: var(--card-hover); border-color: var(--border-strong); }
   button:disabled { opacity: .45; cursor: not-allowed; }
+  /* 统一按钮 focus 样式：去掉浏览器默认蓝边框 + 透明背景，跟 hover 区分
+   * 用户点过的 chip 不能再"看起来像未选中"——focus 态强制保持 .active 视觉
+   * （仅 .status-filter 内的 chip；其它按钮保留浏览器默认 focus 提示） */
+  .status-filter .chip-btn:focus { outline: none; }
+  .status-filter .chip-btn:focus-visible { outline: none; }
   button.primary {
     background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600;
   }
