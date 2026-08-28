@@ -153,19 +153,16 @@
     word-break: break-all;
   }
 
+  /* 触屏：「抓取选中的磁力」置底常驻（最常用主操作，避免翻完卡片还要滚回顶部）。
+   * 实现：position: fixed 让 #btn-scrape 脱离 toolbar flex 流；
+   * toolbar 那份 HTML 还在但 display:none（节省 toolbar 横向空间）。
+   * 用户看 / 点的是 fixed 那份。 */
+  /* toolbar 那份隐藏（fixed 替代它） */
   #btn-scrape {
-    order: 3;
-    flex: 0 0 auto;
-    margin-left: auto;
-    /* 触屏 40px 触控目标 + .primary class 区分样式 */
-    min-height: 40px;
-    padding: 8px 12px;
-    font-size: 13px;
-    white-space: nowrap;
+    display: none;
   }
-  /* 触屏：「抓取选中的磁力」是最常用的主操作，置底常驻，
-     * 避免用户在卡片列表里翻完还要滚回顶部点。fixed 定位 + safe-area 适配。 */
-  body.page-wanted.has-selection #btn-scrape {
+  /* 触屏 fixed 底部版本：永远显示，未选中时 disabled */
+  body.page-wanted #btn-scrape {
     position: fixed;
     left: 10px;
     right: 10px;
@@ -174,11 +171,25 @@
     min-height: 48px;
     padding: 12px 16px;
     font-size: 15px;
+    font-weight: 600;
+    color: #fff;
+    background: var(--accent);
+    border: 1px solid var(--accent);
+    border-radius: 10px;
+    cursor: pointer;
     box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+    box-sizing: border-box;
+    text-align: center;
+    display: block;            /* 覆盖上面 #btn-scrape { display: none } */
   }
-  /* 选中数 0 时不要置底（占位用 + 别挡卡片） */
-  body.page-wanted #btn-scrape {
-    margin-bottom: 0;
+  /* 未选中时按钮灰显，提示用户先选车 */
+  body.page-wanted #btn-scrape:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+  /* 置底时给 main 留出底部空白，避免最后一行卡片被遮挡 */
+  body.page-wanted main {
+    padding-bottom: calc(72px + env(safe-area-inset-bottom));
   }
   /* 置底时给 main 留出底部空白，避免最后一行卡片被遮挡 */
   body.page-wanted.has-selection main {
