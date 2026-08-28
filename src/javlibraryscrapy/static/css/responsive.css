@@ -63,20 +63,26 @@
     max-width: 100%;
     min-width: 0;
     min-height: 40px;
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    padding: 0 4px;
     overflow-x: auto;
     scrollbar-width: none; /* Firefox */
     -ms-overflow-style: none; /* IE 10+ */
     scroll-snap-type: x proximity;
     -webkit-overflow-scrolling: touch;
+    box-sizing: border-box;
   }
   .status-filter::-webkit-scrollbar {
     display: none;
   }
   .status-filter .chip-btn {
     flex: 0 0 auto;
-    min-height: 32px;
-    padding: 5px 10px;
+    min-height: 36px;
+    padding: 6px 10px;
     font-size: 12.5px;
+    line-height: 1.5;
     scroll-snap-align: start;
   }
   /* 月份按钮：触屏 40px（触控目标） */

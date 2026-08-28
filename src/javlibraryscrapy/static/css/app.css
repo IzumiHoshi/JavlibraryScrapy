@@ -238,17 +238,25 @@
     font-weight: 600;
   }
   .status-filter .chip-btn .count {
-    display: inline-block;
-    min-width: 18px;
+    display: inline-flex;        /* flex 居中，比 inline-block 更精准 */
+    align-items: center;
+    justify-content: center;
+    min-width: 20px;
+    height: 16px;                /* 锁死高度，跟主文字 baseline 对齐 */
     padding: 0 5px;
-    background: rgba(255, 255, 255, 0.18);
-    border-radius: 9px;
+    border-radius: 8px;
     font-size: 11px;
+    font-weight: 600;
+    line-height: 1;
     font-variant-numeric: tabular-nums;
-    text-align: center;
-    color: inherit;
-    opacity: 0.85;
+    vertical-align: middle;
   }
+  /* active 态（accent 蓝填充）：count 用深蓝底 + 白字，对比强 */
+  .status-filter .chip-btn.active .count {
+    background: rgba(0, 0, 0, 0.25);
+    color: #fff;
+  }
+  /* 非 active 态（透明背景）：count 用 card-hover 浅灰底 + 文字色 */
   .status-filter .chip-btn:not(.active) .count {
     background: var(--card-hover);
     color: var(--text-dim);
