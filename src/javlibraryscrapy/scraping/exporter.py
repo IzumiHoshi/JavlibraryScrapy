@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import shutil
 import warnings
 from datetime import datetime
@@ -51,6 +52,11 @@ _JAVLIBRARY_REFERER = "https://www.javlibrary.com/cn/"
 _MAGNET_OK = "ok"
 _MAGNET_NO_MAGNET = "no_magnet"
 _MAGNET_FAILED = "failed"
+
+# 从 ``download_samples`` 落地的临时文件名 ``<CARID>_sample_NNN.jpg`` 反推 idx。
+# 调用方不能用 ``enumerate(downloaded, start=1)``：download_samples 内部失败时
+# 返回 list 不连续（缺 idx 的位置没有 path），列表索引会跟原 URL idx 错位。
+_SAMPLE_IDX_RE = re.compile(r"_sample_(\d+)\.jpg$")
 
 
 class MovieExporter(JavbusSpider):
@@ -345,6 +351,9 @@ class MovieExporter(JavbusSpider):
         然后 rename 到 ``<save_dir>/sample_NNN.jpg``。
 
         返回成功移动的 sample 数。
+
+        注意：idx 从 ``src.name`` 反推，不用 ``enumerate``。download_samples 内部
+        单张失败时 list 不连续，列表索引会跟原 URL idx 错位 → 文件名错位 + 缺失。
         """
         if not sample_urls:
             return 0
@@ -355,8 +364,12 @@ class MovieExporter(JavbusSpider):
             downloaded = []
 
         moved = 0
-        for i, src in enumerate(downloaded, start=1):
-            dest = save_dir / f"sample_{i:03d}.jpg"
+        for src in downloaded:
+            m = _SAMPLE_IDX_RE.search(src.name)
+            if not m:
+                continue
+            idx = int(m.group(1))
+            dest = save_dir / f"sample_{idx:03d}.jpg"
             if dest.exists():
                 # 已有 → 删临时，不覆盖
                 try:
@@ -369,7 +382,7 @@ class MovieExporter(JavbusSpider):
                     src.rename(dest)
                     moved += 1
             except OSError as e:  # noqa: BLE001
-                logger.warning(f"移动 sample {i} 失败 {car_id}: {e}")
+                logger.warning(f"移动 sample {idx} 失败 {car_id}: {e}")
 
         # 清理可能残留的 <CARID>_sample_*.jpg（被跳过或下载失败的）
         for leftover in self.root_dir.glob(f"{car_id}_sample_*.jpg"):
