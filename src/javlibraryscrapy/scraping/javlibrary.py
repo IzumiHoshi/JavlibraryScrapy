@@ -17,7 +17,53 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from dotenv import load_dotenv
-from scrapling.fetchers import AsyncDynamicSession
+from scrapling.fetchers import FetcherSession
+
+# AsyncDynamicSession → FetcherSession 适配层
+#
+# JAVLibrary (c99i.com 镜像) 详情页是纯 server-rendered HTML，无 JS 渲染、无
+# Cloudflare challenge。curl_cffi 后端的 FetcherSession 1.8s/页就能拿到完整
+# 内容，不需要拉起 Chromium。调用方代码（fetch_page / get_page_count）只
+# 用到 session.fetch() 这一个方法，做个 async shim 即可保留全部既有签名。
+#
+# 适配层选 FetcherSession 而非裸 Fetcher：保持 HTTP 连接复用、cookie 跨请
+# 求延续。绕开 curl_cffi 0.16.0 "Cookie 在 jar 里但不发送" 的已知 bug——
+# 实测 JAVLibrary 无 verify 流程，根本不依赖 cookie 跨请求，所以这个 bug 不
+# 影响本爬虫。JAVBus 仍走 AsyncDynamicSession（必须浏览器过 verify）。
+class _AsyncFetcherSessionShim:
+    """把同步 FetcherSession 包成 ``await session.fetch(url, headers=...)``。
+
+    与原 AsyncDynamicSession 接口兼容的唯一目的是：本文件 fetch_page /
+    get_page_count 不用改一行；crawl() 的 async with 语法兼容；外层
+    asyncio.run(main()) 也不动。
+
+    scrapling 的 FetcherSession 在 __enter__ 前是配置壳（无 get/post），
+    __enter__ 后才返回真正的 _SyncSessionLogic（带 get/post）。shim 在
+    __aenter__ 时构造并 enter 内部 session，让外部 async with 行为保持
+    跟 AsyncDynamicSession 一致。
+    """
+
+    def __init__(self, **kwargs):
+        self._kwargs = kwargs
+        self._sess: Optional[object] = None
+
+    async def __aenter__(self):
+        # FetcherSession() 是 context manager；__enter__ 返回 _SyncSessionLogic
+        self._sess = FetcherSession(**self._kwargs).__enter__()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self._sess is not None:
+            self._sess.__exit__(exc_type, exc_val, exc_tb)
+            self._sess = None
+
+    async def fetch(self, url: str, headers: Optional[dict] = None, **kwargs):
+        # 同步调用放线程池，避免阻塞事件循环
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self._sess.get(url, headers=headers or {}, **kwargs),
+        )
 
 load_dotenv()
 
@@ -51,7 +97,7 @@ class JAVLibrarySpider:
         self.movies = []
 
     async def fetch_page(
-        self, session: AsyncDynamicSession, page: int = 1
+        self, session: _AsyncFetcherSessionShim, page: int = 1
     ) -> str:
         """
         获取单个页面
@@ -180,7 +226,7 @@ class JAVLibrarySpider:
 
         return movies
 
-    async def get_page_count(self, session: AsyncDynamicSession) -> int:
+    async def get_page_count(self, session: _AsyncFetcherSessionShim) -> int:
         """
         获取总页数
 
@@ -237,15 +283,13 @@ class JAVLibrarySpider:
             max_pages: 最多爬取页数（None 表示爬取全部）
         """
         try:
-            # 使用 AsyncDynamicSession 处理动态内容和 Cloudflare
-            async with AsyncDynamicSession(
-                load_dom=True,  # 加载 DOM
-                network_idle=True,  # 等待网络空闲
-                disable_resources=False,  # 允许加载资源以正确加载页面
-                proxy=self.proxy,  # 使用代理
-                headless=True,  # 无头浏览器
-                timeout=90000,  # 90 秒超时（处理 Cloudflare 需要时间）
-                stealth_mode=True,  # 隐身模式，避免被检测为机器人
+            # 使用 curl_cffi 后端的 FetcherSession：JAVLibrary 镜像无 JS / 无 CF，
+            # 不需要 Chromium。impersonate='chrome' 让 TLS 指纹看着像真浏览器。
+            async with _AsyncFetcherSessionShim(
+                impersonate="chrome",
+                stealthy_headers=True,  # 生成真实浏览器 headers（顺带把 Referer 设成 Google）
+                proxy=self.proxy,
+                timeout=90,  # 网络盘偶尔慢
             ) as session:
                 logger.info("开始爬取 JAVLibrary...")
 
