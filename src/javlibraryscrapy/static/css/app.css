@@ -116,7 +116,20 @@
   }
   button.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(--accent); }
   .spacer { flex: 1; }
-  .count { color: var(--text-dim); font-size: 13px; font-variant-numeric: tabular-nums; }
+  /* toolbar 里的「已选 N / total」：纯文字状态指示，不加框 / 背景。
+   * 不做成按钮样（避免误导用户去点），只通过行内 inline-flex + accent 色数字
+   * 跟周围按钮形成「可操作 vs 只读」分组。高度靠 min-height + line-height
+   * 跟 toolbar 其它元素对齐（不用 padding 也能对齐）。 */
+  .toolbar > .count {
+    display: inline-flex;
+    align-items: center;
+    min-height: 33px;
+    line-height: 1;
+    color: var(--text-dim);
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
   .count b { color: var(--accent); font-size: 15px; }
   /* lib-status 分段：路径独立 span + title 提示；desktop 阶段 32em 上限避免溢出 toolbar */
   #lib-status .ls-sep { margin: 0 4px; opacity: 0.4; }
@@ -166,6 +179,88 @@
     color: inherit; cursor: pointer; font: inherit; line-height: 1;
   }
   .active-filters .chip-x:hover { color: var(--err); }
+
+  /* ---------- NSFW 开关（wanted/library 通用） ----------
+   * 默认 nsfw-hidden 类挂在 <body> 上 → 所有 .cover 图片 blur(20px) + 灰度
+   * + scale(1.05) 隐藏细节；用户点工具栏「🔞 NSFW 隐藏」按钮 → 移除类
+   * → 图片清晰显示。状态 localStorage 持久化（关闭浏览器再开仍生效）。
+   * 触屏只显示图标（节省 toolbar 空间），桌面端显示 🔞 + label。
+   */
+  body.nsfw-hidden .cover {
+    filter: blur(20px) grayscale(0.8);
+    transform: scale(1.08);  /* 放大抵消 blur 边缘透明感 */
+    transition: filter .25s ease, transform .25s ease;
+  }
+  .nsfw-toggle {
+    cursor: pointer;
+    white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  /* 桌面端显示 label，触屏由 responsive.css 隐藏（只留图标） */
+  .nsfw-toggle .nsfw-label { display: inline; }
+
+
+  /* ---------- 状态筛选 chips（/wanted） ----------
+   * 高度统一：外框 padding+border = 3px，chip 内 padding 5x10 + 13px 字 ≈ 30px，
+   * 合计 33px = .toolbar button（padding 7x12 + 14px 字 ≈ 33px）。
+   */
+  .status-filter {
+    display: inline-flex; align-items: center; gap: 3px;
+    padding: 0;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    min-height: 33px;            /* 跟 .toolbar button 同高，避免 flex-wrap 后错位 */
+    box-sizing: border-box;
+  }
+  .status-filter .chip-btn {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 5px 10px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    color: var(--text-dim);
+    font-size: 13px;
+    line-height: 1.2;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .status-filter .chip-btn:hover:not(.active) {
+    background: var(--card-hover);
+    color: var(--text);
+  }
+  .status-filter .chip-btn.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    font-weight: 600;
+  }
+  .status-filter .chip-btn .count {
+    display: inline-flex;        /* flex 居中，比 inline-block 更精准 */
+    align-items: center;
+    justify-content: center;
+    min-width: 20px;
+    height: 16px;                /* 锁死高度，跟主文字 baseline 对齐 */
+    padding: 0 5px;
+    border-radius: 8px;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    vertical-align: middle;
+  }
+  /* active 态（accent 蓝填充）：count 用深蓝底 + 白字，对比强 */
+  .status-filter .chip-btn.active .count {
+    background: rgba(0, 0, 0, 0.25);
+    color: #fff;
+  }
+  /* 非 active 态（透明背景）：count 用 card-hover 浅灰底 + 文字色 */
+  .status-filter .chip-btn:not(.active) .count {
+    background: var(--card-hover);
+    color: var(--text-dim);
+  }
 
   /* ---------- 月份选择器（/library） ---------- */
   .month-picker-wrap {
@@ -267,6 +362,12 @@
     gap: 8px;
     padding-top: 10px;
     border-top: 1px solid var(--border);
+  }
+  /* chip-btn：toolbar 里散用的变体（跟 .toolbar button 同高 / 同 padding / 同 border-radius）
+ * 真正「chips 群组」用 .status-filter .chip-btn / .month-popup-foot .chip-btn 单独覆盖。 */
+  .toolbar > .chip-btn {
+    padding: 7px 12px;
+    border-radius: 8px;
   }
   .chip-btn {
     padding: 5px 12px;

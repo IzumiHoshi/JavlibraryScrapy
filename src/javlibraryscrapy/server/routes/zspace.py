@@ -75,12 +75,42 @@ def _get_store(request: Request) -> ZSpaceConfigStore:
     return store
 
 
+class _DummyZSpaceClient:
+    """未配置 zspace 时返回的空壳客户端。
+
+    让 wanted 路由的 ``get_download_codes()`` 直接拿到空集，**完全避免
+    RSA 登录尝试**（登录失败抛 ZSpaceError 会被路由 except 兜底，但首次
+    延迟好几秒 —— 未配置用户根本不该承受这个开销）。
+
+    只实现 status_filter 实际用到的 2 个方法，其它路由在未配置时会先 503
+    拒绝（看 /api/zspace/submit /downloads），永远走不到这个 dummy。
+    """
+
+    async def get_download_codes(
+        self, *, force_refresh: bool = False
+    ):
+        return set(), set(), {}
+
+    def invalidate_download_codes_cache(self) -> None:
+        pass
+
+
 def _get_or_create_client(request: Request) -> ZSpaceClient:
-    """懒加载 ZSpaceClient 单例，存在 ``request.app.state.zspace``。"""
+    """懒加载 ZSpaceClient 单例，存在 ``request.app.state.zspace``。
+
+    未配置（enabled=False 或缺 host/user/password）→ 返回 :class:`_DummyZSpaceClient`，
+    不触发 RSA 登录；用户点「下载中」chip 立即拿到空集，无延迟。
+    """
     client: Optional[ZSpaceClient] = getattr(request.app.state, "zspace", None)
     if client is not None:
         return client
     store = _get_store(request)
+    cfg = store.get()
+    if not cfg.is_configured():
+        # 缓存 dummy 单例：避免每次 wanted 请求都重读 cfg.is_configured()
+        request.app.state.zspace = _DummyZSpaceClient()
+        logger.debug("zspace 未配置，返回 _DummyZSpaceClient（get_download_codes 立即返空集）")
+        return request.app.state.zspace
     client = ZSpaceClient(store.get)
     request.app.state.zspace = client
     return client
@@ -243,7 +273,9 @@ def register(app: FastAPI) -> None:
             }
         client = _get_or_create_client(request)
         try:
-            downloading, completed = await client.get_download_codes(
+            # 3 元组：downloading / completed / downloading_progress。
+            # /api/zspace/codes 端点不返进度（避免 payload 膨胀），所以丢第 3 个。
+            downloading, completed, _progress = await client.get_download_codes(
                 force_refresh=refresh
             )
         except ZSpaceError as e:

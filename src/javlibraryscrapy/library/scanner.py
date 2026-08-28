@@ -445,6 +445,22 @@ class LibraryIndex:
     def __contains__(self, carid: str) -> bool:
         return carid.upper() in self._movies
 
+    def __iter__(self):
+        """迭代 car id（dict-like），跟 ``keys()`` 等价。"""
+        return iter(self._movies)
+
+    def keys(self):
+        """所有 car id 的快照（dict-like）。调用方不要修改。"""
+        return self._movies.keys()
+
+    def values(self):
+        """所有 MovieEntry 的快照（dict-like）。调用方不要修改。"""
+        return self._movies.values()
+
+    def items(self):
+        """所有 ``(carid, MovieEntry)`` 对的快照（dict-like）。调用方不要修改。"""
+        return self._movies.items()
+
     def get(self, carid: str) -> Optional[MovieEntry]:
         return self._movies.get(carid.upper())
 

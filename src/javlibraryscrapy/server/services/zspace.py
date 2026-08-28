@@ -91,7 +91,7 @@ class ZSpaceClient:
         self._sig: Optional[tuple] = None
         self._lock = asyncio.Lock()
         # 下载任务代码集缓存（30s），让 wanted 页频繁 load() 不会把 NAS 摸死
-        self._codes_cache: Optional[Tuple[float, Set[str], Set[str]]] = None
+        self._codes_cache: Optional[Tuple[float, Set[str], Set[str], Dict[str, float]]] = None
 
     # ------------------------------------------------------------------ #
     # 内部
@@ -229,13 +229,16 @@ class ZSpaceClient:
     # ------------------------------------------------------------------ #
     async def get_download_codes(
         self, *, force_refresh: bool = False
-    ) -> Tuple[Set[str], Set[str]]:
-        """返回 ``(downloading_codes, completed_codes)`` 两个集合。
+    ) -> Tuple[Set[str], Set[str], Dict[str, float]]:
+        """返回 ``(downloading_codes, completed_codes, downloading_progress)``。
 
         - 从 ``/downloader/list`` 拿原始任务列表
         - 用正则从 ``task.name`` 抽 car id（兼容大小写、与 - 分隔符无关）
         - 按 ``status`` 字符串 + ``progress`` 字段联合判定 downloading / completed
         - 30s 内存缓存；force_refresh=True  无视缓存（给用户手动刷新按钮用）
+        - ``downloading_progress``：downloading 集合里每车的进度（0-100 浮点）。
+          解析失败 → 进度 0（前端显示进度条但不显示文字）。
+          completed 集合的车不放进来（completed 进度总是 100，前端不需要）。
 
         出错时（NAS 离线 / 登录失效 / list 失败）抛 :class:`ZSpaceError`，
         路由层映射成 502 + 空集兜底；前端拿到空集就不显示 NAS 徽章，跟
@@ -247,16 +250,16 @@ class ZSpaceClient:
             and self._codes_cache is not None
             and (now - self._codes_cache[0]) < _DOWNLOAD_CODES_CACHE_TTL
         ):
-            return self._codes_cache[1], self._codes_cache[2]
+            return self._codes_cache[1], self._codes_cache[2], self._codes_cache[3]
 
         raw = await self.list_downloads()
-        downloading, completed = _parse_download_codes(raw)
-        self._codes_cache = (now, downloading, completed)
+        downloading, completed, downloading_progress = _parse_download_codes(raw)
+        self._codes_cache = (now, downloading, completed, downloading_progress)
         logger.debug(
             f"NAS 下载代码集刷新：downloading={len(downloading)}, "
             f"completed={len(completed)}"
         )
-        return downloading, completed
+        return downloading, completed, downloading_progress
 
     def invalidate_download_codes_cache(self) -> None:
         """主动失效缓存。
@@ -268,8 +271,13 @@ class ZSpaceClient:
 
 def _parse_download_codes(
     raw: Dict[str, Any],
-) -> Tuple[Set[str], Set[str]]:
-    """从 ``/downloader/list`` 的响应里抽 car id，按状态分两组。
+) -> Tuple[Set[str], Set[str], Dict[str, float]]:
+    """从 ``/downloader/list`` 的响应里抽 car id，按状态分两组 + 下载进度。
+
+    返回 ``(downloading, completed, downloading_progress)``：
+    - ``downloading``: 还在下的车（含 isFinished=false 但 progress 已 99% 的）
+    - ``completed``: 已完成/做种的车
+    - ``downloading_progress``: downloading 集合里每车 → 进度 0-100（completed 不进）
 
     兼容性处理（实测覆盖极空间 + 其它 qBittorrent 系）：
     - tasks 路径：``data.tasks`` / ``data.list`` / ``data.items`` / 顶层 ``list``
@@ -293,6 +301,7 @@ def _parse_download_codes(
 
     downloading: Set[str] = set()
     completed: Set[str] = set()
+    downloading_progress: Dict[str, float] = {}
     for task in candidates:
         if not isinstance(task, dict):
             continue
@@ -307,6 +316,7 @@ def _parse_download_codes(
         if not carid:
             continue
 
+        progress = _extract_progress(task)
         # 状态判定（按优先级）
         # 1) isFinished bool（极空间实测）—— 最直接可靠
         is_finished = task.get("isFinished")
@@ -316,6 +326,7 @@ def _parse_download_codes(
             else:
                 # isFinished=false → 还在下载；可能 progress=99.7% 但还没标记完成
                 downloading.add(carid)
+                downloading_progress[carid] = max(0.0, min(100.0, progress))
             continue
 
         # 2) status / state 字符串
@@ -331,6 +342,7 @@ def _parse_download_codes(
                 completed.add(carid)
             elif status_lower in _DOWNLOADING_STATES:
                 downloading.add(carid)
+                downloading_progress[carid] = max(0.0, min(100.0, progress))
             # 其它状态字符串（未知）继续看数字码
             else:
                 # 尝试把 status 当 int 解析
@@ -340,6 +352,7 @@ def _parse_download_codes(
                         completed.add(carid)
                     elif code in _DOWNLOADING_STATUS_CODES:
                         downloading.add(carid)
+                        downloading_progress[carid] = max(0.0, min(100.0, progress))
                 except (TypeError, ValueError):
                     pass
             continue
@@ -352,23 +365,24 @@ def _parse_download_codes(
                     completed.add(carid)
                 elif v in _DOWNLOADING_STATUS_CODES:
                     downloading.add(carid)
+                    downloading_progress[carid] = max(0.0, min(100.0, progress))
                 # 未知码继续看进度
                 else:
-                    progress = _extract_progress(task)
                     if progress >= 100:
                         completed.add(carid)
                     elif progress > 0:
                         downloading.add(carid)
+                        downloading_progress[carid] = max(0.0, min(100.0, progress))
                 break
         else:
             # 4) 纯进度兜底
-            progress = _extract_progress(task)
             if progress >= 100:
                 completed.add(carid)
             elif progress > 0:
                 downloading.add(carid)
+                downloading_progress[carid] = max(0.0, min(100.0, progress))
 
-    return downloading, completed
+    return downloading, completed, downloading_progress
 
 
 def _extract_carid(name: str) -> Optional[str]:
