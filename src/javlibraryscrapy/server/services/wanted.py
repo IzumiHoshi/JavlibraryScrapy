@@ -38,7 +38,7 @@ from .wanted_refresh import (
 
 logger = logging.getLogger("gallery.wanted")
 
-__all__ = ["WantedService", "WantedRefreshJob", "_bucket_for_release_date"]
+__all__ = ["WantedService", "WantedRefreshJob", "_bucket_for_release_date", "STATUS_VALUES"]
 
 
 def _matches_query(movie: Dict[str, Any], q_lower: str) -> bool:
@@ -58,6 +58,36 @@ def _matches_query(movie: Dict[str, Any], q_lower: str) -> bool:
     if q_lower in actors:
         return True
     return False
+
+
+# Wanted 状态枚举（与前端 statusPicker 的 data-status 对齐）。
+# "none" 表示「没有任何 NAS / 本地库标记」的影片。
+STATUS_VALUES = ("none", "downloading", "downloaded", "organized")
+_STATUS_SET = frozenset(STATUS_VALUES)
+
+
+def _status_of(
+    movie: Dict[str, Any],
+    nas_downloading: set,
+    nas_completed: set,
+    local_exists_by_code: set,
+) -> str:
+    """判定 wanted 单部的状态（优先级：downloading > organized > downloaded > none）。
+
+    ``nas_downloading`` / ``nas_completed`` 是从 zspace 服务来的 car id 集合
+    （大写）；``local_exists_by_code`` 是 gallery.library_index 命中的 car id 集合
+    （大写）。wanted 服务本身不直接读这些，由 route 层负责查询后传进来。
+    """
+    code = (movie.get("code") or "").upper()
+    if not code:
+        return "none"
+    if code in nas_downloading:
+        return "downloading"
+    if code in local_exists_by_code:
+        return "organized"
+    if code in nas_completed:
+        return "downloaded"
+    return "none"
 
 
 class WantedService:
@@ -228,8 +258,16 @@ class WantedService:
         size: int = 60,
         include_missing: bool = True,
         q: str = "",
+        status_filter: str = "",
+        nas_downloading: Optional[set] = None,
+        nas_completed: Optional[set] = None,
+        local_exists_by_code: Optional[set] = None,
     ) -> Dict[str, Any]:
-        """按月份筛选 + 关键字搜索 + 分页。同时返回 ``months`` 列表（月份桶摘要）。
+        """按月份筛选 + 关键字搜索 + 状态筛选 + 分页。
+
+        同时返回 ``months`` 列表（月份桶摘要）+ ``status_counts``（4 状态计数，
+        与当前 month/q/filter 无关，全局计数）。status_counts 用于前端
+        ``statusPicker`` 控件显示「下载中 12 / 已下载 8 / 已整理 34」。
 
         P2：派生数据（months 摘要、missing 总数）已预计算，``_sorted_movies``
         已按 release_date 倒序。本方法只需一次过滤 + 切片。
@@ -237,7 +275,15 @@ class WantedService:
         ``q`` 是大小写不敏感的子串搜索，匹配车牌 / 标题 / 演员（任一命中即返回）。
         之前的版本把搜索留在前端做（``applyLocalFilter``），导致只能搜当前页 60 部。
         现在下沉到服务端，搜全部 129 部；前端用 debounce 输入框触发重拉。
+
+        ``status_filter`` 是 ``STATUS_VALUES`` 之一：空字符串表示不过滤。
+        状态判定需要 NAS codes + local_exists，由 route 层查询后传进来
+        （wanted 服务不直接依赖 gallery / zspace）。
         """
+        nas_downloading = nas_downloading or set()
+        nas_completed = nas_completed or set()
+        local_exists_by_code = local_exists_by_code or set()
+
         with self._lock:
             all_sorted = self._sorted_movies
             months = (
@@ -246,7 +292,13 @@ class WantedService:
             )
             missing_count = self._missing_count
 
-        # 单次过滤：月份 + include_missing + 关键字搜索
+        # 全局状态计数（不受 month/q/filter 影响）—— 一次性算好，O(N)
+        status_counts: Dict[str, int] = {s: 0 for s in STATUS_VALUES}
+        for m in all_sorted:
+            s = _status_of(m, nas_downloading, nas_completed, local_exists_by_code)
+            status_counts[s] += 1
+
+        # 单次过滤：月份 + include_missing + 关键字搜索 + 状态
         items = all_sorted
         if month:
             items = [m for m in items if (m.get("_bucket") or "unknown") == month]
@@ -255,6 +307,13 @@ class WantedService:
         q_norm = q.strip().lower()
         if q_norm:
             items = [m for m in items if _matches_query(m, q_norm)]
+        if status_filter and status_filter in _STATUS_SET:
+            items = [
+                m for m in items
+                if _status_of(
+                    m, nas_downloading, nas_completed, local_exists_by_code
+                ) == status_filter
+            ]
         # 已是倒序，直接切片
         total = len(items)
         page = max(1, page)
@@ -264,12 +323,14 @@ class WantedService:
 
         return {
             "months": list(months),  # 防御性 copy
+            "status_counts": status_counts,
             "items": page_items,
             "total": total,
             "page": page,
             "size": size,
             "month": month,
             "q": q,
+            "status_filter": status_filter,
             "missing_in_remote_count": missing_count,
         }
 

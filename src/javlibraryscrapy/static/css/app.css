@@ -167,6 +167,52 @@
   }
   .active-filters .chip-x:hover { color: var(--err); }
 
+  /* ---------- 状态筛选 chips（/wanted） ---------- */
+  .status-filter {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .status-filter .chip-btn {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 5px 10px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    color: var(--text-dim);
+    font-size: 13px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .status-filter .chip-btn:hover:not(.active) {
+    background: var(--card-hover);
+    color: var(--text);
+  }
+  .status-filter .chip-btn.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    font-weight: 600;
+  }
+  .status-filter .chip-btn .count {
+    display: inline-block;
+    min-width: 18px;
+    padding: 0 5px;
+    background: rgba(255, 255, 255, 0.18);
+    border-radius: 9px;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+    color: inherit;
+    opacity: 0.85;
+  }
+  .status-filter .chip-btn:not(.active) .count {
+    background: var(--card-hover);
+    color: var(--text-dim);
+  }
+
   /* ---------- 月份选择器（/library） ---------- */
   .month-picker-wrap {
     position: relative;

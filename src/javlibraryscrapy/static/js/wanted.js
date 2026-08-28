@@ -48,9 +48,10 @@ export async function initWanted() {
   let nasCompleted = new Set();
   let nasConfigured = false;
 
-  // ---- URL 状态：month / page / q ----
+  // ---- URL 状态：month / page / q / status ----
   const params = new URLSearchParams(location.search);
   let month = params.get('month') || '';
+  let status = params.get('status') || '';
   let page = Math.max(1, parseInt(params.get('page') || '1', 10) || 1);
   const size = 60;
   let q = '';  // 本地搜索（不写 URL，避免 URL 混乱）
@@ -58,10 +59,53 @@ export async function initWanted() {
   function updateUrl() {
     const p = new URLSearchParams();
     if (month) p.set('month', month);
+    if (status) p.set('status', status);
     if (page > 1) p.set('page', page);
     const qs = p.toString();
     history.replaceState(null, '', qs ? `?${qs}` : location.pathname);
   }
+
+  // 状态筛选 chips：与 /library 的月份选择器同模式（toggle button group）
+  // - 点击切换 active，重置 page=1，调 load()
+  // - 后端 response.status_counts 写入每个 chip 的 count
+  function renderStatusFilter() {
+    document.querySelectorAll('#w-status-filter .chip-btn').forEach((btn) => {
+      const sv = btn.getAttribute('data-status') || '';
+      btn.classList.toggle('active', sv === status);
+    });
+  }
+
+  function updateStatusCounts(counts) {
+    // counts: { none, downloading, downloaded, organized } 或 undefined（NAS 未配置时）
+    const total = counts
+      ? (counts.none|0) + (counts.downloading|0) + (counts.downloaded|0) + (counts.organized|0)
+      : null;
+    document.querySelectorAll('#w-status-filter .chip-btn').forEach((btn) => {
+      const sv = btn.getAttribute('data-status') || '';
+      const cell = btn.querySelector('[data-status-count]');
+      if (!cell) return;
+      let val;
+      if (sv === '') {
+        // 「全部」chip 用全集 total，不分状态
+        val = total;
+      } else {
+        val = counts ? (counts[sv] ?? 0) : null;
+      }
+      cell.textContent = val == null ? '—' : String(val);
+    });
+  }
+
+  document.querySelectorAll('#w-status-filter .chip-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const sv = btn.getAttribute('data-status') || '';
+      if (sv === status) return;  // 没变就不动
+      status = sv;
+      page = 1;
+      renderStatusFilter();
+      updateUrl();
+      load();
+    });
+  });
 
   function loadSelection() {
     try {
@@ -279,6 +323,7 @@ export async function initWanted() {
     updateUrl();
     const qs = new URLSearchParams({ page, size });
     if (month) qs.set('month', month);
+    if (status) qs.set('status', status);
     if (q) qs.set('q', q);  // 搜索关键字由服务端过滤（搜全部 129 部，不止当前页 60 部）
     // wanted 列表 + NAS 下载代码集 并行拉（NAS 端走 30s 服务端缓存，快）
     const moviesPromise = (async () => {
@@ -304,6 +349,8 @@ export async function initWanted() {
       total = data.total || 0;
       pages = Math.max(1, Math.ceil(total / size));
       monthPicker.render();
+      renderStatusFilter();
+      updateStatusCounts(data.status_counts);
       render();
     } catch (e) {
       $('grid').innerHTML = `<div class="empty">加载失败：${esc(e.message)}</div>`;
@@ -358,6 +405,21 @@ export async function initWanted() {
     } catch (e) {
       // 静默失败：不阻塞用户操作
       console.warn('loadMonthsOnly failed:', e);
+    }
+  }
+
+  // 只刷新状态 chips 的 count（不动 grid）。
+  // 用于：单车 JavBus 重抓成功后，status 可能从 none → (still none，看是否有 NAS 标记)
+  // 或 organize 成功后从 downloaded → organized。轻量拉 size=1 主列表复用 status_counts。
+  async function loadStatusCountsOnly() {
+    try {
+      // 复用主列表的 status_counts（全局字段，不受 filter 影响）
+      const res = await fetch('/api/wanted?size=1');
+      if (!res.ok) return;
+      const data = await res.json();
+      updateStatusCounts(data.status_counts);
+    } catch {
+      // 静默失败
     }
   }
 
@@ -977,6 +1039,8 @@ export async function initWanted() {
       const i = movies.findIndex((x) => x.code === code);
       if (i >= 0) movies[i].local_exists = true;
       renderCardInPlace(code);
+      // 整理成功 → 该车从「已下载」转到「已整理」，刷新 status chips 的 count
+      loadStatusCountsOnly();
     } catch (e) {
       toast(`${code} 整理失败：${e.message}`, true);
       btn.disabled = false;

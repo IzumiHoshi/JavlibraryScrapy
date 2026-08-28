@@ -401,17 +401,62 @@ def register(app: FastAPI) -> None:
         size: int = Query(default=60, ge=1, le=200),
         include_missing: bool = Query(default=True),
         q: str = Query(default="", description="搜索关键字（车牌/标题/演员，大小写不敏感）"),
+        status_filter: str = Query(
+            default="",
+            description=(
+                "按 NAS / 本地库状态筛选。可选：downloading / downloaded / "
+                "organized / none（无标记）；空字符串 = 不过滤"
+            ),
+        ),
     ) -> Dict[str, Any]:
+        from ..services.wanted import STATUS_VALUES as _STATUS_VALUES
+        # 校验 status_filter：非法值视同未传（前端误传容错）
+        if status_filter and status_filter not in _STATUS_VALUES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"非法的 status_filter={status_filter!r}（可选：{', '.join(_STATUS_VALUES)}）",
+            )
         wanted: WantedService = request.app.state.wanted
         gallery = request.app.state.gallery
         # 启动期 create_app 已经按 settings 配好 cache；这里直接用。
         cache = getattr(request.app.state, "sample_cache", None) or get_sample_cache()
+
+        # 拉 NAS 下载代码集（30s 服务端缓存）。失败时降级为空集——
+        # 这种情况下所有 wanted 都会归入 "none"，status_filter 失效，
+        # 但页面其它功能（月份/搜索）照常工作。
+        nas_downloading: set = set()
+        nas_completed: set = set()
+        zspace_client = getattr(request.app.state, "zspace", None)
+        if zspace_client is not None:
+            try:
+                nas_downloading, nas_completed = await zspace_client.get_download_codes()
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"list_wanted: NAS codes 不可用 ({e})，按空集处理")
+
+        # local_exists set（O(N)，in-memory library_index 扫描）。
+        # 整理完的车牌 → 走 LibraryIndex.find_match 双向前缀匹配，
+        # 兼容车牌 + 不同子编码前缀。
+        local_exists_by_code: set = set()
+        lib_index = getattr(gallery, "library_index", None)
+        if lib_index is not None and hasattr(lib_index, "items"):
+            try:
+                # LibraryIndex 是 dict-like（key=code → MovieEntry），直接迭代
+                local_exists_by_code = {
+                    code.upper() for code in lib_index.keys()
+                }
+            except Exception:  # noqa: BLE001
+                local_exists_by_code = set()
+
         result = wanted.list(
             month=month,
             page=page,
             size=size,
             include_missing=include_missing,
             q=q,
+            status_filter=status_filter,
+            nas_downloading=nas_downloading,
+            nas_completed=nas_completed,
+            local_exists_by_code=local_exists_by_code,
         )
 
         # local_samples：NFS glob 单次几百毫秒～几秒，60 条串行扫 = 几十秒。
@@ -424,7 +469,6 @@ def register(app: FastAPI) -> None:
         # local_exists=true → 前端徽章变「📁 已整理」（紫色），点击按钮消失。
         # 双向匹配（LibraryIndex.find_match 是 a.startswith(b) or b.startswith(a)），
         # 兼容车牌 + 不同子编码前缀。
-        lib_index = getattr(gallery, "library_index", None)
         result["items"] = [
             {
                 **item,
