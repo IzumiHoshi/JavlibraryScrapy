@@ -367,6 +367,12 @@
     padding-top: 10px;
     border-top: 1px solid var(--border);
   }
+  /* chip-btn：toolbar 里散用的变体（跟 .toolbar button 同高 / 同 padding / 同 border-radius）
+ * 真正「chips 群组」用 .status-filter .chip-btn / .month-popup-foot .chip-btn 单独覆盖。 */
+  .toolbar > .chip-btn {
+    padding: 7px 12px;
+    border-radius: 8px;
+  }
   .chip-btn {
     padding: 5px 12px;
     border-radius: 999px;
