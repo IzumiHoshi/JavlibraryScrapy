@@ -116,19 +116,19 @@
   }
   button.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(--accent); }
   .spacer { flex: 1; }
-  .count { color: var(--text-dim); font-size: 13px; font-variant-numeric: tabular-nums; }
-  /* toolbar 里的 .count（已选 N / total）：跟 button 同高同 padding。
-   * 触屏 responsive.css 已经覆盖 inline-flex + padding + min-height 40px；
-   * 这里补桌面端的视觉对齐（默认 33px = padding 7+7+14+5）。 */
+  /* toolbar 里的「已选 N / total」：纯文字状态指示，不加框 / 背景。
+   * 不做成按钮样（避免误导用户去点），只通过行内 inline-flex + accent 色数字
+   * 跟周围按钮形成「可操作 vs 只读」分组。高度靠 min-height + line-height
+   * 跟 toolbar 其它元素对齐（不用 padding 也能对齐）。 */
   .toolbar > .count {
     display: inline-flex;
     align-items: center;
     min-height: 33px;
-    padding: 0 12px;
-    background: var(--bg-elev);
-    border: 1px solid var(--border);
-    border-radius: 8px;
     line-height: 1;
+    color: var(--text-dim);
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
   .count b { color: var(--accent); font-size: 15px; }
   /* lib-status 分段：路径独立 span + title 提示；desktop 阶段 32em 上限避免溢出 toolbar */

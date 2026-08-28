@@ -116,14 +116,10 @@
   .spacer {
     display: none;
   }
+  /* 触屏 .count：跟 app.css 一样去掉 border/background，纯文字状态指示 */
   .count {
     order: 2;
     flex: 0 0 auto;
-    padding: 8px 10px;
-    background: var(--bg-elev);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    font-size: 13px;
     min-height: 40px;
     display: inline-flex;
     align-items: center;
