@@ -117,6 +117,19 @@
   button.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(--accent); }
   .spacer { flex: 1; }
   .count { color: var(--text-dim); font-size: 13px; font-variant-numeric: tabular-nums; }
+  /* toolbar 里的 .count（已选 N / total）：跟 button 同高同 padding。
+   * 触屏 responsive.css 已经覆盖 inline-flex + padding + min-height 40px；
+   * 这里补桌面端的视觉对齐（默认 33px = padding 7+7+14+5）。 */
+  .toolbar > .count {
+    display: inline-flex;
+    align-items: center;
+    min-height: 33px;
+    padding: 0 12px;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    line-height: 1;
+  }
   .count b { color: var(--accent); font-size: 15px; }
   /* lib-status 分段：路径独立 span + title 提示；desktop 阶段 32em 上限避免溢出 toolbar */
   #lib-status .ls-sep { margin: 0 4px; opacity: 0.4; }
@@ -220,13 +233,18 @@
     }
   }
 
-  /* ---------- 状态筛选 chips（/wanted） ---------- */
+  /* ---------- 状态筛选 chips（/wanted） ----------
+   * 高度统一：外框 padding+border = 3px，chip 内 padding 5x10 + 13px 字 ≈ 30px，
+   * 合计 33px = .toolbar button（padding 7x12 + 14px 字 ≈ 33px）。
+   */
   .status-filter {
-    display: inline-flex; align-items: center; gap: 4px;
-    padding: 2px;
+    display: inline-flex; align-items: center; gap: 3px;
+    padding: 0;
     background: var(--bg);
     border: 1px solid var(--border);
     border-radius: 8px;
+    min-height: 33px;            /* 跟 .toolbar button 同高，避免 flex-wrap 后错位 */
+    box-sizing: border-box;
   }
   .status-filter .chip-btn {
     display: inline-flex; align-items: center; gap: 4px;
@@ -236,6 +254,7 @@
     border-radius: 6px;
     color: var(--text-dim);
     font-size: 13px;
+    line-height: 1.2;
     cursor: pointer;
     white-space: nowrap;
   }
