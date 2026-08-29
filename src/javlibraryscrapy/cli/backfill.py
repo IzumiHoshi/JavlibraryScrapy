@@ -205,14 +205,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     def _on_progress(carid: str, status: str) -> None:
         logger.info(f"  · {carid} {status}")
 
-    stats = backfill_library(
+    stats = asyncio.run(backfill_library(
         library_root,
         cover_urls=cover_urls,
         on_progress=_on_progress,
         delay_seconds=args.delay,
         timeout_seconds=args.timeout,
         max_count=args.limit,
-    )
+    ))
 
     logger.info(
         f"完成：backfilled {stats['backfilled']}/{stats['needs_backfill']}，"

@@ -540,7 +540,7 @@ def register(app: FastAPI) -> None:
             (wanted_movie or {}).get("cover_url", "").strip() if wanted_movie else ""
         ) or None
 
-        result = backfill_one(
+        result = await backfill_one(
             Path(entry.folder),
             javbus_proxy=state.proxy,
             cover_url=cover_url,

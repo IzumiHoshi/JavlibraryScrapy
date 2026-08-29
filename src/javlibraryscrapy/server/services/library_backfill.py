@@ -20,7 +20,9 @@ gallery 可用的后台任务：
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -28,6 +30,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from javlibraryscrapy.library.backfill import backfill_library
+from scrapling.fetchers import AsyncDynamicSession
 
 if TYPE_CHECKING:
     from .library import GalleryState
@@ -256,36 +259,14 @@ class LibraryBackfillService:
             )
 
         try:
-            stats = backfill_library(
-                root,
-                cover_urls=cover_urls,
-                javbus_proxy=javbus_proxy,
+            # 在 async 上下文里建 1 个 AsyncDynamicSession 跑完整个 batch，
+            # 每部省 3-5 秒 Chromium 重建（1157 部约节省 1 小时）。
+            # 整个 asyncio.run 内所有部共享 cookies + 连接池。
+            asyncio.run(self._run_async(
+                root, cover_urls, javbus_proxy,
                 on_progress=_on_progress,
                 on_per_movie=_on_per_movie,
-                cancel_event=self._cancel_event,
-                delay_seconds=self.delay_seconds,
-                timeout_seconds=self.timeout_seconds,
-            )
-            failed_count = sum(1 for r in stats["results"] if r["failed"])
-
-            job._set(
-                status="done",
-                phase="done",
-                finished_at=datetime.now().isoformat(timespec="seconds"),
-                total=stats["total"],
-                needs_backfill=stats["needs_backfill"],
-                skipped_complete=stats["skipped_complete"],
-                skipped_no_video=stats["skipped_no_video"],
-                skipped_no_carid=stats["skipped_no_carid"],
-                backfilled=stats["backfilled"],
-                failed=failed_count,
-                cancelled=stats.get("cancelled", False),
-                current_code=None,
-                current_folder=None,
-            )
-            for r in stats["results"]:
-                if r["failed"]:
-                    job.add_failed(r.get("code"), r.get("error", ""))
+            ))
         except Exception as e:  # noqa: BLE001
             logger.error(f"补齐任务异常：{e}")
             job._set(
@@ -293,6 +274,57 @@ class LibraryBackfillService:
                 error=str(e),
                 finished_at=datetime.now().isoformat(timespec="seconds"),
             )
+
+    async def _run_async(
+        self,
+        root: Path,
+        cover_urls: Dict[str, str],
+        javbus_proxy: Optional[str],
+        *,
+        on_progress: Any,
+        on_per_movie: Any,
+    ) -> None:
+        # 从 gallery_state 读 JAVBus session 配置（与 .env 同步）
+        gs = self.gallery_state
+        async with AsyncDynamicSession(
+            load_dom=gs.proxy is not None or True,  # 保持与父类 __init__ 一致行为
+            network_idle=True,
+            disable_resources=True,
+            proxy=javbus_proxy,
+            headless=True,
+            timeout=int(os.getenv("SCRAPLING_TIMEOUT", "30000")),
+        ) as session:
+            stats = await backfill_library(
+                root,
+                cover_urls=cover_urls,
+                javbus_proxy=javbus_proxy,
+                on_progress=on_progress,
+                on_per_movie=on_per_movie,
+                cancel_event=self._cancel_event,
+                delay_seconds=self.delay_seconds,
+                timeout_seconds=self.timeout_seconds,
+                session=session,
+            )
+
+        failed_count = sum(1 for r in stats["results"] if r["failed"])
+        self.job._set(
+            status="done",
+            phase="done",
+            finished_at=datetime.now().isoformat(timespec="seconds"),
+            total=stats["total"],
+            needs_backfill=stats["needs_backfill"],
+            skipped_complete=stats["skipped_complete"],
+            skipped_no_video=stats["skipped_no_video"],
+            skipped_no_carid=stats["skipped_no_carid"],
+            backfilled=stats["backfilled"],
+            failed=failed_count,
+            cancelled=stats.get("cancelled", False),
+            current_code=None,
+            current_folder=None,
+        )
+        for r in stats["results"]:
+            if r["failed"]:
+                self.job.add_failed(r.get("code"), r.get("error", ""))
 
 
 __all__ = ["LibraryBackfillService", "BackfillJob"]
