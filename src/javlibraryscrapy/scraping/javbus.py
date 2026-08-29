@@ -421,13 +421,21 @@ class JavbusSpider:
             )
         return paths
 
-    async def crawl_and_process(self, car_list: List[tuple]):
+    async def crawl_and_process(self, car_list: List[tuple], session=None):
         """
         爬取并处理电影信息，使用会话保持浏览器连接
 
         Args:
             car_list: 车牌列表，格式为 [(car_id, video_path), ...]
+            session: 可选外部 AsyncDynamicSession（不接管生命周期，让 caller
+                负责 ``async with``）。传入时复用：避免每部都重建 Chromium
+                session（每部省 3-5 秒，1157 部约节省 1 小时）。
         """
+        if session is not None:
+            # 复用外部 session（caller 负责生命周期）
+            await self._crawl_car_list(car_list, session)
+            return
+
         logger.info(
             "创建 JAVBus 会话：代理=%s，load_dom=%s，network_idle=%s，"
             "disable_resources=%s，headless=%s，timeout=%sms",
@@ -438,7 +446,7 @@ class JavbusSpider:
             self.headless,
             self.timeout,
         )
-        # 使用 AsyncDynamicSession 保持浏览器会话
+        # 单独运行时自己管理 session 生命周期
         async with AsyncDynamicSession(
             load_dom=self.load_dom,
             network_idle=self.network_idle,
@@ -447,46 +455,52 @@ class JavbusSpider:
             headless=self.headless,
             timeout=self.timeout,
         ) as session:
-            for car_id, video_path in car_list:
-                url = f"{self.javbus_url}{car_id}"
-                logger.info(f"正在爬取：{url}")
+            await self._crawl_car_list(car_list, session)
 
-                try:
-                    # 使用会话获取页面
-                    page = await session.fetch(url)
-                    logger.info(
-                        "页面响应：车牌=%s，类型=%s，URL=%s，HTML长度=%s",
-                        car_id,
-                        type(page).__name__,
-                        getattr(page, "url", "(未知)"),
-                        len(getattr(page, "html", "") or ""),
-                    )
-                    logger.info(
-                        "页面结构统计：车牌=%s，磁力链接=%d，旧 class 选择器=%d，全部 a 标签=%d",
-                        car_id,
-                        len(page.css('a[href^="magnet:"]')),
-                        len(page.css("a.link-magnet")),
-                        len(page.css("a")),
-                    )
+    async def _crawl_car_list(
+        self, car_list: List[tuple], session: "AsyncDynamicSession"
+    ):
+        """共用循环：从 JAVBus 抓页 + 解析 + process_movie（每部 try/except 隔离）。"""
+        for car_id, video_path in car_list:
+            url = f"{self.javbus_url}{car_id}"
+            logger.info(f"正在爬取：{url}")
 
-                    # 解析页面
-                    movie_info = await self.parse(page)
-                    logger.info(
-                        "解析完成：车牌=%s，标题=%r，磁力=%s",
-                        car_id,
-                        movie_info.get("title", ""),
-                        "已提取" if movie_info.get("magnet") else "为空",
-                    )
-                    movie_info["path"] = video_path
+            try:
+                # 使用会话获取页面
+                page = await session.fetch(url)
+                logger.info(
+                    "页面响应：车牌=%s，类型=%s，URL=%s，HTML长度=%s",
+                    car_id,
+                    type(page).__name__,
+                    getattr(page, "url", "(未知)"),
+                    len(getattr(page, "html", "") or ""),
+                )
+                logger.info(
+                    "页面结构统计：车牌=%s，磁力链接=%d，旧 class 选择器=%d，全部 a 标签=%d",
+                    car_id,
+                    len(page.css('a[href^="magnet:"]')),
+                    len(page.css("a.link-magnet")),
+                    len(page.css("a")),
+                )
 
-                    self.movie_info_list.append(movie_info)
+                # 解析页面
+                movie_info = await self.parse(page)
+                logger.info(
+                    "解析完成：车牌=%s，标题=%r，磁力=%s",
+                    car_id,
+                    movie_info.get("title", ""),
+                    "已提取" if movie_info.get("magnet") else "为空",
+                )
+                movie_info["path"] = video_path
 
-                    # 处理电影信息
-                    await self.process_movie(movie_info)
+                self.movie_info_list.append(movie_info)
 
-                except Exception as e:
-                    logger.error(f"爬取失败 - 车牌: {car_id}, 错误: {e}")
-                    continue
+                # 处理电影信息
+                await self.process_movie(movie_info)
+
+            except Exception as e:
+                logger.error(f"爬取失败 - 车牌: {car_id}, 错误: {e}")
+                continue
 
     async def process_movie(self, info: Dict[str, Any]):
         """

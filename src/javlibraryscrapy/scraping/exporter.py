@@ -120,6 +120,7 @@ class MovieExporter(JavbusSpider):
         magnets_index: Optional[Path] = None,
         javlibrary_proxy: Optional[str] = None,
         bucket_by_month: bool = False,
+        overwrite_nfo: bool = True,
     ):
         # 把 output_root 同时设到 root_dir：JavbusSpider.download_cover
         # 会把临时 ``<CARID>.png`` 落到这里，方便我们后续 rename 到 fanart.jpg。
@@ -141,6 +142,12 @@ class MovieExporter(JavbusSpider):
         #   False（默认）：<output_root>/<CARID> <title>/   ← wanted / export_mostwanted
         #   True：<output_root>/<YYYY-MM>/<CARID> <title>/   ← workflow 端到端
         self.bucket_by_month = bucket_by_month
+        # NFO 覆写开关：默认 True（保持 export_mostwanted / workflow 旧行为）；
+        # ``library.backfill`` 显式传 False，避免重抓已存在的 NFO
+        # （与"补齐缺失，不动已有"的语义一致；cover/samples/fanart 的幂等
+        # 由 ``_place_fanart`` / ``_download_javlibrary_cover`` /
+        # ``_move_samples_to_target`` 的 .exists() 检查兜底，与本开关无关）。
+        self.overwrite_nfo = overwrite_nfo
 
         # 每次 export_movies 调用前重置
         self._magnet_results: List[Dict[str, Any]] = []
@@ -158,6 +165,7 @@ class MovieExporter(JavbusSpider):
         *,
         cover_urls: Optional[Dict[str, str]] = None,
         on_progress: Optional[Callable[[str, str], None]] = None,
+        session: Optional["AsyncDynamicSession"] = None,
     ) -> Dict[str, Any]:
         """批量削刮并写入本地库。
 
@@ -169,6 +177,10 @@ class MovieExporter(JavbusSpider):
                 用于下载 poster.jpg；缺 key 的车跳过 poster 下载。
             on_progress: 可选回调 ``(car_id, status)``；status ∈
                 ``{"ok", "failed"}``，在每部 process_movie 结束后触发。
+            session: 可选外部 AsyncDynamicSession（让 caller 决定生命周期；
+                传入时复用同一 session，避免每部重建 Chromium 上下文）。
+                通常用法：caller 在 ``async with AsyncDynamicSession(...) as s:``
+                上下文里循环调本方法，每次复用 ``s``。
 
         Returns:
             ``{"total": int, "written": int, "failed": int,
@@ -189,9 +201,10 @@ class MovieExporter(JavbusSpider):
 
         total = len(car_list)
 
-        # 复用父类 crawl_and_process：建一次 AsyncDynamicSession，循环抓
+        # 复用父类 crawl_and_process：传入 session 时复用（caller 管生命周期），
+        # 不传则 crawl_and_process 内部自己 ``async with`` 新建。
         try:
-            await self.crawl_and_process(car_list)
+            await self.crawl_and_process(car_list, session=session)
         except Exception as e:  # noqa: BLE001
             # 整个流程崩了（极少见；网络断 / session 异常）；已处理的算入统计
             logger.error(f"export_movies 主流程异常：{e}")
@@ -262,7 +275,11 @@ class MovieExporter(JavbusSpider):
                 self._move_video(info, carid, title, save_dir)
 
             # 2. 写 NFO（统一名 movie.nfo）
-            write_xml(save_dir / "movie.nfo", info)
+            # ``overwrite_nfo=False`` 时若 movie.nfo 已存在则跳过（不主动覆写）；
+            # cover / fanart / samples 的"存在则跳过"在各自 helper 里。
+            nfo_path = save_dir / "movie.nfo"
+            if self.overwrite_nfo or not nfo_path.exists():
+                write_xml(nfo_path, info)
 
             # 3. fanart.jpg —— JavbusSpider.download_cover 落地的临时 <carid>.png
             self._place_fanart(info, carid, save_dir)
@@ -380,7 +397,8 @@ class MovieExporter(JavbusSpider):
             return False
 
     def _move_samples_to_target(
-        self, sample_urls: List[str], car_id: str, save_dir: Path
+        self, sample_urls: List[str], car_id: str, save_dir: Path,
+        max_workers: int = 6,
     ) -> int:
         """调用父类 download_samples（落到 ``<root_dir>/<CARID>_sample_NNN.jpg``），
         然后 rename 到 ``<save_dir>/sample_NNN.jpg``。
@@ -389,14 +407,25 @@ class MovieExporter(JavbusSpider):
 
         注意：idx 从 ``src.name`` 反推，不用 ``enumerate``。download_samples 内部
         单张失败时 list 不连续，列表索引会跟原 URL idx 错位 → 文件名错位 + 缺失。
+
+        性能：默认 ``max_workers=6`` 并发下载 sample（每张 ~1-2 秒，20 张串行
+        约 30 秒 → 并发 6 张约 5-7 秒）。受 NAS 带宽限制，并发数不宜过大。
         """
         if not sample_urls:
             return 0
-        try:
-            downloaded = self.download_samples(sample_urls, car_id)
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"download_samples 调用失败 {car_id}: {e}")
-            downloaded = []
+        # 并发下载到临时位置：避免对 JavbusSpider 父类接口做破坏性改动
+        downloaded: List[Path] = []
+        if max_workers <= 1:
+            # 单线程 fallback（与原 JavbusSpider.download_samples 行为一致）
+            try:
+                downloaded = self.download_samples(sample_urls, car_id)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"download_samples 调用失败 {car_id}: {e}")
+                downloaded = []
+        else:
+            downloaded = self._download_samples_concurrent(
+                sample_urls, car_id, max_workers=max_workers
+            )
 
         moved = 0
         for src in downloaded:
@@ -425,6 +454,71 @@ class MovieExporter(JavbusSpider):
                 leftover.unlink()
             except OSError:
                 pass
+
+        return moved
+
+    def _download_samples_concurrent(
+        self,
+        sample_urls: List[str],
+        car_id: str,
+        *,
+        max_workers: int = 6,
+        per_request_timeout: int = 30,
+    ) -> List[Path]:
+        """并发下载 sample 到 ``<root_dir>/<CARID>_sample_NNN.jpg``。
+
+        与父类 :meth:`JavbusSpider.download_samples` 行为一致（文件名格式相同），
+        但用 ThreadPoolExecutor 并发请求。失败的单张不影响整体。
+
+        Returns:
+            成功下载的临时路径列表（顺序与 sample_urls 一致 —— 失败的 idx
+            会缺失，但 NNN 文件名仍正确）。
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        proxy = self.proxy
+        headers = {
+            "User-Agent": self.user_agent,
+            "Accept": "image/jpeg,image/*,*/*;q=0.8",
+            "Referer": self.javbus_url.rstrip("/") + "/",
+        }
+        proxies = ({"http": proxy, "https": proxy} if proxy else None)
+        verify = False if proxy else True
+
+        def _fetch(idx_url: Tuple[int, str]):
+            idx, url = idx_url
+            tmp = self.root_dir / f"{car_id}_sample_{idx:03d}.jpg"
+            try:
+                r = requests.get(
+                    url,
+                    headers=headers,
+                    timeout=per_request_timeout,
+                    proxies=proxies,
+                    verify=verify,
+                )
+                r.raise_for_status()
+                tmp.write_bytes(r.content)
+                return tmp
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"下载 sample {idx} 失败 {car_id}: {e}")
+                return None
+
+        results: List[Optional[Path]] = [None] * len(sample_urls)
+        try:
+            with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                futures = {
+                    ex.submit(_fetch, (i + 1, url)): i
+                    for i, url in enumerate(sample_urls)
+                }
+                for fut in as_completed(futures):
+                    i = futures[fut]
+                    try:
+                        results[i] = fut.result()
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(f"sample future 异常 {car_id} idx={i+1}: {e}")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"sample 并发下载失败 {car_id}: {e}")
+        return [p for p in results if p is not None]
 
         if moved:
             logger.info(f"{car_id} samples 落地 {moved}/{len(sample_urls)} 张")
