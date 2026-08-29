@@ -30,6 +30,8 @@ javlibraryscrapy-workflow = "javlibraryscrapy.cli.workflow:main"
 javlibraryscrapy-move = "javlibraryscrapy.cli.move_videos:main"
 # 去除文件名中 @ 符号之前的内容
 javlibraryscrapy-rename = "javlibraryscrapy.cli.rename_at_symbol:main"
+# 补齐本地库缺失的 NFO / 封面 / 样图
+javlibraryscrapy-backfill = "javlibraryscrapy.cli.backfill:main"
 # 扫描本地影片库（不暴露 CLI 入口，仅 `python -m` 调用）
 
 [build-system]
