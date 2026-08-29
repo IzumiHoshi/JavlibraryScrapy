@@ -120,6 +120,7 @@ class MovieExporter(JavbusSpider):
         magnets_index: Optional[Path] = None,
         javlibrary_proxy: Optional[str] = None,
         bucket_by_month: bool = False,
+        overwrite_nfo: bool = True,
     ):
         # 把 output_root 同时设到 root_dir：JavbusSpider.download_cover
         # 会把临时 ``<CARID>.png`` 落到这里，方便我们后续 rename 到 fanart.jpg。
@@ -141,6 +142,12 @@ class MovieExporter(JavbusSpider):
         #   False（默认）：<output_root>/<CARID> <title>/   ← wanted / export_mostwanted
         #   True：<output_root>/<YYYY-MM>/<CARID> <title>/   ← workflow 端到端
         self.bucket_by_month = bucket_by_month
+        # NFO 覆写开关：默认 True（保持 export_mostwanted / workflow 旧行为）；
+        # ``library.backfill`` 显式传 False，避免重抓已存在的 NFO
+        # （与"补齐缺失，不动已有"的语义一致；cover/samples/fanart 的幂等
+        # 由 ``_place_fanart`` / ``_download_javlibrary_cover`` /
+        # ``_move_samples_to_target`` 的 .exists() 检查兜底，与本开关无关）。
+        self.overwrite_nfo = overwrite_nfo
 
         # 每次 export_movies 调用前重置
         self._magnet_results: List[Dict[str, Any]] = []
@@ -262,7 +269,11 @@ class MovieExporter(JavbusSpider):
                 self._move_video(info, carid, title, save_dir)
 
             # 2. 写 NFO（统一名 movie.nfo）
-            write_xml(save_dir / "movie.nfo", info)
+            # ``overwrite_nfo=False`` 时若 movie.nfo 已存在则跳过（不主动覆写）；
+            # cover / fanart / samples 的"存在则跳过"在各自 helper 里。
+            nfo_path = save_dir / "movie.nfo"
+            if self.overwrite_nfo or not nfo_path.exists():
+                write_xml(nfo_path, info)
 
             # 3. fanart.jpg —— JavbusSpider.download_cover 落地的临时 <carid>.png
             self._place_fanart(info, carid, save_dir)
