@@ -18,6 +18,7 @@ javlibraryscrapy.library.backfill 的单元测试。
 
 from __future__ import annotations
 
+import asyncio
 import sys
 import tempfile
 import textwrap
@@ -43,6 +44,9 @@ from javlibraryscrapy.scraping.exporter import MovieExporter  # noqa: E402
 # --------------------------------------------------------------------------- #
 # helpers
 # --------------------------------------------------------------------------- #
+def _run(coro):
+    """测试用：在同步上下文里跑 async 函数（asyncio.run）。"""
+    return asyncio.run(coro)
 def _write_nfo(folder: Path, carid: str, title: str = "Test Title") -> None:
     """写一个最简合法 movie.nfo。"""
     folder.mkdir(parents=True, exist_ok=True)
@@ -217,7 +221,7 @@ class TestIterMovieFolders:
 class TestBackfillOneSkipPaths:
     def test_complete_folder_returns_skipped(self, tmp_path):
         folder = _build_complete(tmp_path, "ABF-340", "Complete")
-        result = backfill_one(folder)
+        result = _run(backfill_one(folder))
         assert result["skipped"] is True
         assert result["skipped_reason"] == "complete"
         assert result["code"] == "ABF-340"
@@ -225,7 +229,7 @@ class TestBackfillOneSkipPaths:
 
     def test_no_video_returns_skipped(self, tmp_path):
         folder = _build_no_video(tmp_path, "ABF-340", "No Video")
-        result = backfill_one(folder)
+        result = _run(backfill_one(folder))
         assert result["skipped"] is True
         assert result["skipped_reason"] == "no_video"
         assert result["failed"] is False
@@ -234,7 +238,7 @@ class TestBackfillOneSkipPaths:
         folder = tmp_path / "no_carid"
         folder.mkdir()
         (folder / "v.mp4").write_bytes(b"x")
-        result = backfill_one(folder)
+        result = _run(backfill_one(folder))
         assert result["skipped"] is True
         assert result["skipped_reason"] == "no_carid_or_excluded"
         assert result["code"] is None
@@ -251,7 +255,7 @@ class TestBackfillOneFullPath:
     def test_calls_exporter_with_correct_args(self, tmp_path):
         folder = _build_no_nfo(tmp_path, "ABF-340", "Missing NFO")
         # patch 掉 MovieExporter.export_movies：直接写一份假 NFO 模拟成功
-        async def fake_export_movies(self, car_list, *, cover_urls=None, on_progress=None):
+        async def fake_export_movies(self, car_list, *, cover_urls=None, on_progress=None, session=None):
             code, _ = car_list[0]
             # 模拟 JAVBus 流程落地
             (folder / "movie.nfo").write_text(
@@ -262,11 +266,11 @@ class TestBackfillOneFullPath:
             return {"total": 1, "written": 1, "failed": 0, "skipped": 0, "magnets_collected": 0}
 
         with patch.object(MovieExporter, "export_movies", fake_export_movies):
-            result = backfill_one(
+            result = _run(backfill_one(
                 folder,
                 cover_url="https://example.com/cover.jpg",
                 timeout_seconds=10,
-            )
+            ))
 
         assert result["skipped"] is False
         assert result["failed"] is False
@@ -295,7 +299,7 @@ class TestBackfillOneFullPath:
 
         with patch.object(MovieExporter, "__init__", spy_init), \
              patch.object(MovieExporter, "export_movies", fake_export_movies):
-            backfill_one(folder, timeout_seconds=10)
+            _run(backfill_one(folder, timeout_seconds=10))
 
         assert captured.get("overwrite_nfo") is True
         assert captured.get("download_samples") is False  # sample 已存在
@@ -326,7 +330,7 @@ class TestBackfillOneFullPath:
 
         with patch.object(MovieExporter, "__init__", spy_init), \
              patch.object(MovieExporter, "export_movies", fake_export_movies):
-            backfill_one(folder, cover_url="https://example.com/c.jpg", timeout_seconds=10)
+            _run(backfill_one(folder, cover_url="https://example.com/c.jpg", timeout_seconds=10))
 
         # NFO 已存在 → overwrite_nfo=False（保护已有 NFO）
         assert captured.get("overwrite_nfo") is False
@@ -338,7 +342,7 @@ class TestBackfillOneFullPath:
             raise RuntimeError("network down")
 
         with patch.object(MovieExporter, "export_movies", boom):
-            result = backfill_one(folder, timeout_seconds=10)
+            result = _run(backfill_one(folder, timeout_seconds=10))
 
         assert result["failed"] is True
         assert "network down" in result["error"]
@@ -416,11 +420,11 @@ class TestBackfillLibrary:
                     "skipped": 0, "magnets_collected": 0}
 
         with patch.object(MovieExporter, "export_movies", fake_export):
-            stats = backfill_library(
+            stats = _run(backfill_library(
                 tmp_path,
                 delay_seconds=0,
                 timeout_seconds=10,
-            )
+            ))
 
         assert stats["total"] == 3
         assert stats["skipped_complete"] == 1
@@ -436,12 +440,12 @@ class TestBackfillLibrary:
         cancel = threading.Event()
         cancel.set()  # 立即取消
 
-        stats = backfill_library(
+        stats = _run(backfill_library(
             tmp_path,
             cancel_event=cancel,
             delay_seconds=0,
             timeout_seconds=10,
-        )
+        ))
         assert stats["cancelled"] is True
         assert stats["backfilled"] == 0  # 还没跑就被取消
 
@@ -461,12 +465,12 @@ class TestBackfillLibrary:
                     "skipped": 0, "magnets_collected": 0}
 
         with patch.object(MovieExporter, "export_movies", fake_export):
-            stats = backfill_library(
+            stats = _run(backfill_library(
                 tmp_path,
                 delay_seconds=0,
                 timeout_seconds=10,
                 max_count=2,
-            )
+            ))
 
         assert stats["limit_reached"] is True
         assert stats["needs_backfill"] == 2  # 只处理了 2 个
@@ -494,12 +498,12 @@ class TestBackfillLibrary:
 
         per_movie_calls: list = []
         with patch.object(MovieExporter, "export_movies", fake_export):
-            stats = backfill_library(
+            stats = _run(backfill_library(
                 tmp_path,
                 delay_seconds=0,
                 timeout_seconds=10,
                 on_per_movie=lambda r: per_movie_calls.append(r),
-            )
+            ))
 
         # 3 部都跑了 on_per_movie
         assert len(per_movie_calls) == 3

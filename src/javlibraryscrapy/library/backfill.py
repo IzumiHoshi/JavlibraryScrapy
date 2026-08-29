@@ -171,7 +171,7 @@ def iter_movie_folders(root: Path) -> Iterator[Path]:
 # --------------------------------------------------------------------------- #
 # 补齐
 # --------------------------------------------------------------------------- #
-def backfill_one(
+async def backfill_one(
     folder: Path,
     *,
     javbus_proxy: Optional[str] = None,
@@ -180,6 +180,8 @@ def backfill_one(
     timeout_seconds: int = 180,
     overwrite_nfo: Optional[bool] = None,
     download_samples: Optional[bool] = None,
+    plan: Optional[BackfillPlan] = None,
+    session: Optional["AsyncDynamicSession"] = None,
 ) -> Dict[str, Any]:
     """补齐单个影片目录下的缺失文件。
 
@@ -196,6 +198,8 @@ def backfill_one(
         timeout_seconds: 单部抓取超时秒数，默认 180。
         overwrite_nfo: 显式控制 NFO 覆写（None 时自动：缺失才覆写）。
         download_samples: 显式控制 sample 下载（None 时自动：缺失才下）。
+        plan: 已计算好的 BackfillPlan（性能优化：caller 多次复用同一目录时
+            避免重复 ``check_missing``；None 时内部会自行计算一次）。
 
     Returns:
         ``{
@@ -209,7 +213,8 @@ def backfill_one(
             "plan_after": dict | None,     # 补齐后 check_missing 结果
         }``
     """
-    plan = check_missing(folder)
+    if plan is None:
+        plan = check_missing(folder)
     if plan is None:
         return {
             "code": None,
@@ -277,20 +282,20 @@ def backfill_one(
 
     cover_urls_dict = {code: cover_url} if cover_url else None
 
-    # 独立线程跑 asyncio.run —— uvicorn 进程已有事件循环，
-    # 直接 asyncio.run 会报 "cannot be called from a running event loop"。
-    def _run() -> Dict[str, Any]:
-        return asyncio.run(exporter.export_movies(
-            [(code, "")],
-            cover_urls=cover_urls_dict,
-            on_progress=on_progress,
-        ))
-
+    # 在 async 上下文里直接 await（caller 在 asyncio.run 内调本函数）。
+    # 全库补齐时 caller 共用一个 AsyncDynamicSession（不再每部重建 Chromium），
+    # 每部省 3-5 秒。
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-            future = ex.submit(_run)
-            stats = future.result(timeout=timeout_seconds)
-    except concurrent.futures.TimeoutError:
+        stats = await asyncio.wait_for(
+            exporter.export_movies(
+                [(code, "")],
+                cover_urls=cover_urls_dict,
+                on_progress=on_progress,
+                session=session,
+            ),
+            timeout=timeout_seconds,
+        )
+    except asyncio.TimeoutError:
         return {
             "code": code,
             "skipped": False,
@@ -324,7 +329,7 @@ def backfill_one(
     }
 
 
-def backfill_library(
+async def backfill_library(
     root: Path,
     *,
     cover_urls: Optional[Dict[str, str]] = None,
@@ -335,6 +340,7 @@ def backfill_library(
     delay_seconds: float = 3.0,
     timeout_seconds: int = 180,
     max_count: Optional[int] = None,
+    session: Optional["AsyncDynamicSession"] = None,
 ) -> Dict[str, Any]:
     """全库补齐：递归扫描 + 逐部调 :func:`backfill_one`。
 
@@ -410,12 +416,14 @@ def backfill_library(
 
         cover_url = (cover_urls or {}).get(plan.carid)
 
-        result = backfill_one(
+        result = await backfill_one(
             folder,
             javbus_proxy=javbus_proxy,
             cover_url=cover_url,
             on_progress=on_progress,
             timeout_seconds=timeout_seconds,
+            plan=plan,  # 复用上面已算的 plan，省一次 check_missing
+            session=session,  # 全库补齐时共享 AsyncDynamicSession
         )
         results.append(result)
 
@@ -432,7 +440,7 @@ def backfill_library(
                 logger.warning(f"on_per_movie 回调异常：{e}")
 
         if delay_seconds > 0:
-            time.sleep(delay_seconds)
+            await asyncio.sleep(delay_seconds)
 
     counts["cancelled"] = cancelled
     counts["limit_reached"] = limit_reached
