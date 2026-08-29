@@ -217,6 +217,13 @@ def create_app(
     from javlibraryscrapy.server.services.zspace_config import ZSpaceConfigStore
     zspace_config_store = ZSpaceConfigStore(settings=settings)
 
+    # 本地库「补齐缺失文件」后台服务（POST /api/library/backfill 触发）
+    from javlibraryscrapy.server.services.library_backfill import LibraryBackfillService
+    library_backfill = LibraryBackfillService(
+        gallery_state=state,
+        wanted_service=wanted,
+    )
+
     # P1：后台预热 sample cache —— 把 wanted 列表里的前 N 个 code 的 sample 数扫掉，
     # 让首次 /api/wanted 不必触发 NFS cold start（NFS 单目录 glob 几百 ms~几 s）。
     # 用 daemon 线程，不阻塞启动；失败也不影响服务可用。
@@ -240,6 +247,7 @@ def create_app(
     app.state.wanted = wanted
     app.state.sample_cache = sample_cache
     app.state.zspace_config_store = zspace_config_store
+    app.state.library_backfill = library_backfill
 
     # 前端静态资源：CSS / JS / 图片（重构后 gallery.html → static/index.html + 多模块）
     # mount 在 routes 注册之后：Starlette 的 mount 作为路由表的 fallback，
