@@ -203,9 +203,11 @@ class LibraryBackfillService:
         # 直接用 gallery_state.library_index（已 scan 过的内存索引），**不**走
         # ``iter_movie_folders`` + ``check_missing``——那俩在 UNC 路径上慢得离谱
         # （1200 部 ~180 秒），会让 UI 卡 3 分钟才出预估数。
-        # ``library_index`` 字段：has_video / has_nfo / has_poster / has_fanart /
-        # sample_count（来自 scanner 的 image_count 缓存估算），刚好够判断
-        # needs_backfill。
+        #
+        # 预估规则（与 BackfillPlan.is_complete 一致）：
+        #   has_video and has_nfo and has_poster and has_fanart and sample_count > 0
+        #   → complete（不计入 needs）
+        # 任何一项缺失 → needs_backfill
         idx = self.gallery_state.library_index
         estimated_needs = 0
         estimated_complete = 0
@@ -213,12 +215,12 @@ class LibraryBackfillService:
         for entry in idx.values():
             if not entry.has_video:
                 estimated_no_video += 1
-            elif entry.has_nfo and entry.has_poster and entry.has_fanart:
-                # sample_count 字段在 scanner 里没单独跟踪，但 entry 也没有。
-                # 保守点：has_* 三项齐全但 sample 数未知时仍判 needs（让 on_per_movie
-                # 跑完后才 set 真实完成数）。
-                # 但前端最想要"准确的总览"，这里用 entry 已知信息兜底。
-                # 真值在跑完后由 stats["needs_backfill"] 覆盖。
+            elif (
+                entry.has_nfo
+                and entry.has_poster
+                and entry.has_fanart
+                and entry.sample_count > 0
+            ):
                 estimated_complete += 1
             else:
                 estimated_needs += 1

@@ -196,7 +196,7 @@ def test_save_load_roundtrip():
         save_index(movies, stats, idx_path, root)
 
         data = load_index(idx_path)
-        assert_eq("重载版本", data["schema_version"], 1)
+        assert_eq("重载版本", data["schema_version"], 2)
         assert_eq("重载 movies 数", len(data["movies"]), 6)
         assert_eq("重载 root 字段", data["root"], str(root))
         assert_eq("重载 stats.movies_indexed", data["stats"]["movies_indexed"], 6)
@@ -359,7 +359,7 @@ def test_library_index_round_trip_via_from_dict():
             "ipzz-907": {"carid": "ipzz-907", "folder": "/JAV/IPZZ-907", "videos": []},
         },
         "stats": {"movies_count": 2},
-        "schema_version": 1,
+        "schema_version": 2,
     }
     idx = LibraryIndex.from_dict(raw)
     # keys 已归一为大写

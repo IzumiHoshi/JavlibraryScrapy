@@ -43,7 +43,13 @@ from javlibraryscrapy.utils.car import find_car_bus  # noqa: E402
 logger = logging.getLogger("library_scanner")
 
 # ---- 常量 ----
-INDEX_SCHEMA_VERSION = 1
+# Schema 版本历史：
+# - v1：初版（has_nfo/poster/fanart/video + 视频大小等元数据）
+# - v2：MovieEntry 加 ``sample_count``（sample_*.jpg 数量）—— 让 backfill 预估
+#       能精确区分"缺 sample"与"完整"两种目录，避免把 sample_count=0 误判为
+#       complete。schema bump 后旧 JSON 会被丢弃（load_index 返 None），
+#       GalleryState 启动时自动触发首次全量重扫。
+INDEX_SCHEMA_VERSION = 2
 
 # 视频文件白名单（Q13 决策）
 VIDEO_EXTENSIONS = frozenset({
@@ -76,6 +82,7 @@ class MovieEntry:
     total_size_bytes: int = 0
     modified: str = ""  # ISO 8601
     videos: List[str] = field(default_factory=list)  # 视频文件名清单（绝对路径）
+    sample_count: int = 0  # sample_*.jpg 数量（backfill 预估用，schema v2+）
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -195,8 +202,9 @@ def scan_movie_folder(folder: Path) -> Optional[MovieEntry]:
         entry.actors = actors
         entry.release_date = release
 
-    # 单次 iterdir 同时识别视频 / poster / fanart
+    # 单次 iterdir 同时识别视频 / poster / fanart / sample
     video_files: List[Path] = []
+    sample_files: List[Path] = []
     latest_mtime: float = 0.0
     try:
         for p in folder.iterdir():
@@ -209,8 +217,13 @@ def scan_movie_folder(folder: Path) -> Optional[MovieEntry]:
                 entry.has_poster = True
             elif lname in FANART_NAMES:
                 entry.has_fanart = True
+            # sample_NNN.jpg（与 library.backfill 的 _SAMPLE_RE 保持一致）
+            if lname.startswith("sample_") and lname.endswith(".jpg"):
+                sample_files.append(p)
     except OSError as e:
         logger.debug(f"无法列目录 {folder}: {e}")
+
+    entry.sample_count = len(sample_files)
 
     if video_files:
         entry.has_video = True
