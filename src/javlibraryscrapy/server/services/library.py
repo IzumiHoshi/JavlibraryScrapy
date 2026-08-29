@@ -26,7 +26,7 @@ from javlibraryscrapy.library.scanner import (
     scan_movie_folder,
 )
 
-from .jobs import RescanQueue, ScrapeJob
+from .jobs import ScrapeJob
 
 logger = logging.getLogger("gallery.library")
 
@@ -199,13 +199,8 @@ class GalleryState:
         self.library_scanned_at: Optional[str] = None
         self.scan_state: ScanProgress = ScanProgress()
         self._scan_lock = threading.Lock()
-        self.rescan_queue: RescanQueue = RescanQueue(
-            library_root_getter=lambda: self.library_root,
-            javbus_url_getter=lambda: self.javbus_url,
-            proxy_getter=lambda: self.proxy,
-        )
-        self.rescan_queue.set_on_complete(self._refresh_index_after_rescan)
-        self.rescan_queue.start_worker()
+        # 注：旧的单部刷新队列（RescanQueue）已被 backfill 取代。
+        # backfill 由 library_backfill.LibraryBackfillService 提供。
         self._maybe_load_library_index()
 
     # ---- 本地库 -------------------------------------------------------- #
@@ -275,23 +270,10 @@ class GalleryState:
         finally:
             self.scan_state.is_running = False
 
-    # ---- 单部刷新（队列逐个） -------------------------------------- #
-    def enqueue_rescan_movie(self, carid: str) -> RescanJob:
-        entry = self.library_index.get(carid)
-        if entry is None:
-            raise ValueError(f"本地库中未找到车牌 {carid}")
-        if not self.library_root:
-            raise RuntimeError("未配置 LIBRARY_ROOT")
-        if not entry.has_video:
-            raise ValueError(f"该目录下未找到视频文件：{entry.folder}")
-        return self.rescan_queue.enqueue(carid, Path(entry.folder))
-
-    def get_rescan_status(self) -> Dict[str, Any]:
-        return self.rescan_queue.status_snapshot()
-
-    def _refresh_index_after_rescan(self, folder: Path) -> None:
-        # 单部刷新队列的回调。直接走 update_library_index_for_folder。
-        self.update_library_index_for_folder(folder)
+    # ---- 单部刷新已被 backfill 取代（见 library_backfill.py） ----
+    # 旧版的 ``enqueue_rescan_movie`` / ``get_rescan_status`` /
+    # ``_refresh_index_after_rescan`` 已删除；前端卡片按钮改走
+    # ``POST /api/library/{carid}/backfill``。
 
     def update_library_index_for_folder(self, folder: Path) -> None:
         """立即把单个影片目录 upsert 到 in-memory library_index。

@@ -238,6 +238,40 @@ def register(app: FastAPI) -> None:
             "errors": stats.get("errors", []),
         }
 
+    # ---- backfill（精确路径，必须在 ``/{carid}`` 之前注册） ----
+    @app.post("/api/library/backfill")
+    async def library_backfill_start(request: Request) -> Dict[str, Any]:
+        """触发全库补齐任务：扫描 + 检查缺失 + 调 JAVBus 抓取补缺。
+
+        已有任务在跑 → 409；未配置 LIBRARY_ROOT → 503。
+        """
+        service = request.app.state.library_backfill
+        state = request.app.state.gallery
+        if state.library_root is None:
+            raise HTTPException(status_code=503, detail="未配置 LIBRARY_ROOT")
+        if service.is_running():
+            raise HTTPException(status_code=409, detail="已有补齐任务正在运行")
+        job = service.start()
+        return {"started": True, "job": job.snapshot()}
+
+    @app.get("/api/library/backfill-status")
+    async def library_backfill_status(request: Request) -> Dict[str, Any]:
+        """查询当前补齐任务进度。无任务时返 ``{"status": "idle"}``。"""
+        service = request.app.state.library_backfill
+        snap = service.get_status()
+        if snap is None:
+            return {"status": "idle"}
+        return {"status": snap.get("status", "idle"), "job": snap}
+
+    @app.post("/api/library/backfill-cancel")
+    async def library_backfill_cancel(request: Request) -> Dict[str, Any]:
+        """发取消信号。正在跑的后台线程在当前部处理完 + 下一轮 cancel 检查时退出。"""
+        service = request.app.state.library_backfill
+        if not service.is_running():
+            raise HTTPException(status_code=400, detail="没有正在运行的补齐任务")
+        service.cancel()
+        return {"cancelled": True}
+
     @app.get("/api/library")
     async def library_list(
         request: Request,
@@ -479,3 +513,45 @@ def register(app: FastAPI) -> None:
         if entry is None:
             raise HTTPException(status_code=404, detail="未找到该车牌")
         return entry.to_dict()
+
+    @app.post("/api/library/{carid}/backfill")
+    async def library_backfill_one(carid: str, request: Request) -> Dict[str, Any]:
+        """单部补齐：从 wanted JSON 拿 cover_url，调 backfill_one。
+
+        返回 ``backfill_one`` 的结果 dict（前端据此弹 toast）。
+        """
+        from javlibraryscrapy.library.backfill import backfill_one
+
+        state = request.app.state.gallery
+        if state.library_root is None:
+            raise HTTPException(status_code=503, detail="未配置 LIBRARY_ROOT")
+
+        code = (carid or "").strip().upper()
+        if not CARID_RE.fullmatch(code):
+            raise HTTPException(status_code=400, detail="非法的车牌")
+
+        entry = state.library_index.get(code)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="本地库中未找到该车牌")
+
+        # cover_url 从 wanted 服务取（与全库补齐同源）
+        wanted_movie = request.app.state.wanted.get(code)
+        cover_url = (
+            (wanted_movie or {}).get("cover_url", "").strip() if wanted_movie else ""
+        ) or None
+
+        result = await backfill_one(
+            Path(entry.folder),
+            javbus_proxy=state.proxy,
+            cover_url=cover_url,
+            timeout_seconds=180,
+        )
+
+        # 补完后增量更新索引（不重扫全库；scanner 后续会兜底）
+        if not result.get("skipped"):
+            state.update_library_index_for_folder(Path(entry.folder))
+
+        # 翻译 skipped / failed 为 HTTP 状态
+        if result.get("failed"):
+            return {"ok": False, "code": result.get("code"), "result": result}
+        return {"ok": True, "code": result.get("code"), "result": result}

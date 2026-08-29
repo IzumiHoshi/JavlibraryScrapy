@@ -1,4 +1,4 @@
-// library.js —— /library 页面初始化（本地库浏览 + 单部刷新 + 月份/演员筛选）。
+// library.js —— /library 页面初始化（本地库浏览 + 单部补齐 + 月份/演员筛选）。
 //
 // 模块结构：
 //   1. 状态/URL/分页/筛选
@@ -6,7 +6,7 @@
 //   3. 卡片渲染（renderActiveFilters / localCoverUrl / renderCard / render）
 //   4. lib-status 分段渲染（renderLibStatusHtml / renderLibScanningHtml）
 //   5. 数据加载（loadStatus / loadWarnings / load）
-//   6. 事件绑定（搜索 / 排序 / 触发扫描 / 卡片点击 / rescan 状态轮询）
+//   6. 事件绑定（搜索 / 排序 / 触发扫描 / 卡片点击 / 补齐进度轮询）
 //   7. 启动
 //
 // 依赖 utils.js / month-picker.js / lightbox.js。
@@ -105,13 +105,15 @@ export async function initLibrary() {
       : '—';
     const tick = (on, label) =>
       `<span class="icon ${on ? 'on' : 'off'}" title="${label}">${on ? '✓' : '✗'} ${label}</span>`;
-    // 刷新按钮：有视频的卡片才显示（没有视频没东西可刷）
-    const rescanBtn = m.has_video
-      ? `<button class="rescan-btn" data-code="${esc(m.carid)}" title="重新搜刮（生成 NFO + 封面 + 下载样图）">↻</button>`
+    // 补齐按钮：有视频 + 至少缺一种目标文件的卡片才显示
+    // （替代旧的 .rescan-btn 刷新按钮：刷新会清旧封面，补齐保留一切已有）
+    const incomplete = !(m.has_nfo && m.has_poster && m.has_fanart && m.sample_count > 0);
+    const backfillBtn = m.has_video && incomplete
+      ? `<button class="backfill-btn" data-code="${esc(m.carid)}" data-folder="${esc(m.folder)}" title="补齐缺失的文件（NFO / 海报 / Fanart / 样图；不触碰已有文件）">补齐</button>`
       : '';
     return `
       <div class="card${noVideoCls}" data-code="${esc(m.carid)}" data-folder="${esc(m.folder)}" tabindex="0">
-        ${rescanBtn}
+        ${backfillBtn}
         <img class="cover" src="${esc(localCoverUrl(m.folder))}" alt="" loading="lazy"
              referrerpolicy="no-referrer" onerror="this.classList.add('broken')">
         ${badge}
@@ -279,30 +281,139 @@ export async function initLibrary() {
     }
   });
 
-  /* ---------- 点击处理：刷新按钮 > 灯箱（卡片其他位置不再触发打开文件夹） ---------- */
+  /* ---------- 全库补齐：触发 + 进度轮询 ---------- */
+  // 局部状态机：保存当前 job + 当前处理的车牌，供 UI 实时反映。
+  let libBackfillState = { status: 'idle', job: null };
+
+  function renderLibBackfillProgress() {
+    const btn = $('btn-lib-backfill');
+    const cancelBtn = $('btn-lib-backfill-cancel');
+    const s = libBackfillState;
+    const j = s.job;
+    if (s.status === 'running' && j) {
+      btn.disabled = true;
+      btn.classList.add('running');
+      cancelBtn.style.display = '';
+      const cur = j.current_code ? ` → ${j.current_code}` : '';
+      btn.textContent = `补齐中 ${j.backfilled}/${j.needs_backfill}${cur}`;
+      btn.title = `进度：${j.backfilled}/${j.needs_backfill}（失败 ${j.failed}）`;
+    } else if (s.status === 'done' && j) {
+      btn.disabled = false;
+      btn.classList.remove('running');
+      cancelBtn.style.display = 'none';
+      btn.textContent = '补齐缺失';
+      btn.title = `已完成：补齐 ${j.backfilled} 部，失败 ${j.failed} 部`;
+      toast(`全库补齐完成：补齐 ${j.backfilled}，失败 ${j.failed}`);
+    } else if (s.status === 'error' && j) {
+      btn.disabled = false;
+      btn.classList.remove('running');
+      cancelBtn.style.display = 'none';
+      btn.textContent = '补齐缺失';
+      btn.title = `错误：${j.error || '未知'}`;
+      toast(`全库补齐失败：${j.error || '未知'}`);
+    } else {
+      btn.disabled = false;
+      btn.classList.remove('running');
+      cancelBtn.style.display = 'none';
+      btn.textContent = '补齐缺失';
+    }
+  }
+
+  async function pollBackfillStatus() {
+    try {
+      const res = await fetch('/api/library/backfill-status');
+      if (!res.ok) return;
+      const data = await res.json();
+      libBackfillState = {
+        status: data.status === 'idle' ? 'idle' : (data.job && data.job.status) || 'idle',
+        job: data.job || null,
+      };
+      renderLibBackfillProgress();
+      // 任务结束后刷一次列表 + 索引（让 has_nfo/poster/fanart 状态反映到卡片）
+      if (data.status !== 'running' && prevBackfillWasRunning) {
+        prevBackfillWasRunning = false;
+        load();
+      }
+      if (data.status === 'running') {
+        prevBackfillWasRunning = true;
+      }
+    } catch { /* 静默 */ }
+  }
+  let prevBackfillWasRunning = false;
+
+  $('btn-lib-backfill').addEventListener('click', async () => {
+    try {
+      const res = await fetch('/api/library/backfill', { method: 'POST' });
+      if (res.status === 409) return toast('已有补齐任务在运行');
+      if (res.status === 503) return toast('未配置 LIBRARY_ROOT');
+      if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+      const data = await res.json();
+      libBackfillState = { status: 'running', job: data.job };
+      renderLibBackfillProgress();
+      toast('已开始全库补齐…');
+    } catch (e) {
+      toast('触发补齐失败：' + e.message);
+    }
+  });
+
+  $('btn-lib-backfill-cancel').addEventListener('click', async () => {
+    try {
+      const res = await fetch('/api/library/backfill-cancel', { method: 'POST' });
+      if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+      toast('已发取消信号');
+    } catch (e) {
+      toast('取消失败：' + e.message);
+    }
+  });
+
+  /* ---------- 点击处理：补齐按钮 > 灯箱（卡片其他位置不再触发打开文件夹） ---------- */
+  // 注：旧的 .rescan-btn 单部刷新按钮已被 .backfill-btn 取代（保留一切已有文件）。
   $('grid').addEventListener('click', async (e) => {
-    // 1) 刷新按钮
-    const rbtn = e.target.closest('.rescan-btn');
-    if (rbtn) {
+    // 1) 单部补齐按钮
+    const bbtn = e.target.closest('.backfill-btn');
+    if (bbtn) {
       e.stopPropagation();
       e.preventDefault();
-      const carid = rbtn.dataset.code;
+      const carid = bbtn.dataset.code;
       try {
-        rbtn.disabled = true;
-        rbtn.classList.add('running');
-        const res = await fetch(`/api/library/${encodeURIComponent(carid)}/rescan`, { method: 'POST' });
+        bbtn.disabled = true;
+        bbtn.classList.add('running');
+        bbtn.textContent = '补齐中…';
+        const res = await fetch(`/api/library/${encodeURIComponent(carid)}/backfill`, { method: 'POST' });
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error || res.statusText);
-        if (data.already) {
-          toast(data.running ? `${carid} 正在刷新` : `${carid} 已在队列 #${data.position}`);
+        if (!res.ok) throw new Error((data && data.detail) || res.statusText);
+        const r = data.result || {};
+        const reason = r.skipped_reason;
+        if (data.ok) {
+          const before = (r.plan_before && r.plan_before.missing_kinds) || [];
+          const after = (r.plan_after && r.plan_after.missing_kinds) || [];
+          const newlyFixed = before.filter(k => !after.includes(k));
+          if (reason === 'complete') {
+            toast(`${carid} 已完整，无需补齐`);
+          } else if (newlyFixed.length === 0 && reason !== 'complete') {
+            toast(`${carid} 已是最新（缺失：${before.join(' / ') || '无'}）`);
+          } else {
+            toast(`${carid} 补齐完成：${newlyFixed.join(' / ')}`);
+          }
+          bbtn.classList.add('done');
+          bbtn.textContent = '✓';
+          // 重新拉一次列表（has_nfo/poster/fanart 可能变了；sample_count 是 image_count 派生，不会立即变化）
+          load();
         } else {
-          toast(`已入队：${carid}（位置 #${data.position}）`);
+          toast(`补齐失败：${r.error || (data.detail || '未知错误')}`);
+          bbtn.classList.add('failed');
+          bbtn.textContent = '✗';
         }
-        refreshRescanStatus();
+        setTimeout(() => {
+          bbtn.disabled = false;
+          bbtn.classList.remove('running', 'done', 'failed');
+          bbtn.textContent = '补齐';
+        }, 2200);
       } catch (err) {
-        rbtn.disabled = false;
-        rbtn.classList.remove('running', 'queued', 'done');
-        toast('触发刷新失败：' + err.message);
+        toast('触发补齐失败：' + err.message);
+        bbtn.disabled = false;
+        bbtn.classList.remove('running', 'done', 'failed');
+        bbtn.textContent = '补齐';
       }
       return;
     }
@@ -334,73 +445,13 @@ export async function initLibrary() {
     // 卡片其他位置不触发任何动作（不再打开本地文件夹）
   });
 
-  /* ---------- 刷新状态轮询：按钮实时反映队列状态 ---------- */
-  const prevRescanState = new Map(); // carid -> 'running' | 'queued'
-  const lastCurrentMap = new Map();  // carid -> 最近一次 current snapshot（完成后用来显示样图数）
-  async function refreshRescanStatus() {
-    try {
-      const res = await fetch('/api/library/rescan-status');
-      if (!res.ok) return;
-      const data = await res.json();
-      const inProgress = new Map();
-      if (data.current) {
-        inProgress.set(data.current.carid, 'running');
-        // 缓存 current 的 snapshot（含 samples_downloaded），完成后用得到
-        lastCurrentMap.set(data.current.carid, data.current);
-      }
-      for (const q of (data.queued || [])) inProgress.set(q.carid, 'queued');
-
-      document.querySelectorAll('.rescan-btn').forEach((btn) => {
-        const code = btn.dataset.code;
-        const st = inProgress.get(code);
-        if (st) {
-          btn.disabled = true;
-          btn.classList.toggle('running', st === 'running');
-          btn.classList.toggle('queued', st === 'queued');
-          btn.classList.remove('done');
-          btn.textContent = '↻';
-          btn.title = st === 'running' ? '正在刷新…' : '队列中…';
-        } else {
-          const wasActive = prevRescanState.has(code);
-          if (wasActive) {
-            // 刚完成 → 取最后一次 current snapshot 拿样图数（data.current 已不在 inProgress，
-            // 但本轮 status_snapshot 里有；用 lastCurrentMap 缓存）
-            const lastSnap = lastCurrentMap.get(code);
-            const sampleCount = lastSnap ? (lastSnap.samples_downloaded || 0) : 0;
-            const sampleNote = sampleCount > 0 ? `（新下样图 ${sampleCount} 张）` : '';
-            btn.classList.add('done');
-            btn.classList.remove('running', 'queued');
-            btn.textContent = '✓';
-            btn.title = '刷新完成';
-            setTimeout(() => {
-              btn.classList.remove('done');
-              btn.textContent = '↻';
-              btn.title = '重新搜刮（NFO + 封面 + 样图）';
-            }, 1800);
-            // 只对"刚才确实在跑"的（不是 queue 中就取消）才弹 toast，避免误报
-            if (prevRescanState.get(code) === 'running') {
-              toast(`${code} 刷新完成 ${sampleNote}`);
-            }
-          } else {
-            btn.disabled = false;
-            btn.classList.remove('running', 'queued', 'done');
-            btn.textContent = '↻';
-            btn.title = '重新搜刮（NFO + 封面 + 样图）';
-          }
-        }
-      });
-      prevRescanState.clear();
-      inProgress.forEach((v, k) => prevRescanState.set(k, v));
-    } catch { /* 静默 */ }
-  }
-
   /* ---------- 启动 ---------- */
   $('source').textContent = '本地影片库';
   await loadWarnings();
   await load();
   // 持续轮询状态（每 3 秒）
   setInterval(loadStatus, 3000);
-  // 刷新按钮状态轮询（每 1.5 秒）
-  refreshRescanStatus();
-  setInterval(refreshRescanStatus, 1500);
+  // 全库补齐进度轮询（每 1.5 秒）
+  pollBackfillStatus();
+  setInterval(pollBackfillStatus, 1500);
 }

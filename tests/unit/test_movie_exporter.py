@@ -64,6 +64,9 @@ def _stub_download_methods(exporter: MovieExporter, cover_path: Path):
 
     返回值是 (cover_patch, samples_patch) 两个 context manager，调用方需
     ``with cover_patch, samples_patch:`` 同时进入。
+
+    同时 stub MovieExporter._download_samples_concurrent（如果有），
+    因为并发版默认走自己的实现，不会落到父类 download_samples。
     """
     from javlibraryscrapy.scraping.javbus import JavbusSpider
 
@@ -79,9 +82,18 @@ def _stub_download_methods(exporter: MovieExporter, cover_path: Path):
             paths.append(p)
         return paths
 
+    def fake_download_samples_concurrent(self, sample_urls, car_id, *, max_workers=6, per_request_timeout=30):
+        # 与 fake_download_samples 行为一致，让测试不依赖网络
+        return fake_download_samples(self, sample_urls, car_id)
+
     cover_patch = patch.object(JavbusSpider, "download_cover", fake_download_cover)
     samples_patch = patch.object(JavbusSpider, "download_samples", fake_download_samples)
-    return cover_patch, samples_patch
+    # 也 patch 并发版（如果 MovieExporter 有这个方法）
+    concurrent_patch = patch.object(
+        MovieExporter, "_download_samples_concurrent", fake_download_samples_concurrent
+    )
+    # 把 concurrent_patch 也返回，让调用方一起进入
+    return cover_patch, samples_patch, concurrent_patch
 
 
 def _stub_javlibrary_cover(exporter: MovieExporter, succeed: bool = True):
@@ -192,8 +204,8 @@ def test_download_samples_true():
         cover_temp.write_bytes(_fake_png_bytes())
 
         e = MovieExporter(output_root=root, download_samples=True)
-        cover_patch, samples_patch = _stub_download_methods(e, cover_temp)
-        with cover_patch, samples_patch, _stub_javlibrary_cover(e, succeed=False):
+        cover_patch, samples_patch, concurrent_patch = _stub_download_methods(e, cover_temp)
+        with cover_patch, samples_patch, concurrent_patch, _stub_javlibrary_cover(e, succeed=False):
             asyncio.run(e.process_movie(_make_info(
                 cover_path=str(cover_temp),
                 samples=["https://example.com/s1.jpg", "https://example.com/s2.jpg"],
@@ -483,7 +495,7 @@ def test_download_samples_partial_failure_preserves_idx():
         cover_temp.write_bytes(_fake_png_bytes())
 
         # Stub：模拟 idx=3 失败（其余成功）。每个 path 用不同字节便于断言谁是谁
-        def fake_download_samples_partial(self, sample_urls, car_id):
+        def fake_download_samples_partial(self, sample_urls, car_id, **kwargs):
             paths = []
             for idx, _ in enumerate(sample_urls, start=1):
                 if idx == 3:
@@ -499,7 +511,7 @@ def test_download_samples_partial_failure_preserves_idx():
 
         e = MovieExporter(output_root=root, download_samples=True)
         with patch.object(JavbusSpider, "download_cover", fake_download_cover), \
-             patch.object(JavbusSpider, "download_samples", fake_download_samples_partial), \
+             patch.object(MovieExporter, "_download_samples_concurrent", fake_download_samples_partial), \
              _stub_javlibrary_cover(e, succeed=False):
             urls = [f"https://x.com/s{i}.jpg" for i in range(1, 9)]  # 8 张
             asyncio.run(e.process_movie(_make_info(
@@ -580,7 +592,7 @@ def test_export_movies_calls_crawl_and_returns_stats():
         root = Path(td)
         e = MovieExporter(output_root=root, collect_magnets=True)
 
-        async def fake_crawl(self, car_list):
+        async def fake_crawl(self, car_list, session=None):
             # 模拟 parse + process_movie 一部成功、一部 failed
             cover1 = root / "OK-001.png"
             cover1.write_bytes(_fake_png_bytes())
@@ -612,7 +624,7 @@ def test_export_movies_on_progress_callback():
         root = Path(td)
         e = MovieExporter(output_root=root, collect_magnets=False)
 
-        async def fake_crawl(self, car_list):
+        async def fake_crawl(self, car_list, session=None):
             cover1 = root / "OK-001.png"
             cover1.write_bytes(_fake_png_bytes())
             await self.process_movie(_make_info(
