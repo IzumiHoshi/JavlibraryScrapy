@@ -25,11 +25,29 @@ def split_poster_from_fanart(fanart_path: Path, poster_path: Path) -> None:
     """
     从 fanart 图片中分离出 poster 图片并保存
     poster 图片位于 fanart 的右半部分,比例为5:7
+
+    退化策略（图片过小时避免裁出空图）：
+    - 高 < 7：直接复制整个 fanart（保持原图，避免空 poster）
+    - 宽 < poster_width（5:7 计算结果）：同样复制整个 fanart
     """
     try:
         fanart = Image.open(fanart_path)
+        # PIL 不能直接把 LA / RGBA 存成 JPEG —— 转 RGB（白底合成透明）
+        if fanart.mode in ("LA", "RGBA"):
+            bg = Image.new("RGB", fanart.size, (255, 255, 255))
+            bg.paste(fanart, mask=fanart.split()[-1])
+            fanart = bg
+        elif fanart.mode != "RGB":
+            fanart = fanart.convert("RGB")
         width, height = fanart.size
+        # 太小的图直接复制整个（避免 1x1 测试图 / 缩略图裁出空）
         poster_width = int(height * 5 / 7)
+        if height < 7 or width < poster_width:
+            fanart.save(poster_path)
+            logging.info(
+                f"fanart 太小，复制整图作为 poster：{poster_path.name}"
+            )
+            return
         poster = fanart.crop((width - poster_width, 0, width, height))
         poster.save(poster_path)
         logging.info(f"已保存 poster 图片：{poster_path.name}")
