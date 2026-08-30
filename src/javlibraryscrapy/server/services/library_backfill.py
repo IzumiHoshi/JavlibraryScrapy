@@ -27,6 +27,7 @@ import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from javlibraryscrapy.library.backfill import backfill_library
@@ -257,6 +258,19 @@ class LibraryBackfillService:
                 backfilled=live_counts["backfilled"],
                 failed=live_counts["failed"],
             )
+            # 每部完成后增量更新索引（避免 GUI 显示陈旧 has_* 状态）。
+            # 跳过 skipped 类（无文件改动）；只对实际触发了 backfill_one 的目录调
+            # update_library_index_for_folder（仅调一次 scan_movie_folder，几 ms）。
+            if not result.get("skipped"):
+                plan_before = result.get("plan_before") or {}
+                folder_str = plan_before.get("folder")
+                if folder_str:
+                    try:
+                        self.gallery_state.update_library_index_for_folder(
+                            Path(folder_str)
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(f"更新索引失败 {folder_str}: {e}")
 
         try:
             # 在 async 上下文里建 1 个 AsyncDynamicSession 跑完整个 batch，
