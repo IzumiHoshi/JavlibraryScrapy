@@ -109,7 +109,7 @@ export async function initLibrary() {
     // （替代旧的 .rescan-btn 刷新按钮：刷新会清旧封面，补齐保留一切已有）
     const incomplete = !(m.has_nfo && m.has_poster && m.has_fanart && m.sample_count > 0);
     const backfillBtn = m.has_video && incomplete
-      ? `<button class="backfill-btn" data-code="${esc(m.carid)}" data-folder="${esc(m.folder)}" title="补齐缺失的文件（NFO / 海报 / Fanart / 样图；不触碰已有文件）">补齐</button>`
+      ? `<button class="backfill-btn" data-code="${esc(m.carid)}" data-folder="${esc(m.folder)}" title="补齐缺失的文件（NFO / 海报 / Fanart / 样图；不触碰已有文件）">⟲</button>`
       : '';
     return `
       <div class="card${noVideoCls}" data-code="${esc(m.carid)}" data-folder="${esc(m.folder)}" tabindex="0">
@@ -378,7 +378,7 @@ export async function initLibrary() {
       try {
         bbtn.disabled = true;
         bbtn.classList.add('running');
-        bbtn.textContent = '补齐中…';
+        bbtn.textContent = '⟲';
         const res = await fetch(`/api/library/${encodeURIComponent(carid)}/backfill`, { method: 'POST' });
         const data = await res.json();
         if (!res.ok) throw new Error((data && data.detail) || res.statusText);
@@ -407,13 +407,13 @@ export async function initLibrary() {
         setTimeout(() => {
           bbtn.disabled = false;
           bbtn.classList.remove('running', 'done', 'failed');
-          bbtn.textContent = '补齐';
+          bbtn.textContent = '⟲';
         }, 2200);
       } catch (err) {
         toast('触发补齐失败：' + err.message);
         bbtn.disabled = false;
         bbtn.classList.remove('running', 'done', 'failed');
-        bbtn.textContent = '补齐';
+        bbtn.textContent = '⟲';
       }
       return;
     }

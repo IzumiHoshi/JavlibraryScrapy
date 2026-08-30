@@ -753,24 +753,29 @@
   .pagination button { padding: 5px 10px; }
   .pagination .info { align-self: center; padding: 0 10px; }
 
-  /* ---------- 单部补齐按钮（/library 卡片右下角）----------
+  /* ---------- 单部补齐按钮（/library 卡片右上角；图标 ⟲ 表示"补充完整"）----------
    * 替代旧的 .rescan-btn：刷新按钮会清旧封面（破坏已有元数据），补齐按钮保留
    * 一切已有文件，仅补缺失的 NFO / 封面 / 样图。 */
   .backfill-btn {
     position: absolute;
-    bottom: 8px; right: 8px;
-    padding: 4px 10px;
-    background: rgba(0, 0, 0, 0.62);
-    border: 1px solid var(--accent);
-    border-radius: 12px;
+    top: 6px; right: 6px;
+    width: 30px; height: 30px;
+    padding: 0;
+    background: rgba(0, 0, 0, 0.55);
+    border: 1px solid var(--border);
+    border-radius: 50%;
     color: #fff;
     cursor: pointer;
-    font-size: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
     line-height: 1;
+    /* z-index 3：盖在右上角的 .local-badge.warn（无视频）上 */
     z-index: 3;
     transition: background .15s, transform .12s;
   }
-  .backfill-btn:hover:not(:disabled) { background: var(--accent); transform: scale(1.04); }
+  .backfill-btn:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); transform: scale(1.05); }
   .backfill-btn:disabled { cursor: not-allowed; opacity: .9; }
   .backfill-btn.running { background: var(--warn); border-color: var(--warn); animation: pulse 1.4s ease-in-out infinite; }
   .backfill-btn.done { background: var(--ok); border-color: var(--ok); }
