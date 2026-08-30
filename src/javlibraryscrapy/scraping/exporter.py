@@ -288,6 +288,12 @@ class MovieExporter(JavbusSpider):
             cover_url = self._cover_urls.get(carid)
             if cover_url:
                 self._download_javlibrary_cover(cover_url, save_dir / "poster.jpg")
+            else:
+                # cover_url 缺失（JAVLibrary wanted 没这车 / wanted JSON 没记录）：
+                # 用 JAVBus 的 fanart 兜底复制一份到 poster.jpg，让 GUI 至少能显示图。
+                # 注意：fanart 是横版，poster 是竖版（5:7），这是妥协方案；
+                # 真值还得从 JAVLibrary 抓 — 把缺失车号加进 wanted 让 cover_url 有值。
+                self._fallback_poster_from_fanart(save_dir)
 
             # 5. samples —— JAVBus sample waterfall
             if self._download_samples_enabled and info.get("samples"):
@@ -394,6 +400,31 @@ class MovieExporter(JavbusSpider):
             return True
         except Exception as e:  # noqa: BLE001
             logger.warning(f"下载 poster.jpg 失败 {url[:80]}: {e}")
+            return False
+
+    def _fallback_poster_from_fanart(self, save_dir: Path) -> bool:
+        """``cover_url`` 缺失时：把已落地的 fanart.jpg 复制一份到 poster.jpg。
+
+        JAVBus 没有专门的竖版海报，只有横版大图（fanart）。当 wanted JSON 没
+        这车号时，``cover_url`` 为空；为了 GUI 至少能显示图，做一个妥协：
+        把 fanart 复制成 poster（不覆盖已有 poster / fanart）。
+
+        Returns: True 兜底成功（poster 落地）
+        """
+        poster = save_dir / "poster.jpg"
+        if poster.exists():
+            return False  # 已有 poster，不动
+        fanart = save_dir / "fanart.jpg"
+        if not fanart.exists():
+            return False  # fanart 也没有，无图可兜
+        try:
+            poster.write_bytes(fanart.read_bytes())
+            logger.info(
+                f"已用 fanart 兜底生成 poster.jpg：{poster.name}"
+            )
+            return True
+        except OSError as e:  # noqa: BLE001
+            logger.warning(f"fanart 兜底复制 poster.jpg 失败：{e}")
             return False
 
     def _move_samples_to_target(

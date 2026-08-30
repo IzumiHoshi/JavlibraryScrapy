@@ -129,7 +129,8 @@ def test_process_movie_basic():
         assert save_dir.is_dir()
         assert (save_dir / "movie.nfo").is_file()
         assert (save_dir / "fanart.jpg").is_file()
-        assert not (save_dir / "poster.jpg").exists()  # cover_urls 没给，跳过
+        # cover_urls 没给 → 用 fanart 兜底生成 poster.jpg（妥协：让 GUI 有图）
+        assert (save_dir / "poster.jpg").is_file()
         assert not cover_temp.exists()  # temp PNG 被 rename / unlink
 
         assert len(e._magnet_results) == 1
@@ -433,8 +434,8 @@ def test_cover_urls_triggers_poster_download():
         print("✅ test_cover_urls_triggers_poster_download")
 
 
-def test_cover_urls_missing_skips_poster():
-    """没给 cover_urls 时，poster.jpg 不存在。"""
+def test_cover_urls_missing_falls_back_to_fanart():
+    """没给 cover_urls 时：fanart 兜底复制成 poster.jpg（妥协方案）。"""
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         cover_temp = root / "ABF-340.png"
@@ -444,8 +445,12 @@ def test_cover_urls_missing_skips_poster():
         with _stub_javlibrary_cover(e, succeed=True):
             asyncio.run(e.process_movie(_make_info(cover_path=str(cover_temp))))
         save_dir = root / "ABF-340 Test Title"
-        assert not (save_dir / "poster.jpg").exists()
-        print("✅ test_cover_urls_missing_skips_poster")
+        # 兜底：fanart 复制成 poster
+        assert (save_dir / "fanart.jpg").is_file()
+        assert (save_dir / "poster.jpg").is_file()
+        # 内容一致（兜底是字节级复制）
+        assert (save_dir / "poster.jpg").read_bytes() == (save_dir / "fanart.jpg").read_bytes()
+        print("✅ test_cover_urls_missing_falls_back_to_fanart")
 
 
 # --------------------------------------------------------------------------- #
