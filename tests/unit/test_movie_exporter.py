@@ -17,6 +17,8 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 # 把 src/ 加到 sys.path，方便直接 ``python -m`` 跑。
 _SRC = Path(__file__).resolve().parents[2] / "src"
 if str(_SRC) not in sys.path:
@@ -435,21 +437,42 @@ def test_cover_urls_triggers_poster_download():
 
 
 def test_cover_urls_missing_falls_back_to_fanart():
-    """没给 cover_urls 时：fanart 兜底复制成 poster.jpg（妥协方案）。"""
+    """没给 cover_urls 时：从 fanart 右半边裁切生成 poster.jpg（5:7 竖版）。"""
+    from PIL import Image, ImageDraw
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
+        # 生成真实大小的 fanart（1400x700 横版），让 split_poster_from_fanart
+        # 能裁出有意义尺寸的 poster（500x700 = 5:7 竖版）。1x1 fixture 太小，
+        # 会触发 fallback 复制整图路径而不是裁切路径。
         cover_temp = root / "ABF-340.png"
-        cover_temp.write_bytes(_fake_png_bytes())
+        fanart_img = Image.new("RGB", (1400, 700), (100, 150, 200))
+        # 标个角到右半边，方便断言 poster 是从右半边裁出来的
+        ImageDraw.Draw(fanart_img).rectangle(
+            [700, 0, 1400, 700], fill=(255, 0, 0)
+        )
+        cover_temp.parent.mkdir(parents=True, exist_ok=True)
+        fanart_img.save(cover_temp, "PNG")
+        fanart_img.close()
 
         e = MovieExporter(output_root=root)
         with _stub_javlibrary_cover(e, succeed=True):
             asyncio.run(e.process_movie(_make_info(cover_path=str(cover_temp))))
         save_dir = root / "ABF-340 Test Title"
-        # 兜底：fanart 复制成 poster
         assert (save_dir / "fanart.jpg").is_file()
         assert (save_dir / "poster.jpg").is_file()
-        # 内容一致（兜底是字节级复制）
-        assert (save_dir / "poster.jpg").read_bytes() == (save_dir / "fanart.jpg").read_bytes()
+        # 兜底：从 fanart 右半边裁切（5:7）
+        fanart = Image.open(save_dir / "fanart.jpg")
+        poster = Image.open(save_dir / "poster.jpg")
+        try:
+            assert poster.size[0] / poster.size[1] == pytest.approx(5 / 7, rel=0.05)
+            # poster 来自 fanart 右半边（宽度 = 高 * 5/7）
+            assert poster.size[0] == int(fanart.size[1] * 5 / 7)
+            # poster 的中心应是 fanart 红色区域（裁切自右半边）
+            center_color = poster.getpixel((poster.size[0] // 2, poster.size[1] // 2))
+            assert center_color[0] > 200  # R 通道 > 200 = 红色
+        finally:
+            fanart.close()
+            poster.close()
         print("✅ test_cover_urls_missing_falls_back_to_fanart")
 
 

@@ -403,28 +403,33 @@ class MovieExporter(JavbusSpider):
             return False
 
     def _fallback_poster_from_fanart(self, save_dir: Path) -> bool:
-        """``cover_url`` 缺失时：把已落地的 fanart.jpg 复制一份到 poster.jpg。
+        """``cover_url`` 缺失时：从已落地的 fanart.jpg 裁切右半边作 poster.jpg。
 
-        JAVBus 没有专门的竖版海报，只有横版大图（fanart）。当 wanted JSON 没
-        这车号时，``cover_url`` 为空；为了 GUI 至少能显示图，做一个妥协：
-        把 fanart 复制成 poster（不覆盖已有 poster / fanart）。
+        JAVBus 的 fanart 是横版大图，海报（poster）叠在 fanart **右半边**
+        （5:7 竖版）—— 利用 :func:`utils.fanart.split_poster_from_fanart`
+        精确裁切，比"直接复制"更接近真竖版海报形状。
 
-        Returns: True 兜底成功（poster 落地）
+        注意：这是 wanted JSON 没 cover_url 时的妥协方案；真值还得把车号
+        加进 wanted 让 ``cover_url`` 有值，从 JAVLibrary 抓正版 poster。
         """
+        from javlibraryscrapy.utils.fanart import split_poster_from_fanart
+
         poster = save_dir / "poster.jpg"
         if poster.exists():
             return False  # 已有 poster，不动
         fanart = save_dir / "fanart.jpg"
         if not fanart.exists():
-            return False  # fanart 也没有，无图可兜
+            return False  # fanart 也没有，无图可裁
         try:
-            poster.write_bytes(fanart.read_bytes())
-            logger.info(
-                f"已用 fanart 兜底生成 poster.jpg：{poster.name}"
-            )
-            return True
-        except OSError as e:  # noqa: BLE001
-            logger.warning(f"fanart 兜底复制 poster.jpg 失败：{e}")
+            split_poster_from_fanart(fanart, poster)
+            if poster.exists():
+                logger.info(
+                    f"已从 fanart 右半边裁切生成 poster.jpg：{poster.name}"
+                )
+                return True
+            return False  # split_poster_from_fanart 内部异常，没生成 poster
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"fanart 兜底裁切 poster.jpg 失败：{e}")
             return False
 
     def _move_samples_to_target(
