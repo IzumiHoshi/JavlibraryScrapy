@@ -358,12 +358,18 @@ export async function initLibrary() {
         job: data.job || null,
       };
       renderLibBackfillProgress();
+      // 同步 polling 启停：状态切换时立刻对齐 polling（与 prevBackfillWasRunning
+      // 解耦 —— 避免 reload 页面 + 后台已跑的场景下 UI 卡死）
+      if (data.status === 'running') {
+        startBackfillPolling();
+      } else if (pollBackfillTimer) {
+        // 非 running（idle / done / error）→ 停止轮询
+        stopBackfillPolling();
+      }
       // 任务结束后刷一次列表 + 索引（让 has_nfo/poster/fanart 状态反映到卡片）
       if (data.status !== 'running' && prevBackfillWasRunning) {
         prevBackfillWasRunning = false;
         load();
-        // 任务已完成 → 停止轮询（避免 idle 状态下每 1.5s 还在打 backfill-status）
-        stopBackfillPolling();
       }
       if (data.status === 'running') {
         prevBackfillWasRunning = true;
@@ -498,7 +504,8 @@ export async function initLibrary() {
   await load();
   // 持续轮询库扫描状态（每 3 秒）—— 永远跑
   setInterval(loadStatus, 3000);
-  // 全库补齐进度轮询：只在 backfill 启动时跑（btn-lib-backfill handler
-  // 调 startBackfillPolling()），完成 / 取消后 stopBackfillPolling()。
-  // 避免 idle 状态下每 1.5s 还在打 /api/library/backfill-status。
+  // 全库补齐进度轮询：先拉一次 status，按结果决定要不要启动 setInterval。
+  // - status=running（其他标签页 / reload 前已在跑）→ startBackfillPolling()
+  // - status=idle → 不启动（避免 idle 状态下每 1.5s 还在打 backfill-status）
+  pollBackfillStatus();
 }
