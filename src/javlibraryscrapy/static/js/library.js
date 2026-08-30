@@ -178,11 +178,29 @@ export async function initLibrary() {
       `<span class="ls-path" title="${esc(data.current_folder || '')}">${esc(cur || '…')}</span>`,
     ].join('<span class="ls-sep">·</span>');
   }
+  // 全库补齐进度（占位 lib-status 位置）："补齐中 X/Y → 当前车牌"
+  // 与扫描提示在同一 DOM 节点切换（"原有扫描提示只在第一次刷新时显示，后续被挤掉无所谓"）。
+  function renderLibBackfillHtml(j) {
+    const segs = [];
+    segs.push(`补齐中 <b>${j.backfilled}</b>/${j.needs_backfill}`);
+    if (j.failed) {
+      segs.push(`失败 <b>${j.failed}</b>`);
+    }
+    if (j.current_code) {
+      segs.push(
+        `<span class="ls-label">当前</span>` +
+        `<span class="ls-path" title="${esc(j.current_code)}">${esc(j.current_code)}</span>`
+      );
+    }
+    return segs.join('<span class="ls-sep">·</span>');
+  }
 
   async function loadStatus() {
     try {
       const res = await fetch('/api/library/status');
       const data = await res.json();
+      // lib-status 被 backfill 进度占位时不覆盖（用户更想看补齐进度）
+      if (libStatusFrozen) return;
       if (!data.configured) {
         $('banner').hidden = false;
         $('banner').className = 'banner error';
@@ -284,25 +302,33 @@ export async function initLibrary() {
   /* ---------- 全库补齐：触发 + 进度轮询 ---------- */
   // 局部状态机：保存当前 job + 当前处理的车牌，供 UI 实时反映。
   let libBackfillState = { status: 'idle', job: null };
+  // lib-status 元素被 backfill 进度占位期间，loadStatus 不应覆盖。
+  let libStatusFrozen = false;
 
   function renderLibBackfillProgress() {
     const btn = $('btn-lib-backfill');
     const cancelBtn = $('btn-lib-backfill-cancel');
+    const libStatus = $('lib-status');
     const s = libBackfillState;
     const j = s.job;
     if (s.status === 'running' && j) {
       btn.disabled = true;
       btn.classList.add('running');
       cancelBtn.style.display = '';
-      const cur = j.current_code ? ` → ${j.current_code}` : '';
-      btn.textContent = `补齐中 ${j.backfilled}/${j.needs_backfill}${cur}`;
+      btn.textContent = '补齐中…';
       btn.title = `进度：${j.backfilled}/${j.needs_backfill}（失败 ${j.failed}）`;
+      // 占位 lib-status：显示完整进度（含当前车牌），覆盖扫描提示
+      libStatus.innerHTML = renderLibBackfillHtml(j);
+      libStatusFrozen = true;
     } else if (s.status === 'done' && j) {
       btn.disabled = false;
       btn.classList.remove('running');
       cancelBtn.style.display = 'none';
       btn.textContent = '补齐缺失';
       btn.title = `已完成：补齐 ${j.backfilled} 部，失败 ${j.failed} 部`;
+      // 显示最终结果后冻结，直到下次 loadStatus 刷新（避免 done 状态被扫描状态覆盖）
+      libStatus.innerHTML = `补齐完成：<b>${j.backfilled}</b> 部${j.failed ? `，失败 <b>${j.failed}</b>` : ''}`;
+      libStatusFrozen = false;
       toast(`全库补齐完成：补齐 ${j.backfilled}，失败 ${j.failed}`);
     } else if (s.status === 'error' && j) {
       btn.disabled = false;
@@ -310,12 +336,19 @@ export async function initLibrary() {
       cancelBtn.style.display = 'none';
       btn.textContent = '补齐缺失';
       btn.title = `错误：${j.error || '未知'}`;
+      libStatus.innerHTML = `补齐失败：${esc(j.error || '未知')}`;
+      libStatusFrozen = false;
       toast(`全库补齐失败：${j.error || '未知'}`);
     } else {
       btn.disabled = false;
       btn.classList.remove('running');
       cancelBtn.style.display = 'none';
       btn.textContent = '补齐缺失';
+      // idle 状态：让 loadStatus 重新接管（解冻 + 触发一次刷新）
+      if (libStatusFrozen) {
+        libStatusFrozen = false;
+        loadStatus();
+      }
     }
   }
 
@@ -340,6 +373,7 @@ export async function initLibrary() {
     } catch { /* 静默 */ }
   }
   let prevBackfillWasRunning = false;
+  // ``libStatusFrozen`` 移到外层（与 libBackfillState 一起声明）
 
   $('btn-lib-backfill').addEventListener('click', async () => {
     try {
