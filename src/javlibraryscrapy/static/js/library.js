@@ -362,6 +362,8 @@ export async function initLibrary() {
       if (data.status !== 'running' && prevBackfillWasRunning) {
         prevBackfillWasRunning = false;
         load();
+        // 任务已完成 → 停止轮询（避免 idle 状态下每 1.5s 还在打 backfill-status）
+        stopBackfillPolling();
       }
       if (data.status === 'running') {
         prevBackfillWasRunning = true;
@@ -369,7 +371,20 @@ export async function initLibrary() {
     } catch { /* 静默 */ }
   }
   let prevBackfillWasRunning = false;
+  let pollBackfillTimer = null;
   // ``libStatusFrozen`` 移到外层（与 libBackfillState 一起声明）
+
+  function startBackfillPolling() {
+    if (pollBackfillTimer) return;
+    pollBackfillTimer = setInterval(pollBackfillStatus, 1500);
+  }
+
+  function stopBackfillPolling() {
+    if (pollBackfillTimer) {
+      clearInterval(pollBackfillTimer);
+      pollBackfillTimer = null;
+    }
+  }
 
   $('btn-lib-backfill').addEventListener('click', async () => {
     // 共用按钮：idle 时触发补齐，running 时触发取消
@@ -391,6 +406,7 @@ export async function initLibrary() {
       const data = await res.json();
       libBackfillState = { status: 'running', job: data.job };
       renderLibBackfillProgress();
+      startBackfillPolling();   // 任务启动 → 启动轮询
       toast('已开始全库补齐…');
     } catch (e) {
       toast('触发补齐失败：' + e.message);
@@ -480,9 +496,9 @@ export async function initLibrary() {
   $('source').textContent = '本地影片库';
   await loadWarnings();
   await load();
-  // 持续轮询状态（每 3 秒）
+  // 持续轮询库扫描状态（每 3 秒）—— 永远跑
   setInterval(loadStatus, 3000);
-  // 全库补齐进度轮询（每 1.5 秒）
-  pollBackfillStatus();
-  setInterval(pollBackfillStatus, 1500);
+  // 全库补齐进度轮询：只在 backfill 启动时跑（btn-lib-backfill handler
+  // 调 startBackfillPolling()），完成 / 取消后 stopBackfillPolling()。
+  // 避免 idle 状态下每 1.5s 还在打 /api/library/backfill-status。
 }
