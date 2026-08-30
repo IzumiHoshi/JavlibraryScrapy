@@ -778,6 +778,8 @@
   .backfill-btn:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); transform: scale(1.05); }
   .backfill-btn:disabled { cursor: not-allowed; opacity: .9; }
   .backfill-btn.running { background: var(--warn); border-color: var(--warn); animation: pulse 1.4s ease-in-out infinite; }
+  .backfill-btn.stopping { background: #c0392b; border-color: #c0392b; }
+  .backfill-btn.stopping:hover:not(:disabled) { background: #c0392b; transform: scale(1.05); }
   .backfill-btn.done { background: var(--ok); border-color: var(--ok); }
   .backfill-btn.failed { background: #c0392b; border-color: #c0392b; }
   @keyframes pulse {

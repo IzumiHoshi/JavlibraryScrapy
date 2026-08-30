@@ -307,33 +307,30 @@ export async function initLibrary() {
 
   function renderLibBackfillProgress() {
     const btn = $('btn-lib-backfill');
-    const cancelBtn = $('btn-lib-backfill-cancel');
     const libStatus = $('lib-status');
     const s = libBackfillState;
     const j = s.job;
     if (s.status === 'running' && j) {
-      btn.disabled = true;
-      btn.classList.add('running');
-      cancelBtn.style.display = '';
-      btn.textContent = '补齐中…';
-      btn.title = `进度：${j.backfilled}/${j.needs_backfill}（失败 ${j.failed}）`;
+      // running 状态：按钮变成红色"停止"，可点击触发取消
+      btn.disabled = false;
+      btn.classList.remove('running');
+      btn.classList.add('stopping');
+      btn.textContent = '停止';
+      btn.title = `点击停止（进度：${j.backfilled}/${j.needs_backfill}，失败 ${j.failed}）`;
       // 占位 lib-status：显示完整进度（含当前车牌），覆盖扫描提示
       libStatus.innerHTML = renderLibBackfillHtml(j);
       libStatusFrozen = true;
     } else if (s.status === 'done' && j) {
       btn.disabled = false;
-      btn.classList.remove('running');
-      cancelBtn.style.display = 'none';
+      btn.classList.remove('running', 'stopping');
       btn.textContent = '补齐缺失';
       btn.title = `已完成：补齐 ${j.backfilled} 部，失败 ${j.failed} 部`;
-      // 显示最终结果后冻结，直到下次 loadStatus 刷新（避免 done 状态被扫描状态覆盖）
       libStatus.innerHTML = `补齐完成：<b>${j.backfilled}</b> 部${j.failed ? `，失败 <b>${j.failed}</b>` : ''}`;
       libStatusFrozen = false;
       toast(`全库补齐完成：补齐 ${j.backfilled}，失败 ${j.failed}`);
     } else if (s.status === 'error' && j) {
       btn.disabled = false;
-      btn.classList.remove('running');
-      cancelBtn.style.display = 'none';
+      btn.classList.remove('running', 'stopping');
       btn.textContent = '补齐缺失';
       btn.title = `错误：${j.error || '未知'}`;
       libStatus.innerHTML = `补齐失败：${esc(j.error || '未知')}`;
@@ -341,8 +338,7 @@ export async function initLibrary() {
       toast(`全库补齐失败：${j.error || '未知'}`);
     } else {
       btn.disabled = false;
-      btn.classList.remove('running');
-      cancelBtn.style.display = 'none';
+      btn.classList.remove('running', 'stopping');
       btn.textContent = '补齐缺失';
       // idle 状态：让 loadStatus 重新接管（解冻 + 触发一次刷新）
       if (libStatusFrozen) {
@@ -376,6 +372,17 @@ export async function initLibrary() {
   // ``libStatusFrozen`` 移到外层（与 libBackfillState 一起声明）
 
   $('btn-lib-backfill').addEventListener('click', async () => {
+    // 共用按钮：idle 时触发补齐，running 时触发取消
+    if (libBackfillState.status === 'running') {
+      try {
+        const res = await fetch('/api/library/backfill-cancel', { method: 'POST' });
+        if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+        toast('已发取消信号');
+      } catch (e) {
+        toast('取消失败：' + e.message);
+      }
+      return;
+    }
     try {
       const res = await fetch('/api/library/backfill', { method: 'POST' });
       if (res.status === 409) return toast('已有补齐任务在运行');
@@ -387,16 +394,6 @@ export async function initLibrary() {
       toast('已开始全库补齐…');
     } catch (e) {
       toast('触发补齐失败：' + e.message);
-    }
-  });
-
-  $('btn-lib-backfill-cancel').addEventListener('click', async () => {
-    try {
-      const res = await fetch('/api/library/backfill-cancel', { method: 'POST' });
-      if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
-      toast('已发取消信号');
-    } catch (e) {
-      toast('取消失败：' + e.message);
     }
   });
 
