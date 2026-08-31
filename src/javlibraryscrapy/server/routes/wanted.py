@@ -24,6 +24,7 @@ import functools
 import logging
 import re
 import time
+import urllib.parse
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -50,6 +51,31 @@ _SAMPLE_IDX_RE = re.compile(r"sample_(\d+)\.jpg")
 # 任何来源（前端表单 / API 直接调用 / CLI 脚本）都会被截断到这个上限。
 DEFAULT_MAX_PAGES = 2
 MAX_PAGES_HARD_CAP = 2
+
+
+def local_cover_fallback(mw_root: Optional[Path], code: str, remote_cover: str) -> str:
+    """封面 fallback：``cover_url`` 为空时尝试用本地库的 ``poster.jpg``。
+
+    场景：手动添加车牌（/api/wanted/{code}/javbus）跳过 JAVLibrary 抓取，
+    JSON 里 ``cover_url`` 是空，但本地库 ``<CARID> <title>/poster.jpg`` 已经在
+    ``_save_per_movie_folder`` / ``MovieExporter`` 阶段落地。
+
+    返回 ``/api/local-cover?folder=...&name=poster`` 路径，让前端
+    ``<img src=...>`` 直接走服务端读盘 + 越界检查。``remote_cover`` 非空
+    / ``mw_root`` 没配 / 找不到本地 folder / 没有 poster.jpg 都直接返回
+    原 ``remote_cover``（空串），让前端继续走原「空封面」逻辑。
+
+    提到模块层方便单测。
+    """
+    if remote_cover or not mw_root or not code:
+        return remote_cover
+    folder = _find_movie_folder(Path(mw_root), code)
+    if not folder or not (folder / "poster.jpg").exists():
+        return remote_cover
+    return (
+        f"/api/local-cover?folder={urllib.parse.quote(str(folder))}"
+        "&name=poster.jpg"
+    )
 
 
 class RefreshBody(BaseModel):
@@ -490,6 +516,9 @@ def register(app: FastAPI) -> None:
         codes = [item.get("code") or "" for item in result.get("items", [])]
         counts = cache.counts_for(codes)
 
+        # 封面 fallback：见模块级 ``local_cover_fallback``。
+        mw_root = getattr(request.app.state.settings, "mostwanted_library_root", None)
+
         # 封面代理：跟随 GalleryState 的 image_proxy 标志（与 /api/movies 共用同一 helper）
         # local_exists：查 gallery.library_index（in-memory，O(1)）。整理完的车 →
         # local_exists=true → 前端徽章变「📁 已整理」（紫色），点击按钮消失。
@@ -498,7 +527,11 @@ def register(app: FastAPI) -> None:
         result["items"] = [
             {
                 **item,
-                "cover": proxied_url(item.get("cover_url") or item.get("cover"), gallery),
+                "cover": local_cover_fallback(
+                    mw_root,
+                    code,
+                    proxied_url(item.get("cover_url") or item.get("cover"), gallery),
+                ),
                 "local_samples": counts.get((item.get("code") or "").upper(), 0),
                 "local_exists": (
                     lib_index.find_match(code) is not None

@@ -88,3 +88,72 @@ def test_wanted_status_values_constant_is_stable():
     from javlibraryscrapy.server.services.wanted import STATUS_VALUES
 
     assert STATUS_VALUES == ("none", "downloading", "downloaded", "organized")
+
+
+# ---------------------------------------------------------------------------
+# 封面 fallback：手动添加车牌 → 本地库 poster.jpg 兜底
+# ---------------------------------------------------------------------------
+def _make_folder_with_poster(tmp_path: Path, code: str, title: str) -> Path:
+    """建一个 ``<CARID> <title>/`` 含 poster.jpg 的最简 folder。"""
+    import shutil
+
+    folder = tmp_path / f"{code} {title}"
+    folder.mkdir(parents=True)
+    # 复制一张真实的小 jpg 当 poster（用项目内的 fixture；如果 fixture 不存在
+    # 就退回到 ``__init__.py``，pytest 一定会把它当字节流读，所以内容无所谓）
+    src = (
+        Path(__file__).resolve().parent / "test_wanted_route_contract.py"
+    )
+    shutil.copy(src, folder / "poster.jpg")
+    return folder
+
+
+def test_local_cover_fallback_uses_local_poster_when_remote_empty(tmp_path):
+    """``cover_url`` 为空 + 本地库有 poster.jpg → 返回 /api/local-cover 路径。"""
+    from javlibraryscrapy.server.routes.wanted import local_cover_fallback
+
+    folder = _make_folder_with_poster(tmp_path, "START-048", "タイトル")
+    code = "START-048"
+
+    result = local_cover_fallback(tmp_path, code, "")
+    assert result.startswith("/api/local-cover?folder=")
+    # ``name`` 必须带扩展名（白名单要求 poster.jpg，不是 poster）
+    assert "name=poster.jpg" in result
+    # folder 应被正确 quote（Windows 反斜杠 → %5C；中文 UTF-8 percent-encoded）
+    import urllib.parse
+    quoted = urllib.parse.quote(str(folder))
+    assert quoted in result
+
+
+def test_local_cover_fallback_keeps_remote_cover_when_present(tmp_path):
+    """``cover_url`` 非空时直接返回 remote，不查本地库。"""
+    from javlibraryscrapy.server.routes.wanted import local_cover_fallback
+
+    _make_folder_with_poster(tmp_path, "ABC-123", "title")
+    remote = "/api/cover?url=https%3A%2F%2Fpics.dmm.co.jp%2Fabc.jpg"
+
+    assert local_cover_fallback(tmp_path, "ABC-123", remote) == remote
+
+
+def test_local_cover_fallback_returns_empty_when_no_local_folder(tmp_path):
+    """本地库无 folder 时返回空字符串（前端继续走"空封面"逻辑）。"""
+    from javlibraryscrapy.server.routes.wanted import local_cover_fallback
+
+    assert local_cover_fallback(tmp_path, "NOTHING-999", "") == ""
+
+
+def test_local_cover_fallback_returns_empty_when_no_poster_jpg(tmp_path):
+    """folder 存在但没有 poster.jpg → 不 fallback，返回空。"""
+    from javlibraryscrapy.server.routes.wanted import local_cover_fallback
+
+    folder = tmp_path / "NOPOSTER-001 title"
+    folder.mkdir()
+    assert local_cover_fallback(tmp_path, "NOPOSTER-001", "") == ""
+
+
+def test_local_cover_fallback_returns_empty_when_mw_root_unset():
+    """``mw_root`` 没配 → 跳过 fallback（避免对无库的用户报错）。"""
+    from javlibraryscrapy.server.routes.wanted import local_cover_fallback
+
+    assert local_cover_fallback(None, "ABC-123", "") == ""
+    assert local_cover_fallback("", "ABC-123", "") == ""  # 路径空也视同未配

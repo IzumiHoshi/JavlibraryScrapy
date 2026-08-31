@@ -156,6 +156,7 @@ class GalleryState:
         library_root: Optional[Path] = None,
         library_index_path: Optional[Path] = None,
         magnets_index: Optional[Path] = None,
+        mostwanted_library_root: Optional[Path] = None,
     ):
         self.data_path = data_path
         self.output_dir = output_dir
@@ -191,6 +192,9 @@ class GalleryState:
 
         # ---- 本地影片库 ----
         self.library_root: Optional[Path] = library_root
+        # wanted 库根（手动添加车牌时 cover / samples 落地处；
+        # /api/local-cover 越界检查需同时认两个根）
+        self.mostwanted_library_root: Optional[Path] = mostwanted_library_root
         self.library_index_path: Path = library_index_path or (
             output_dir / "library_index.json"
         )
@@ -294,12 +298,28 @@ class GalleryState:
             logger.warning(f"刷新后更新索引异常：{e}")
 
     def is_within_library(self, path: Path) -> bool:
-        if not self.library_root:
+        """检查 ``path`` 是否在允许的库根目录内（LIBRARY_ROOT 或
+        MOSTWANTED_LIBRARY_ROOT）。
+
+        ``/api/local-cover`` 端点用这个防越界：手动添加车牌会把本地库的
+        poster.jpg 路径通过 query 传给服务端，必须限定在 .env 配置的两
+        个根目录内，避免被恶意利用读取任意文件。
+
+        路径归一化（commit ``c0ab1d7``）：用户传的可能是映射盘符
+        （``Z:\\JAV``）或 UNC（``\\\\nas\\JAV``），通过 ``resolve()`` 统一
+        比较，避免被 ``startswith`` 字符串前缀绕过。
+        """
+        if not self.library_root and not getattr(self, "mostwanted_library_root", None):
             return False
         try:
             target = path.resolve()
-            root = self.library_root.resolve()
-            return str(target).startswith(str(root))
+            target_str = str(target)
+            for root in (self.library_root, getattr(self, "mostwanted_library_root", None)):
+                if not root:
+                    continue
+                if target_str.startswith(str(root.resolve())):
+                    return True
+            return False
         except OSError:
             return False
 
