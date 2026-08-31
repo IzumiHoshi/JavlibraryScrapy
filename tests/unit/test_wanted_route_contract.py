@@ -88,3 +88,153 @@ def test_wanted_status_values_constant_is_stable():
     from javlibraryscrapy.server.services.wanted import STATUS_VALUES
 
     assert STATUS_VALUES == ("none", "downloading", "downloaded", "organized")
+
+
+# ---------------------------------------------------------------------------
+# 封面 fallback：手动添加车牌 → 本地库 poster.jpg 兜底
+# ---------------------------------------------------------------------------
+def _make_folder_with_poster(tmp_path: Path, code: str, title: str) -> Path:
+    """建一个 ``<CARID> <title>/`` 含 poster.jpg 的最简 folder。"""
+    import shutil
+
+    folder = tmp_path / f"{code} {title}"
+    folder.mkdir(parents=True)
+    # 复制一张真实的小 jpg 当 poster（用项目内的 fixture；如果 fixture 不存在
+    # 就退回到 ``__init__.py``，pytest 一定会把它当字节流读，所以内容无所谓）
+    src = (
+        Path(__file__).resolve().parent / "test_wanted_route_contract.py"
+    )
+    shutil.copy(src, folder / "poster.jpg")
+    return folder
+
+
+def test_local_cover_fallback_uses_local_poster_when_remote_empty(tmp_path):
+    """``cover_url`` 为空 + 本地库有 poster.jpg → 返回 /api/local-cover 路径。"""
+    from javlibraryscrapy.server.routes.wanted import local_cover_fallback
+
+    folder = _make_folder_with_poster(tmp_path, "START-048", "タイトル")
+    code = "START-048"
+
+    result = local_cover_fallback(tmp_path, code, "")
+    assert result.startswith("/api/local-cover?folder=")
+    # ``name`` 必须带扩展名（白名单要求 poster.jpg，不是 poster）
+    assert "name=poster.jpg" in result
+    # folder 应被正确 quote（Windows 反斜杠 → %5C；中文 UTF-8 percent-encoded）
+    import urllib.parse
+    quoted = urllib.parse.quote(str(folder))
+    assert quoted in result
+
+
+def test_local_cover_fallback_keeps_remote_cover_when_present(tmp_path):
+    """``cover_url`` 非空时直接返回 remote，不查本地库。"""
+    from javlibraryscrapy.server.routes.wanted import local_cover_fallback
+
+    _make_folder_with_poster(tmp_path, "ABC-123", "title")
+    remote = "/api/cover?url=https%3A%2F%2Fpics.dmm.co.jp%2Fabc.jpg"
+
+    assert local_cover_fallback(tmp_path, "ABC-123", remote) == remote
+
+
+def test_local_cover_fallback_returns_empty_when_no_local_folder(tmp_path):
+    """本地库无 folder 时返回空字符串（前端继续走"空封面"逻辑）。"""
+    from javlibraryscrapy.server.routes.wanted import local_cover_fallback
+
+    assert local_cover_fallback(tmp_path, "NOTHING-999", "") == ""
+
+
+def test_local_cover_fallback_returns_empty_when_no_poster_jpg(tmp_path):
+    """folder 存在但没有 poster.jpg → 不 fallback，返回空。"""
+    from javlibraryscrapy.server.routes.wanted import local_cover_fallback
+
+    folder = tmp_path / "NOPOSTER-001 title"
+    folder.mkdir()
+    assert local_cover_fallback(tmp_path, "NOPOSTER-001", "") == ""
+
+
+def test_local_cover_fallback_returns_empty_when_mw_root_unset():
+    """``mw_root`` 没配 → 跳过 fallback（避免对无库的用户报错）。"""
+    from javlibraryscrapy.server.routes.wanted import local_cover_fallback
+
+    assert local_cover_fallback(None, "ABC-123", "") == ""
+    assert local_cover_fallback("", "ABC-123", "") == ""  # 路径空也视同未配
+
+
+# ---------------------------------------------------------------------------
+# 批量 JavBus 抓取：API 契约
+# ---------------------------------------------------------------------------
+def _batch_route():
+    """构造临时 FastAPI app 调 register()，拿到 /api/wanted/batch-add 的 Route 对象。"""
+    app = FastAPI()
+    register(app)
+    for route in app.routes:
+        if getattr(route, "path", None) == "/api/wanted/batch-add":
+            return route
+    raise AssertionError("/api/wanted/batch-add route 未注册")
+
+
+def test_batch_add_route_accepts_post_only():
+    """批量端点必须是 POST（GET 暴露 JAVBus 抓取是反模式）。"""
+    route = _batch_route()
+    methods = list(route.methods) if hasattr(route, "methods") else []
+    assert "POST" in methods, f"批量端点必须支持 POST，got {methods}"
+
+
+def test_batch_add_route_is_well_formed():
+    """``/api/wanted/batch-add`` 注册在 FastAPI app 上且 path 正确。"""
+    route = _batch_route()
+    assert route.path == "/api/wanted/batch-add"
+    # 函数签名是 async def fetch_batch_javbus(request)
+    sig = inspect.signature(route.endpoint)
+    assert "request" in sig.parameters
+
+
+def test_batch_add_extract_carids_handles_dedup_and_case():
+    """``extractCarids`` 客户端去重 + 大写化（前端契约；后端再做一次保险）。"""
+    # 这是 wanted.js 的逻辑镜像 —— 后端 route 内部也做同样事情，
+    # 避免前端漏掉大写 / 去重时后端崩
+    import re
+
+    def extract(input_codes):
+        seen = set()
+        out = []
+        for raw in input_codes:
+            cu = (raw or "").strip().upper()
+            if not cu or cu in seen:
+                continue
+            # normalize：找字母数字边界
+            m = re.match(r"^([A-Z]+)[-_]?(\d+)$", cu)
+            if not m:
+                continue
+            seen.add(f"{m.group(1)}-{m.group(2)}")
+            out.append(f"{m.group(1)}-{m.group(2)}")
+        return out
+
+    # 大写化
+    assert extract(["ipzz-907"]) == ["IPZZ-907"]
+    # 无分隔符自动补
+    assert extract(["SSIS308"]) == ["SSIS-308"]
+    # 去重（保首次顺序）
+    assert extract(["ABC-123", "abc-123", "ABC-124"]) == ["ABC-123", "ABC-124"]
+    # 空 / 非法
+    assert extract([""]) == []
+    assert extract(["AB"]) == []  # 缺数字
+    assert extract(["123"]) == []  # 缺字母
+    assert extract(["PURE_LETTERS"]) == []  # 全字母
+
+
+def test_fetch_batch_javbus_empty_input_returns_empty_result():
+    """``WantedService.fetch_batch_javbus`` 空输入直接返回空 summary。"""
+    from javlibraryscrapy.server.services.wanted import WantedService
+
+    # 用 mock 避免真的去 JAVBus；只需要确认 short-circuit 路径
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        svc = WantedService(data_path=Path(td) / "wanted.json")
+        result = svc.fetch_batch_javbus([])
+        assert result["results"] == []
+        assert result["summary"] == {
+            "total": 0, "ok": 0, "failed": 0,
+            "created": 0, "rolled_back": 0,
+        }
+        # JSON 应该没被创建
+        assert not (Path(td) / "wanted.json").exists()

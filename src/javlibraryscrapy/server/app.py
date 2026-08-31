@@ -69,6 +69,7 @@ def create_gallery_state(
         library_root=settings.library_root,
         library_index_path=settings.library_index,
         magnets_index=magnets_index if magnets_index is not None else settings.magnets_index,
+        mostwanted_library_root=settings.mostwanted_library_root,
     )
     # 启动时若 root 不一致则强制重建（沿用原服务 main 行为）
     if (

@@ -1057,6 +1057,126 @@ export async function initWanted() {
   }
 
   $('btn-refresh').addEventListener('click', startRefresh);
+
+  // 从用户输入里提取所有车牌子串（支持任意分隔符：空格 / 逗号 / 点 /
+//   中文逗号 / 换行 / 自带 - _ 等）。
+//
+// 规则：
+//   - 整体大写化
+//   - 单正则 ``\b[A-Z]{2,}\s*[-_]?\s*\d{2,}\b`` 全文扫描
+//     （``\b`` 处理首尾边界；``\s*`` 让字母 / 数字之间的空格也能匹配）
+//   - 至少 2 字母 + 2 数字（避免误匹配 "AB" / "123" 这类无车牌义的段）
+//   - 拆分字母/数字边界，统一成 ``AA-123`` 格式
+//   - 去重（保留首次出现顺序）
+//
+// 例：
+//   "-START-048 , SSIS-308. TEK-071" → [START-048, SSIS-308, TEK-071]
+//   "start-048 ssis308 tek_071"      → [START-048, SSIS-308, TEK-071]
+//   "想抓 IPZZ907 / abc-123 / MIX-44" → [IPZZ-907, ABC-123, MIX-44]
+//   "ABC 123"                        → [ABC-123]  （空格也能匹配）
+//
+// ``STRICT_CARID_RE`` 服务端最终把关（``[A-Z]+-[0-9]+``）—— 客户端能
+// 提取但服务端 normalize 失败的，调用时会返回 400，弹 toast 告知。
+  function extractCarids(input) {
+    if (!input) return [];
+    const upper = String(input).toUpperCase();
+    // 单正则一次扫描：字母段 + 可选空白 + 可选 -/_ + 可选空白 + 数字段。
+    // 不用 split 是因为 "-START-048" / "ABC 123" 这类边界会把字母数字
+    // 切成两段后丢失语义。\b 处理首尾的 word boundary，让 "12345AB-678"
+    // 这种前缀数字 / 后缀字母的边界也能正确停下。
+    const re = /\b([A-Z]{2,})\s*[-_]?\s*(\d{2,})\b/g;
+    const seen = new Set();
+    const out = [];
+    let m;
+    while ((m = re.exec(upper)) !== null) {
+      const code = `${m[1]}-${m[2]}`;
+      if (seen.has(code)) continue;
+      seen.add(code);
+      out.push(code);
+    }
+    return out;
+  }
+
+  // 手动添加车牌：弹窗输入 → 提取多个 → POST /api/wanted/batch-add
+  // （后端单 AsyncDynamicSession 复用给所有车牌；前端只发一次请求）。
+  //
+  // 旧版是串行 N 次 POST /api/wanted/{carid}/javbus，每部启一个新 session
+  // （Chromium 初始化 + Cloudflare 挑战 ≈ 3-5s/部）。N=5 浪费 12-20s 启动开销，
+  // 且 N 次 HTTP 请求让浏览器侧更卡。批量端点让这些开销只发生一次。
+  async function addCodeByPrompt() {
+    const raw = window.prompt(
+      '输入车牌（可多个，任意分隔符）\n' +
+        '例：-START-048 , SSIS-308. TEK-071\n' +
+        '也支持 ipzz907 / start 907 / tek_071 等写法\n' +
+        '单次最多 20 部；超过请分批提交',
+      ''
+    );
+    if (raw === null) return;  // 用户取消
+    const codes = extractCarids(raw);
+    if (!codes.length) {
+      return toast('未识别到任何车牌（需含字母+数字，如 IPZZ-907）', true);
+    }
+    if (codes.length > 20) {
+      return toast(`识别到 ${codes.length} 部，单次最多 20 部；请分批提交`, true);
+    }
+
+    const btn = $('btn-add-code');
+    const orig = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = `🔍 抓取中… (${codes.length} 部)`;
+
+    try {
+      const res = await fetch('/api/wanted/batch-add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ codes }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.detail || data.error || res.statusText);
+      }
+      const summary = data.summary || {};
+      const results = data.results || [];
+
+      // 汇总 toast：成功 / 失败分两条，避免长串塞屏
+      const okResults = results.filter((r) => r.ok);
+      const failedResults = results.filter((r) => !r.ok);
+      if (okResults.length) {
+        const summaryList = okResults
+          .map((x) => `${x.code}${x.created ? ' 🆕' : ''}`)
+          .join(', ');
+        toast(`✅ 成功 ${summary.ok || okResults.length}/${summary.total || codes.length}：${summaryList}`);
+      }
+      if (failedResults.length) {
+        const summaryList = failedResults
+          .map((x) => `${x.code}（${x.error || '失败'}）`)
+          .slice(0, 3)  // 最多展示前 3 条避免塞屏
+          .join('；');
+        const more = failedResults.length > 3 ? `；…还有 ${failedResults.length - 3} 条` : '';
+        toast(`❌ 失败 ${failedResults.length}：${summaryList}${more}`, true);
+      }
+      // 全部成功的简短总结（单条 toast 替代上面的长列表）
+      if (okResults.length && !failedResults.length) {
+        // toast 已经在上面发过；这里不重复
+      }
+
+      // 有任意一条成功 → 全表 reload（新车牌按 release_date 排序不一定在第一页，
+      // status chips / months 计数都可能变 → reload 最稳）。
+      // 全部失败 → 不动 grid。
+      if (okResults.length) {
+        await load();
+        await loadMonthsOnly();
+        await loadStatusCountsOnly();
+      }
+    } catch (e) {
+      toast(`批量添加失败：${e.message}`, true);
+    } finally {
+      btn.textContent = orig;
+      btn.disabled = false;
+    }
+  }
+  $('btn-add-code').addEventListener('click', addCodeByPrompt);
+
   $('results').addEventListener('click', (e) => {
     const btn = e.target.closest('.r-copy');
     if (btn) copyText(btn.dataset.magnet, '已复制磁力链接');

@@ -24,6 +24,7 @@ import functools
 import logging
 import re
 import time
+import urllib.parse
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -50,6 +51,31 @@ _SAMPLE_IDX_RE = re.compile(r"sample_(\d+)\.jpg")
 # 任何来源（前端表单 / API 直接调用 / CLI 脚本）都会被截断到这个上限。
 DEFAULT_MAX_PAGES = 2
 MAX_PAGES_HARD_CAP = 2
+
+
+def local_cover_fallback(mw_root: Optional[Path], code: str, remote_cover: str) -> str:
+    """封面 fallback：``cover_url`` 为空时尝试用本地库的 ``poster.jpg``。
+
+    场景：手动添加车牌（/api/wanted/{code}/javbus）跳过 JAVLibrary 抓取，
+    JSON 里 ``cover_url`` 是空，但本地库 ``<CARID> <title>/poster.jpg`` 已经在
+    ``_save_per_movie_folder`` / ``MovieExporter`` 阶段落地。
+
+    返回 ``/api/local-cover?folder=...&name=poster`` 路径，让前端
+    ``<img src=...>`` 直接走服务端读盘 + 越界检查。``remote_cover`` 非空
+    / ``mw_root`` 没配 / 找不到本地 folder / 没有 poster.jpg 都直接返回
+    原 ``remote_cover``（空串），让前端继续走原「空封面」逻辑。
+
+    提到模块层方便单测。
+    """
+    if remote_cover or not mw_root or not code:
+        return remote_cover
+    folder = _find_movie_folder(Path(mw_root), code)
+    if not folder or not (folder / "poster.jpg").exists():
+        return remote_cover
+    return (
+        f"/api/local-cover?folder={urllib.parse.quote(str(folder))}"
+        "&name=poster.jpg"
+    )
 
 
 class RefreshBody(BaseModel):
@@ -246,6 +272,118 @@ def register(app: FastAPI) -> None:
             f"单车 JavBus 重抓 {carid_norm}: ok={result.get('ok')} "
             f"status={result.get('status_code')} error={result.get('error')} "
             f"bucket={result.get('bucket')}"
+        )
+        return result
+
+    @app.post("/api/wanted/batch-add")
+    async def fetch_batch_javbus(request: Request) -> Dict[str, Any]:
+        """批量手动 JavBus 抓取 + 加入 wanted 列表。
+
+        与单车端点 ``POST /api/wanted/{carid}/javbus`` 的差异：
+          - 单 ``AsyncDynamicSession`` 复用到所有车牌（避免 N 次 Chromium 启动，
+            每部省 3-5s；批量 5 部省 12-20s）
+          - 一次原子落盘（不是每部一次写）
+          - 输入支持任意分隔的多个车牌（前端 extractCarids 已经规范化；
+            后端再次去重 + 大写化作为保险）
+
+        请求体::
+
+            {
+                "codes": ["IPZZ-907", "SSIS-308", "TEK-071"],
+                "titles": {                  # 可选；不在 JSON 的车才会用
+                    "IPZZ-907": "Title"
+                },
+                "cover_urls": {              # 可选；JAVLibrary 缩略图 URL
+                    "IPZZ-907": "https://..."
+                }
+            }
+
+        返回：``WantedService.fetch_batch_javbus`` 的 dict：
+
+        - ``results``: per-code 结果（schema 与单车对齐；``movie`` 是完整 entry，
+          失败新建被回滚 → ``None``，便于前端 in-place 更新 / 决定是否 reload）
+        - ``summary``: ``{total, ok, failed, created, rolled_back}``
+
+        错误码：
+          - 200：总是返回（语义层面的失败在 ``results[i].ok``）
+          - 400：``codes`` 缺失 / 非 list / 空 list / 单 batch > 数量上限
+          - 503：MOSTWANTED_LIBRARY_ROOT 等必需配置缺失
+
+        数量上限：单 batch 最多 20 部。超过 → 400 拒绝，避免一次请求把
+        session 拖垮（Chromium 内存 / JAVBus 反爬阈值）。
+        """
+        MAX_BATCH = 20
+        body_dict: Dict[str, Any] = {}
+        try:
+            raw = await request.json()
+            if isinstance(raw, dict):
+                body_dict = raw
+        except Exception:
+            pass
+
+        codes_raw = body_dict.get("codes")
+        if not isinstance(codes_raw, list) or not codes_raw:
+            raise HTTPException(
+                status_code=400,
+                detail="缺少 codes 字段（应为非空 list，如 ['IPZZ-907', 'SSIS-308']）",
+            )
+        if len(codes_raw) > MAX_BATCH:
+            raise HTTPException(
+                status_code=400,
+                detail=f"单次最多 {MAX_BATCH} 部；当前 {len(codes_raw)}（请分批提交）",
+            )
+        # 过滤空字符串 + 去重 + 大写化（保留首次顺序），然后逐个 normalize_carid
+        # 校验。校验失败的 400 拒绝整个 batch（避免半成功半失败）。
+        seen: set[str] = set()
+        normalized: List[str] = []
+        for raw_c in codes_raw:
+            cu = (raw_c or "").strip().upper()
+            if not cu or cu in seen:
+                continue
+            seen.add(cu)
+            norm = normalize_carid(cu)
+            if not norm:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"非法的车牌：{raw_c!r}（应为 字母-数字 格式，如 IPZZ-907）",
+                )
+            normalized.append(norm)
+
+        titles_raw = body_dict.get("titles") or {}
+        cover_urls_raw = body_dict.get("cover_urls") or {}
+        titles: Dict[str, str] = (
+            {k: str(v) for k, v in titles_raw.items() if k and v}
+            if isinstance(titles_raw, dict)
+            else {}
+        )
+        cover_urls: Dict[str, str] = (
+            {k: str(v) for k, v in cover_urls_raw.items() if k and v}
+            if isinstance(cover_urls_raw, dict)
+            else {}
+        )
+
+        wanted: WantedService = request.app.state.wanted
+        settings = request.app.state.settings
+        mw_root = getattr(settings, "mostwanted_library_root", None)
+        cache = getattr(request.app.state, "sample_cache", None) or get_sample_cache()
+
+        # 同步调用搬到 asyncio 线程池（与单车端点一致）
+        result = await asyncio.to_thread(
+            functools.partial(
+                wanted.fetch_batch_javbus,
+                normalized,
+                titles=titles,
+                cover_urls=cover_urls,
+                mw_root=Path(mw_root) if mw_root else None,
+                sample_cache=cache,
+            )
+        )
+        summary = result.get("summary", {})
+        logger.info(
+            f"批量 JavBus 重抓 {summary.get('total', 0)} 部："
+            f"ok={summary.get('ok', 0)} failed={summary.get('failed', 0)} "
+            f"created={summary.get('created', 0)} "
+            f"rolled_back={summary.get('rolled_back', 0)}"
         )
         return result
 
@@ -490,6 +628,9 @@ def register(app: FastAPI) -> None:
         codes = [item.get("code") or "" for item in result.get("items", [])]
         counts = cache.counts_for(codes)
 
+        # 封面 fallback：见模块级 ``local_cover_fallback``。
+        mw_root = getattr(request.app.state.settings, "mostwanted_library_root", None)
+
         # 封面代理：跟随 GalleryState 的 image_proxy 标志（与 /api/movies 共用同一 helper）
         # local_exists：查 gallery.library_index（in-memory，O(1)）。整理完的车 →
         # local_exists=true → 前端徽章变「📁 已整理」（紫色），点击按钮消失。
@@ -498,7 +639,11 @@ def register(app: FastAPI) -> None:
         result["items"] = [
             {
                 **item,
-                "cover": proxied_url(item.get("cover_url") or item.get("cover"), gallery),
+                "cover": local_cover_fallback(
+                    mw_root,
+                    code,
+                    proxied_url(item.get("cover_url") or item.get("cover"), gallery),
+                ),
                 "local_samples": counts.get((item.get("code") or "").upper(), 0),
                 "local_exists": (
                     lib_index.find_match(code) is not None

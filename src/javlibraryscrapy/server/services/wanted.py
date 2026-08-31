@@ -537,8 +537,203 @@ class WantedService:
             "movie": dict(existing) if ok or not created else None,
         }
 
+    # ---- 批量 JavBus 重抓（手动输入多车牌）----
+    def fetch_batch_javbus(
+        self,
+        codes: List[str],
+        *,
+        titles: Optional[Dict[str, str]] = None,
+        cover_urls: Optional[Dict[str, str]] = None,
+        mw_root: Optional[Path] = None,
+        sample_cache: Optional["SampleCountCache"] = None,
+    ) -> Dict[str, Any]:
+        """批量手动重抓 JavBus，更新内存 + 落盘 + reload 派生数据。
+
+        与 :meth:`fetch_one_javbus` 的区别：
+            - 单 ``AsyncDynamicSession`` 复用到所有车牌，避免每部重建
+              Chromium 上下文（每部 3-5s 启动开销；批量 5 部省 12-20s）
+            - 输入 ``codes: List[str]`` + 输出 ``{results: [...], summary: {...}}``
+            - 内部去重 + 大写化（保留首次顺序）
+            - 单次原子落盘（不是每部一次写）
+
+        每部处理逻辑与单部一致：
+            - 不在 JSON → 新建最小记录 + 抓 JAVBus；成功 → 写完整字段；
+              失败 → 直接回滚不入盘
+            - 在 JSON → 抓成功 → 更新字段；失败 → 标 failed 但保留条目
+
+        Returns::
+
+            ``{
+                "results": [
+                    {"code", "ok", "status_code", "error",
+                     "bucket", "release_date", "title",
+                     "created", "saved", "movie"},
+                    ...
+                ],
+                "summary": {"total": int, "ok": int, "failed": int,
+                            "created": int, "rolled_back": int},
+            }``
+
+        ``results[i]`` 的 schema 与 :meth:`fetch_one_javbus` 返回对齐，
+        便于前端共用一个结果渲染函数。
+        """
+        from .wanted_refresh import scrape_batch_javbus
+
+        # 输入预处理：去空 + 大写 + 去重（保序）
+        seen: set[str] = set()
+        normalized: List[str] = []
+        for raw in codes or []:
+            cu = (raw or "").strip().upper()
+            if cu and cu not in seen:
+                seen.add(cu)
+                normalized.append(cu)
+        if not normalized:
+            return {
+                "results": [],
+                "summary": {"total": 0, "ok": 0, "failed": 0,
+                            "created": 0, "rolled_back": 0},
+            }
+
+        # 调批量抓取（单 session，复用 MovieExporter）
+        scraped = scrape_batch_javbus(
+            normalized,
+            self.javbus_proxy,
+            mw_root=mw_root,
+            sample_cache=sample_cache,
+            cover_urls=cover_urls,
+        )
+        # 索引：code → scrape result
+        scraped_by_code = {r["code"]: r for r in scraped}
+
+        titles = titles or {}
+        cover_urls = cover_urls or {}
+
+        with self._lock:
+            movies = list(self._movies)  # 防御性 copy
+            results: List[Dict[str, Any]] = []
+            created_count = 0
+            ok_count = 0
+            failed_count = 0
+            rolled_back_count = 0
+
+            for code in normalized:
+                result = scraped_by_code.get(code)
+                # 整体异常（导入失败 / 超时）时所有车共享同一个 error
+                if result is None:
+                    results.append({
+                        "code": code,
+                        "ok": False,
+                        "status_code": None,
+                        "error": "抓取无结果（service 异常）",
+                        "bucket": "unknown",
+                        "release_date": "",
+                        "title": "",
+                        "created": False,
+                        "saved": None,
+                        "movie": None,
+                    })
+                    failed_count += 1
+                    continue
+
+                ok = bool(result.get("ok"))
+                info = result.get("info") or {}
+                status_code = result.get("status_code")
+                saved = result.get("saved")
+
+                existing = next(
+                    (m for m in movies
+                     if (m.get("code") or "").upper() == code),
+                    None,
+                )
+                created = False
+                if existing is None:
+                    existing = {
+                        "id": "",
+                        "code": code,
+                        "title": (titles.get(code) or "").strip(),
+                        "cover_url": (cover_urls.get(code) or "").strip(),
+                        "release_date": "",
+                        "magnet": "",
+                        "_status": "pending",
+                        "_bucket": "unknown",
+                        "_seen_at": datetime.now().isoformat(timespec="seconds"),
+                        "_updated_at": datetime.now().isoformat(timespec="seconds"),
+                        "missing_in_remote": False,
+                    }
+                    movies.append(existing)
+                    created = True
+
+                if ok:
+                    existing["release_date"] = (info.get("release_date") or "").strip()
+                    existing["actors"] = (info.get("actors") or "").strip()
+                    existing["producer"] = (info.get("producer") or "").strip()
+                    existing["publisher"] = (info.get("publisher") or "").strip()
+                    existing["category"] = (info.get("category") or "").strip()
+                    existing["magnet"] = (info.get("magnet") or "").strip()
+                    info_title = (info.get("title") or "").strip()
+                    if info_title:
+                        existing["title"] = info_title
+                    # cover_url 不从 JavBus 写回（与 fetch_one_javbus 行为一致）
+                    existing["_bucket"] = _bucket_for_release_date(existing["release_date"])
+                    existing["_status"] = "ready"
+                    existing["missing_in_remote"] = False
+                    existing["_updated_at"] = datetime.now().isoformat(timespec="seconds")
+                    if created:
+                        created_count += 1
+                    ok_count += 1
+                else:
+                    if created:
+                        # 失败 + 新建：回滚不入盘（避免 failed/unknown 死条目污染）
+                        movies.remove(existing)
+                        created = False
+                        rolled_back_count += 1
+                        logger.info(
+                            f"批量 JavBus 重抓 {code} 失败且条目是新建的，回滚不入盘"
+                        )
+                    else:
+                        existing["release_date"] = ""
+                        existing["_bucket"] = "unknown"
+                        existing["_status"] = "failed"
+                        existing["_updated_at"] = datetime.now().isoformat(timespec="seconds")
+                    failed_count += 1
+
+                results.append({
+                    "code": code,
+                    "ok": ok,
+                    "status_code": status_code,
+                    "error": result.get("error"),
+                    "bucket": "unknown" if not ok else existing.get("_bucket"),
+                    "release_date": "" if not ok else (existing.get("release_date") or ""),
+                    "title": "" if not ok else (existing.get("title") or ""),
+                    "created": created,
+                    "saved": saved if ok else None,
+                    "movie": dict(existing) if ok or not created else None,
+                })
+
+            # 一次原子落盘（所有结果合并后再写；崩了丢所有 = 比逐部写更安全）
+            self._movies = movies
+            self._recompute_derived_unlocked()
+            self._loaded_at = datetime.now().isoformat(timespec="seconds")
+            self.data_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.data_path.with_suffix(self.data_path.suffix + ".tmp")
+            tmp.write_text(
+                json.dumps(movies, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            tmp.replace(self.data_path)
+
+        return {
+            "results": results,
+            "summary": {
+                "total": len(normalized),
+                "ok": ok_count,
+                "failed": failed_count,
+                "created": created_count,
+                "rolled_back": rolled_back_count,
+            },
+        }
+
     # ---- 预热辅助（P1）----
-    def iter_codes(self) -> List[str]:
         """返回当前 wanted 列表里所有 code 的快照（用于 sample cache 预热）。
 
         按 release_date 倒序排好，前 N 个就是用户最常看的。
