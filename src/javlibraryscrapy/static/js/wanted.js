@@ -1057,6 +1057,62 @@ export async function initWanted() {
   }
 
   $('btn-refresh').addEventListener('click', startRefresh);
+
+  // 手动添加车牌：弹窗输入 → POST 到现有 /api/wanted/{carid}/javbus 端点
+  // （WantedService.fetch_one_javbus 内部对不在 JSON 的车牌会先建最小记录再抓 JAVBus）。
+  // 成功 → reload 全表；失败 → toast 错误，不动 grid。
+  async function addCodeByPrompt() {
+    const raw = window.prompt(
+      '输入车牌（例：IPZZ-907 或 ipzz907 自动补 -）',
+      ''
+    );
+    if (raw === null) return;  // 用户取消
+    const code = raw.trim().toUpperCase().replace(/\s+/g, '');
+    if (!code) return toast('车牌不能为空', true);
+    // 客户端基础校验：必须含字母 + 数字；具体分隔符 / 长度让后端 normalize_carid 处理
+    if (!/[A-Z]/.test(code) || !/[0-9]/.test(code)) {
+      return toast('车牌格式不合法（需含字母+数字，如 IPZZ-907）', true);
+    }
+
+    const btn = $('btn-add-code');
+    const orig = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '🔍 搜索中…';
+    try {
+      const res = await fetch(
+        `/api/wanted/${encodeURIComponent(code)}/javbus`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        }
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.detail || data.error || res.statusText);
+      }
+      if (!data.ok) {
+        // 服务端语义失败（如 JAVBus 404、release_date 拿不到）
+        throw new Error(data.error || 'JAVBus 搜索失败');
+      }
+      const label = data.created
+        ? `${code} 已添加（${data.bucket || ''}）`
+        : `${code} 已在列表中，已更新（${data.bucket || ''}）`;
+      toast(label);
+      // 重渲整张列表：新车牌按 release_date 排序不一定在第一页，
+      // 同时 status chips / months 计数都可能变 → 全表 reload 最稳
+      await load();
+      await loadMonthsOnly();
+      await loadStatusCountsOnly();
+    } catch (e) {
+      toast(`添加 ${code} 失败：${e.message}`, true);
+    } finally {
+      btn.textContent = orig;
+      btn.disabled = false;
+    }
+  }
+  $('btn-add-code').addEventListener('click', addCodeByPrompt);
+
   $('results').addEventListener('click', (e) => {
     const btn = e.target.closest('.r-copy');
     if (btn) copyText(btn.dataset.magnet, '已复制磁力链接');
