@@ -1,11 +1,11 @@
 """wanted 状态筛选的单元测试。
 
 不依赖 FastAPI / uvicorn，纯 WantedService.list() 行为：
-- status_filter=downloading/downloaded/organized/none 各自命中预期条目
+- status_filter=downloading/downloaded/organized/none/deleted 各自命中预期条目
 - 全局 status_counts 与 filter 无关
 - status_filter 与 month / q / include_missing 组合正确
 - 非法 status_filter 视同未传
-- _status_of() 优先级：downloading > organized > downloaded > none
+- _status_of() 优先级：deleted > downloading > organized > downloaded > none
 """
 
 from __future__ import annotations
@@ -105,12 +105,13 @@ def test_status_counts_global(wanted_service, statuses):
         local_exists_by_code=_set(statuses, "local_exists"),
     )
     # 预期: ABF-340=downloading, IPZZ-907=downloaded, DSOD-001=organized,
-    #        HMN-880=organized, SNOS-334=none
+    #        HMN-880=organized, SNOS-334=none, deleted=0
     assert r["status_counts"] == {
         "none": 1,
         "downloading": 1,
         "downloaded": 1,
         "organized": 2,
+        "deleted": 0,
     }
 
 
@@ -204,12 +205,103 @@ def test_empty_nas_sets_falls_back_to_none(wanted_service):
         "downloading": 0,
         "downloaded": 0,
         "organized": 0,
+        "deleted": 0,
     }
 
 
 def test_status_values_constant():
     """导出常量稳定。"""
-    assert STATUS_VALUES == ("none", "downloading", "downloaded", "organized")
+    assert STATUS_VALUES == (
+        "none", "downloading", "downloaded", "organized", "deleted",
+    )
+
+
+# -------------------- delete_one + deleted 状态 --------------------
+
+
+def test_delete_one_marks_status_and_persists(wanted_service, tmp_path):
+    """delete_one 把 _status="deleted" 写入 JSON + 落盘。"""
+    # wanted_service 已加载 5 条 fixture；挑一条标记为 deleted
+    movies = wanted_service._movies
+    target_code = "ABF-340"
+    target = next(m for m in movies if m["code"] == target_code)
+    # 先用 delete_one 删除（不传 mw_root → 用 data_path.parent）
+    # data_path.parent 是 fixture 用的临时目录，里面没 folder，所以
+    # folder_deleted=False，但 _status 仍然标 deleted（用户意图明确）
+    result = wanted_service.delete_one(target_code)
+    assert result["code"] == target_code
+    assert result["ok"] is False  # folder 没找到
+    assert target["_status"] == "deleted"
+    assert target.get("_deleted_at")  # ISO 时间戳存在
+    # 落盘验证：data_path 应该被改写
+    with open(wanted_service.data_path, encoding="utf-8") as f:
+        saved = json.load(f)
+    saved_target = next(m for m in saved if m["code"] == target_code)
+    assert saved_target["_status"] == "deleted"
+
+
+def test_delete_one_creates_minimal_entry_when_not_in_json(tmp_path):
+    """JSON 中没记录的车 → delete_one 建一条最小 deleted 记录。"""
+    data = tmp_path / "wanted.json"
+    data.write_text("[]", encoding="utf-8")
+    svc = WantedService(data_path=data, javlibrary_proxy=None, javbus_proxy=None)
+    result = svc.delete_one("NEVER-EXIST-999")
+    assert result["code"] == "NEVER-EXIST-999"
+    assert result["ok"] is False  # 没 folder
+    assert result["movie"]["_status"] == "deleted"
+    # JSON 应该被持久化这条最小记录
+    with open(data, encoding="utf-8") as f:
+        saved = json.load(f)
+    assert len(saved) == 1
+    assert saved[0]["code"] == "NEVER-EXIST-999"
+    assert saved[0]["_status"] == "deleted"
+
+
+def test_delete_one_actually_removes_local_folder(wanted_service, tmp_path):
+    """本地库有 folder → delete_one 真的删除 + 标记 _deleted_folder。"""
+    # 在 data_path.parent 建一个假 folder（fixture 的 data 在 tmp_path）
+    # data_path.parent 是 fixture 创建的临时目录
+    mw_root = wanted_service.data_path.parent
+    folder = mw_root / "ABF-340 Sample Title"
+    folder.mkdir()
+    (folder / "movie.nfo").write_text("dummy")
+    assert folder.exists()
+
+    result = wanted_service.delete_one("ABF-340", mw_root=mw_root)
+    assert result["ok"] is True
+    assert result["folder_deleted"] is True
+    assert folder.name in (result["folder"] or "")
+    assert not folder.exists()  # 物理删除成功
+
+    # 内存里也标记了
+    target = next(m for m in wanted_service._movies if m["code"] == "ABF-340")
+    assert target["_status"] == "deleted"
+    assert target["_deleted_folder"] == folder.name
+
+
+def test_status_of_deleted_overrides_everything(wanted_service):
+    """_status="deleted" 是最高优先级，覆盖 downloading / organized / downloaded。"""
+    movies = wanted_service._movies
+    # 把第一条标为 deleted
+    target = movies[0]
+    target["_status"] = "deleted"
+    # 即使在 nas_downloading + local_exists 里，也该是 deleted
+    assert _status_of(target, {target["code"]}, set(), {target["code"]}) == "deleted"
+
+
+def test_filter_deleted(wanted_service, statuses):
+    """status_filter=deleted 只返回 _status="deleted" 的车。"""
+    # fixture 里手动给 SNOS-334 标 deleted
+    target = next(m for m in wanted_service._movies if m["code"] == "SNOS-334")
+    target["_status"] = "deleted"
+    r = wanted_service.list(
+        status_filter="deleted",
+        nas_downloading=set(),
+        nas_completed=set(),
+        local_exists_by_code=set(),
+    )
+    assert r["total"] == 1
+    assert [m["code"] for m in r["items"]] == ["SNOS-334"]
 
 
 # -------------------- _parse_download_codes 进度 --------------------

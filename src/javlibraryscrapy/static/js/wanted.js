@@ -206,7 +206,9 @@ export async function initWanted() {
   // 单部 JavBus 重抓按钮：
   //   - 无 release_date（failed / 无日期）→ 必显示（获取日期）
   //   - 有 release_date 但本地样品图为 0 → 也显示（重下 cover + samples）
+  //   - _status="deleted" → 不显示（已删除的车不需要再抓 JavBus）
   function refetchBtnHtml(m) {
+    if (m._status === 'deleted') return '';
     const noDate = !m.release_date;
     const noSamples = !((m.local_samples|0) > 0);
     if (!noDate && !noSamples) return '';
@@ -216,17 +218,40 @@ export async function initWanted() {
     return `<button class="refetch-btn" data-code="${esc(m.code)}" title="${esc(title)}">↻</button>`;
   }
 
+  // 删除按钮（已删除状态不显示，避免重复删除误操作）
+  function deleteBtnHtml(m) {
+    if (m._status === 'deleted') return '';
+    const title = m.local_exists
+      ? '删除本地库 + 在 wanted 标记为已删除（不可撤销）'
+      : '删除 wanted 中的本地文件夹（如有）+ 标记为已删除';
+    return `<button class="delete-btn" data-code="${esc(m.code)}" title="${esc(title)}">🗑️</button>`;
+  }
+
+  // 已删除状态徽章（在卡片顶部显示，对应 statusBadge 分支）
+  // 单独抽出方便将来调整位置 / 样式
+  function deletedBadge(m) {
+    if (m._status !== 'deleted') return '';
+    const deletedAt = m._deleted_at || '';
+    const folder = m._deleted_folder || '';
+    const tip = folder
+      ? `本地文件夹已删除：${folder}${deletedAt ? '（' + deletedAt + '）' : ''}`
+      : (deletedAt ? `已删除（${deletedAt}）` : '已删除');
+    return `<div class="local-badge warn" data-code="${esc(m.code)}" title="${esc(tip)}">🗑️ 已删除</div>`;
+  }
+
   // 单卡片 HTML —— 提取出来供 render() 和 in-place 更新共用。
   function cardHtml(m) {
     return `
-      <div class="card${selected.has(m.code) ? ' selected' : ''}${m.local_exists ? ' local-exists' : ''}"
+      <div class="card${selected.has(m.code) ? ' selected' : ''}${m.local_exists ? ' local-exists' : ''}${m._status === 'deleted' ? ' is-deleted' : ''}"
            data-code="${esc(m.code)}"
            data-search="${esc((m.code + ' ' + (m.title || '') + ' ' + (m.actors || '')).toLowerCase())}">
         <input type="checkbox" ${selected.has(m.code) ? 'checked' : ''} tabindex="-1">
         ${(m.cover || m.cover_url) ? `<img class="cover" src="${esc(m.cover || m.cover_url)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.classList.add('broken')">`
                   : '<div class="cover"></div>'}
+        ${deletedBadge(m)}
         ${statusBadge(m)}
         ${refetchBtnHtml(m)}
+        ${deleteBtnHtml(m)}
         ${nasBadgeHtml(m)}
         ${(m.local_samples|0) > 0 ? `<div class="sample-badge" title="本地已下载的 sample 圖片數量">${esc(m.local_samples)} 張樣品</div>` : ''}
         <div class="body">
@@ -610,6 +635,14 @@ export async function initWanted() {
       refetchOneJavbus(refetchBtn);
       return;
     }
+    // 点击单部删除按钮 → window.confirm → 调 /api/wanted/{code}/delete?confirm=true
+    const deleteBtn = e.target.closest('.delete-btn');
+    if (deleteBtn) {
+      e.stopPropagation();
+      e.preventDefault();
+      deleteOneMovie(deleteBtn);
+      return;
+    }
     // 点击封面 → 多图灯箱（wanted 页面：cover + 樣品）
     const cover = e.target.closest('.cover');
     if (cover && cover.src && !cover.classList.contains('broken')) {
@@ -776,6 +809,81 @@ export async function initWanted() {
       } else {
         toast(`${code} ${isAbort ? '抓取超时（>5min）' : '请求失败：' + e.message}`, true);
         resetRefetchBtn(btn, 'failed');
+      }
+    }
+  }
+
+  // 删除 wanted 单部：window.confirm → POST /api/wanted/{carid}/delete?confirm=true
+  //
+  // 行为：
+  //   - 浏览器原生 confirm（桌面 / 移动都支持；简单可靠）
+  //   - 提示文案带 carid + title，让用户明确知道删的是哪部
+  //   - 成功后服务端返回 data.movie，in-place 更新卡片：状态变"已删除"，
+  //     ↻ 按钮消失，🗑️ 删除按钮消失，出现"🗑️ 已删除"徽章
+  //   - 失败：toast 错误（folder 没找到也会成功，UI 状态正确反映）
+  async function deleteOneMovie(btn) {
+    const code = btn.dataset.code || '';
+    if (!code) return;
+    if (btn.disabled) return;
+
+    // 取 title 给确认框用
+    const card = btn.closest('.card');
+    const title = card?.querySelector('.name')?.textContent || '';
+    const ok = window.confirm(
+      `确认删除 ${code} 的本地文件夹？\n\n` +
+        `操作：递归删除 <${title || code}> 下所有文件\n` +
+        `     + 在 wanted 列表标记为「已删除」\n\n` +
+        `⚠ 此操作不可撤销！\n\n` +
+        `（NAS 上的原始下载不会被触碰；只是 wanted 库里的副本）`
+    );
+    if (!ok) return;
+
+    btn.disabled = true;
+    const orig = btn.textContent;
+    btn.textContent = '⏳';
+    try {
+      const res = await fetch(
+        `/api/wanted/${encodeURIComponent(code)}/delete?confirm=true`,
+        { method: 'POST' }
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.detail || data.error || res.statusText);
+      }
+
+      // 成功：服务端返回了完整 entry（带 _status="deleted"）
+      if (data.movie) {
+        const i = movies.findIndex((x) => x.code === code);
+        if (i >= 0) movies[i] = data.movie;
+        // 刷新该卡片（status_counts / months 也可能变）
+        renderCardInPlace(code);
+        await loadStatusCountsOnly();
+        await loadMonthsOnly();
+        // 提示用户：folder 是否真的删了？没删的话告知磁盘上还有
+        if (data.folder_deleted) {
+          toast(`🗑️ ${code} 已删除（${data.deleted_at || ''}）`);
+        } else {
+          toast(
+            `${code} 已标记为已删除，但本地文件夹删除失败：` +
+              (data.error || '未知错误'),
+            true
+          );
+        }
+      } else {
+        // 防御：理论上服务端总会返回 movie
+        await load();
+        toast(`${code} 已标记为已删除`);
+      }
+    } catch (e) {
+      toast(`删除 ${code} 失败：${e.message}`, true);
+    } finally {
+      // renderCardInPlace 已经把 btn 节点替换掉了；这里用新卡片上的 btn 兜底
+      const liveBtn = document.querySelector(
+        `.delete-btn[data-code="${cssEscape(code)}"]`
+      );
+      if (liveBtn) {
+        liveBtn.textContent = orig;
+        liveBtn.disabled = false;
       }
     }
   }

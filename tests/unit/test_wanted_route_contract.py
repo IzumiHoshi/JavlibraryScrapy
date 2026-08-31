@@ -87,7 +87,10 @@ def test_wanted_status_values_constant_is_stable():
     """STATUS_VALUES 与前端 chip 的 data-status 对齐 —— 别轻易改。"""
     from javlibraryscrapy.server.services.wanted import STATUS_VALUES
 
-    assert STATUS_VALUES == ("none", "downloading", "downloaded", "organized")
+    # 新增 "deleted"（手动删除 wanted 单部后的状态），顺序保持向后兼容。
+    assert STATUS_VALUES == (
+        "none", "downloading", "downloaded", "organized", "deleted",
+    )
 
 
 # ---------------------------------------------------------------------------
