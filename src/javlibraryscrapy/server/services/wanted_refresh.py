@@ -801,3 +801,175 @@ def scrape_one_javbus(
         "saved": saved,
         "error": error,
     }
+
+
+# --------------------------------------------------------------------------- #
+# 批量 JavBus 抓取（单 session 复用，避免 N 次启动开销）
+# --------------------------------------------------------------------------- #
+def scrape_batch_javbus(
+    codes: List[str],
+    javbus_proxy: Optional[str],
+    *,
+    mw_root: Optional[Path] = None,
+    sample_cache: Optional["SampleCountCache"] = None,
+    cover_urls: Optional[Dict[str, str]] = None,
+    timeout_per_code: int = 90,
+) -> List[Dict[str, Any]]:
+    """批量抓取：单 ``AsyncDynamicSession`` 复用到所有车牌。
+
+    性能对比：
+        - 串行 ``scrape_one_javbus`` × N：每部各自启动一个 session
+          （Chromium 初始化 + Cloudflare 挑战 ≈ 3-5s）；N=5 时启动开销 = 15-25s
+        - 本函数：1 次 session 启动，所有车复用同一 session（保持 cookie /
+          TLS 会话，减少 reCAPTCHA 触发）。N=5 时启动开销 = 3-5s
+
+    与单部版差异：
+        - 输入：``codes``（List[str]）替代单 ``code``（str）
+        - 输出：``List[Dict]``（按输入顺序），每个 dict schema 与
+          ``scrape_one_javbus`` 返回一致（``{code, ok, info, status_code,
+          saved, error}``）
+        - 入口是 List，但内部去重 + 大写化；空 List → 空 List
+
+    Args:
+        codes: 待抓车牌列表（任意大小写；内部统一大写）
+        javbus_proxy: 代理 URL（与单部一致）
+        mw_root: 本地库根目录；None → tempdir
+        sample_cache: 样本计数缓存；成功时回填
+        cover_urls: ``{code: javlibrary_cover_url}``；缺 key 的车跳过 poster 下载
+        timeout_per_code: 单部超时（秒），整体上限 = ``timeout_per_code * len(codes)``
+
+    Returns:
+        按 ``codes`` 输入顺序的 per-code 结果列表。整体失败（导入错误 / 抓取
+        异常 / 超时）也会按 codes 长度返回对应数量的失败 dict，不会半截截断。
+    """
+    # 输入校验 + 去重 + 大写化（保留首次顺序）
+    seen: set[str] = set()
+    normalized: List[str] = []
+    for raw in codes or []:
+        cu = (raw or "").strip().upper()
+        if cu and cu not in seen:
+            seen.add(cu)
+            normalized.append(cu)
+
+    if not normalized:
+        return []
+
+    try:
+        from javlibraryscrapy.scraping.exporter import MovieExporter
+        from scrapling.fetchers import AsyncDynamicSession
+    except ImportError as e:
+        return [
+            {"code": c, "ok": False, "error": f"导入爬虫失败：{e}"}
+            for c in normalized
+        ]
+
+    # 没指定本地库 → 输出到 tempdir（不让 MovieExporter 落到 cwd 乱）
+    output_root = mw_root if mw_root is not None else (
+        Path(tempfile.gettempdir()) / "javlibraryscrapy_scratch"
+    )
+    output_root.mkdir(parents=True, exist_ok=True)
+
+    exporter = MovieExporter(
+        output_root=output_root,
+        move_video=False,
+        # 单部刷新下 samples：与 scrape_one_javbus 行为对齐
+        download_samples=True,
+        collect_magnets=False,
+        javlibrary_proxy=javbus_proxy,
+    )
+
+    # cover_urls 只保留在 normalized 里的 keys（避免脏数据被传进去）
+    cover_urls_filtered: Optional[Dict[str, str]] = None
+    if cover_urls:
+        cover_urls_filtered = {
+            c: cover_urls[c] for c in normalized if cover_urls.get(c)
+        }
+        if not cover_urls_filtered:
+            cover_urls_filtered = None
+
+    car_list = [(code, "") for code in normalized]
+
+    async def _run() -> None:
+        # 单 session 复用：caller（这里）管生命周期，MovieExporter.export_movies
+        # 收到 session= 后不会自己再 async with 一个新的。
+        async with AsyncDynamicSession(
+            load_dom=exporter.load_dom,
+            network_idle=exporter.network_idle,
+            disable_resources=exporter.disable_resources,
+            proxy=exporter.proxy,
+            headless=exporter.headless,
+            timeout=exporter.timeout,
+        ) as session:
+            await exporter.export_movies(
+                car_list,
+                cover_urls=cover_urls_filtered,
+                session=session,
+            )
+
+    # 用独立线程跑 asyncio.run —— uvicorn 进程已有事件循环，
+    # 直接 asyncio.run 会报 "cannot be called from a running event loop"。
+    total_timeout = timeout_per_code * len(normalized)
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            future = ex.submit(lambda: asyncio.run(_run()))
+            future.result(timeout=total_timeout)
+    except concurrent.futures.TimeoutError:
+        return [
+            {"code": c, "ok": False, "error": f"批量抓取超时（>{total_timeout}s）"}
+            for c in normalized
+        ]
+    except Exception as e:  # noqa: BLE001
+        return [
+            {"code": c, "ok": False, "error": f"批量抓取异常：{e}"}
+            for c in normalized
+        ]
+
+    # MovieExporter 把每部结果（成功 + 失败）放进 movie_info_list（顺序：与
+    # car_list 一致，因为 _crawl_car_list 是按 car_list 顺序串行调 parse）。
+    # 按 code 索引出对应的 info dict，构造与 scrape_one_javbus 对齐的 schema。
+    info_by_code: Dict[str, Dict[str, Any]] = {}
+    for mi in exporter.movie_info_list:
+        if isinstance(mi, dict):
+            cu = (mi.get("carid") or "").upper()
+            if cu:
+                info_by_code[cu] = mi
+
+    results: List[Dict[str, Any]] = []
+    for code in normalized:
+        info = info_by_code.get(code, {})
+        release_date = (info.get("release_date") or "").strip()
+        ok = bool(release_date) and bool((info.get("title") or "").strip())
+
+        saved: Optional[Dict[str, int]] = None
+        if info.get("title") and output_root.exists():
+            folder = output_root / f"{code} {info['title'].strip()}"
+            if folder.exists():
+                try:
+                    samples_count = sum(1 for _ in folder.glob("sample_*.jpg"))
+                except OSError as e:  # noqa: BLE001
+                    logger.warning(f"枚举 sample_*.jpg 失败 {folder}: {e}")
+                    samples_count = 0
+                saved = {
+                    "cover": 1 if (folder / "fanart.jpg").exists() else 0,
+                    "samples": samples_count,
+                }
+                if sample_cache is not None:
+                    try:
+                        sample_cache.put(code, samples_count, folder=folder)
+                    except OSError as e:  # noqa: BLE001
+                        logger.warning(f"回填 cache 失败 {code}: {e}")
+
+        error: Optional[str] = None
+        if not ok:
+            error = "无 release_date"
+
+        results.append({
+            "code": code,
+            "ok": ok,
+            "info": info if ok else None,
+            "status_code": None,
+            "saved": saved,
+            "error": error,
+        })
+
+    return results

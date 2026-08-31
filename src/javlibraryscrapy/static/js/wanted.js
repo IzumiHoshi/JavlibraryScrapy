@@ -1097,16 +1097,18 @@ export async function initWanted() {
     return out;
   }
 
-  // 手动添加车牌：弹窗输入 → 提取多个 → 串行 POST 到 /api/wanted/{carid}/javbus
-  // （WantedService.fetch_one_javbus 内部对不在 JSON 的车牌会先建最小记录再抓 JAVBus）。
+  // 手动添加车牌：弹窗输入 → 提取多个 → POST /api/wanted/batch-add
+  // （后端单 AsyncDynamicSession 复用给所有车牌；前端只发一次请求）。
   //
-  // 串行原因：每个 fetch 内部会单独启动一个 JAVBus session（每个 10-30 秒），
-  // 并发会把浏览器 + JAVBus 反爬都打爆。串行 + 用户随时能看到进度，足够日常使用。
+  // 旧版是串行 N 次 POST /api/wanted/{carid}/javbus，每部启一个新 session
+  // （Chromium 初始化 + Cloudflare 挑战 ≈ 3-5s/部）。N=5 浪费 12-20s 启动开销，
+  // 且 N 次 HTTP 请求让浏览器侧更卡。批量端点让这些开销只发生一次。
   async function addCodeByPrompt() {
     const raw = window.prompt(
       '输入车牌（可多个，任意分隔符）\n' +
         '例：-START-048 , SSIS-308. TEK-071\n' +
-        '也支持 ipzz907 / start 907 / tek_071 等写法',
+        '也支持 ipzz907 / start 907 / tek_071 等写法\n' +
+        '单次最多 20 部；超过请分批提交',
       ''
     );
     if (raw === null) return;  // 用户取消
@@ -1114,67 +1116,64 @@ export async function initWanted() {
     if (!codes.length) {
       return toast('未识别到任何车牌（需含字母+数字，如 IPZZ-907）', true);
     }
+    if (codes.length > 20) {
+      return toast(`识别到 ${codes.length} 部，单次最多 20 部；请分批提交`, true);
+    }
 
     const btn = $('btn-add-code');
     const orig = btn.textContent;
     btn.disabled = true;
+    btn.textContent = `🔍 抓取中… (${codes.length} 部)`;
 
-    const ok = [];
-    const failed = [];
-    let bucketMoved = false;  // 是否有新增（created=true）→ 触发 reload
-    for (let i = 0; i < codes.length; i++) {
-      const code = codes[i];
-      btn.textContent = `🔍 ${i + 1}/${codes.length} ${code}`;
-      try {
-        const res = await fetch(
-          `/api/wanted/${encodeURIComponent(code)}/javbus`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({}),
-          }
-        );
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          throw new Error(data.detail || data.error || res.statusText);
-        }
-        if (!data.ok) {
-          throw new Error(data.error || 'JAVBus 搜索失败');
-        }
-        ok.push({ code, bucket: data.bucket || '', created: data.created });
-        if (data.created) bucketMoved = true;
-      } catch (e) {
-        failed.push({ code, error: e.message });
+    try {
+      const res = await fetch('/api/wanted/batch-add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ codes }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.detail || data.error || res.statusText);
       }
-    }
+      const summary = data.summary || {};
+      const results = data.results || [];
 
-    // 汇总 toast：成功 / 失败分两条，避免长串塞屏
-    if (ok.length) {
-      const summary = ok
-        .map((x) => `${x.code}${x.created ? ' 🆕' : ''}`)
-        .join(', ');
-      toast(`✅ 成功 ${ok.length}/${codes.length}：${summary}`);
-    }
-    if (failed.length) {
-      const summary = failed
-        .map((x) => `${x.code}（${x.error}）`)
-        .slice(0, 3)  // 最多展示前 3 条避免塞屏
-        .join('；');
-      const more = failed.length > 3 ? `；…还有 ${failed.length - 3} 条` : '';
-      toast(`❌ 失败 ${failed.length}：${summary}${more}`, true);
-    }
+      // 汇总 toast：成功 / 失败分两条，避免长串塞屏
+      const okResults = results.filter((r) => r.ok);
+      const failedResults = results.filter((r) => !r.ok);
+      if (okResults.length) {
+        const summaryList = okResults
+          .map((x) => `${x.code}${x.created ? ' 🆕' : ''}`)
+          .join(', ');
+        toast(`✅ 成功 ${summary.ok || okResults.length}/${summary.total || codes.length}：${summaryList}`);
+      }
+      if (failedResults.length) {
+        const summaryList = failedResults
+          .map((x) => `${x.code}（${x.error || '失败'}）`)
+          .slice(0, 3)  // 最多展示前 3 条避免塞屏
+          .join('；');
+        const more = failedResults.length > 3 ? `；…还有 ${failedResults.length - 3} 条` : '';
+        toast(`❌ 失败 ${failedResults.length}：${summaryList}${more}`, true);
+      }
+      // 全部成功的简短总结（单条 toast 替代上面的长列表）
+      if (okResults.length && !failedResults.length) {
+        // toast 已经在上面发过；这里不重复
+      }
 
-    // 有成功 → 全表 reload（新车牌按 release_date 排序不一定在第一页，
-    // status chips / months 计数都可能变 → reload 最稳）。0 成功 0 失败
-    // 不会进这里，failed 路径下 grid 也不动。
-    if (ok.length) {
-      await load();
-      await loadMonthsOnly();
-      await loadStatusCountsOnly();
+      // 有任意一条成功 → 全表 reload（新车牌按 release_date 排序不一定在第一页，
+      // status chips / months 计数都可能变 → reload 最稳）。
+      // 全部失败 → 不动 grid。
+      if (okResults.length) {
+        await load();
+        await loadMonthsOnly();
+        await loadStatusCountsOnly();
+      }
+    } catch (e) {
+      toast(`批量添加失败：${e.message}`, true);
+    } finally {
+      btn.textContent = orig;
+      btn.disabled = false;
     }
-
-    btn.textContent = orig;
-    btn.disabled = false;
   }
   $('btn-add-code').addEventListener('click', addCodeByPrompt);
 

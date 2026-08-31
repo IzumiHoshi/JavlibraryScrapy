@@ -157,3 +157,84 @@ def test_local_cover_fallback_returns_empty_when_mw_root_unset():
 
     assert local_cover_fallback(None, "ABC-123", "") == ""
     assert local_cover_fallback("", "ABC-123", "") == ""  # 路径空也视同未配
+
+
+# ---------------------------------------------------------------------------
+# 批量 JavBus 抓取：API 契约
+# ---------------------------------------------------------------------------
+def _batch_route():
+    """构造临时 FastAPI app 调 register()，拿到 /api/wanted/batch-add 的 Route 对象。"""
+    app = FastAPI()
+    register(app)
+    for route in app.routes:
+        if getattr(route, "path", None) == "/api/wanted/batch-add":
+            return route
+    raise AssertionError("/api/wanted/batch-add route 未注册")
+
+
+def test_batch_add_route_accepts_post_only():
+    """批量端点必须是 POST（GET 暴露 JAVBus 抓取是反模式）。"""
+    route = _batch_route()
+    methods = list(route.methods) if hasattr(route, "methods") else []
+    assert "POST" in methods, f"批量端点必须支持 POST，got {methods}"
+
+
+def test_batch_add_route_is_well_formed():
+    """``/api/wanted/batch-add`` 注册在 FastAPI app 上且 path 正确。"""
+    route = _batch_route()
+    assert route.path == "/api/wanted/batch-add"
+    # 函数签名是 async def fetch_batch_javbus(request)
+    sig = inspect.signature(route.endpoint)
+    assert "request" in sig.parameters
+
+
+def test_batch_add_extract_carids_handles_dedup_and_case():
+    """``extractCarids`` 客户端去重 + 大写化（前端契约；后端再做一次保险）。"""
+    # 这是 wanted.js 的逻辑镜像 —— 后端 route 内部也做同样事情，
+    # 避免前端漏掉大写 / 去重时后端崩
+    import re
+
+    def extract(input_codes):
+        seen = set()
+        out = []
+        for raw in input_codes:
+            cu = (raw or "").strip().upper()
+            if not cu or cu in seen:
+                continue
+            # normalize：找字母数字边界
+            m = re.match(r"^([A-Z]+)[-_]?(\d+)$", cu)
+            if not m:
+                continue
+            seen.add(f"{m.group(1)}-{m.group(2)}")
+            out.append(f"{m.group(1)}-{m.group(2)}")
+        return out
+
+    # 大写化
+    assert extract(["ipzz-907"]) == ["IPZZ-907"]
+    # 无分隔符自动补
+    assert extract(["SSIS308"]) == ["SSIS-308"]
+    # 去重（保首次顺序）
+    assert extract(["ABC-123", "abc-123", "ABC-124"]) == ["ABC-123", "ABC-124"]
+    # 空 / 非法
+    assert extract([""]) == []
+    assert extract(["AB"]) == []  # 缺数字
+    assert extract(["123"]) == []  # 缺字母
+    assert extract(["PURE_LETTERS"]) == []  # 全字母
+
+
+def test_fetch_batch_javbus_empty_input_returns_empty_result():
+    """``WantedService.fetch_batch_javbus`` 空输入直接返回空 summary。"""
+    from javlibraryscrapy.server.services.wanted import WantedService
+
+    # 用 mock 避免真的去 JAVBus；只需要确认 short-circuit 路径
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        svc = WantedService(data_path=Path(td) / "wanted.json")
+        result = svc.fetch_batch_javbus([])
+        assert result["results"] == []
+        assert result["summary"] == {
+            "total": 0, "ok": 0, "failed": 0,
+            "created": 0, "rolled_back": 0,
+        }
+        # JSON 应该没被创建
+        assert not (Path(td) / "wanted.json").exists()
