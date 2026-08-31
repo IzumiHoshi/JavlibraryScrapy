@@ -1058,58 +1058,123 @@ export async function initWanted() {
 
   $('btn-refresh').addEventListener('click', startRefresh);
 
-  // 手动添加车牌：弹窗输入 → POST 到现有 /api/wanted/{carid}/javbus 端点
+  // 从用户输入里提取所有车牌子串（支持任意分隔符：空格 / 逗号 / 点 /
+//   中文逗号 / 换行 / 自带 - _ 等）。
+//
+// 规则：
+//   - 整体大写化
+//   - 单正则 ``\b[A-Z]{2,}\s*[-_]?\s*\d{2,}\b`` 全文扫描
+//     （``\b`` 处理首尾边界；``\s*`` 让字母 / 数字之间的空格也能匹配）
+//   - 至少 2 字母 + 2 数字（避免误匹配 "AB" / "123" 这类无车牌义的段）
+//   - 拆分字母/数字边界，统一成 ``AA-123`` 格式
+//   - 去重（保留首次出现顺序）
+//
+// 例：
+//   "-START-048 , SSIS-308. TEK-071" → [START-048, SSIS-308, TEK-071]
+//   "start-048 ssis308 tek_071"      → [START-048, SSIS-308, TEK-071]
+//   "想抓 IPZZ907 / abc-123 / MIX-44" → [IPZZ-907, ABC-123, MIX-44]
+//   "ABC 123"                        → [ABC-123]  （空格也能匹配）
+//
+// ``STRICT_CARID_RE`` 服务端最终把关（``[A-Z]+-[0-9]+``）—— 客户端能
+// 提取但服务端 normalize 失败的，调用时会返回 400，弹 toast 告知。
+  function extractCarids(input) {
+    if (!input) return [];
+    const upper = String(input).toUpperCase();
+    // 单正则一次扫描：字母段 + 可选空白 + 可选 -/_ + 可选空白 + 数字段。
+    // 不用 split 是因为 "-START-048" / "ABC 123" 这类边界会把字母数字
+    // 切成两段后丢失语义。\b 处理首尾的 word boundary，让 "12345AB-678"
+    // 这种前缀数字 / 后缀字母的边界也能正确停下。
+    const re = /\b([A-Z]{2,})\s*[-_]?\s*(\d{2,})\b/g;
+    const seen = new Set();
+    const out = [];
+    let m;
+    while ((m = re.exec(upper)) !== null) {
+      const code = `${m[1]}-${m[2]}`;
+      if (seen.has(code)) continue;
+      seen.add(code);
+      out.push(code);
+    }
+    return out;
+  }
+
+  // 手动添加车牌：弹窗输入 → 提取多个 → 串行 POST 到 /api/wanted/{carid}/javbus
   // （WantedService.fetch_one_javbus 内部对不在 JSON 的车牌会先建最小记录再抓 JAVBus）。
-  // 成功 → reload 全表；失败 → toast 错误，不动 grid。
+  //
+  // 串行原因：每个 fetch 内部会单独启动一个 JAVBus session（每个 10-30 秒），
+  // 并发会把浏览器 + JAVBus 反爬都打爆。串行 + 用户随时能看到进度，足够日常使用。
   async function addCodeByPrompt() {
     const raw = window.prompt(
-      '输入车牌（例：IPZZ-907 或 ipzz907 自动补 -）',
+      '输入车牌（可多个，任意分隔符）\n' +
+        '例：-START-048 , SSIS-308. TEK-071\n' +
+        '也支持 ipzz907 / start 907 / tek_071 等写法',
       ''
     );
     if (raw === null) return;  // 用户取消
-    const code = raw.trim().toUpperCase().replace(/\s+/g, '');
-    if (!code) return toast('车牌不能为空', true);
-    // 客户端基础校验：必须含字母 + 数字；具体分隔符 / 长度让后端 normalize_carid 处理
-    if (!/[A-Z]/.test(code) || !/[0-9]/.test(code)) {
-      return toast('车牌格式不合法（需含字母+数字，如 IPZZ-907）', true);
+    const codes = extractCarids(raw);
+    if (!codes.length) {
+      return toast('未识别到任何车牌（需含字母+数字，如 IPZZ-907）', true);
     }
 
     const btn = $('btn-add-code');
     const orig = btn.textContent;
     btn.disabled = true;
-    btn.textContent = '🔍 搜索中…';
-    try {
-      const res = await fetch(
-        `/api/wanted/${encodeURIComponent(code)}/javbus`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({}),
+
+    const ok = [];
+    const failed = [];
+    let bucketMoved = false;  // 是否有新增（created=true）→ 触发 reload
+    for (let i = 0; i < codes.length; i++) {
+      const code = codes[i];
+      btn.textContent = `🔍 ${i + 1}/${codes.length} ${code}`;
+      try {
+        const res = await fetch(
+          `/api/wanted/${encodeURIComponent(code)}/javbus`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+          }
+        );
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data.detail || data.error || res.statusText);
         }
-      );
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data.detail || data.error || res.statusText);
+        if (!data.ok) {
+          throw new Error(data.error || 'JAVBus 搜索失败');
+        }
+        ok.push({ code, bucket: data.bucket || '', created: data.created });
+        if (data.created) bucketMoved = true;
+      } catch (e) {
+        failed.push({ code, error: e.message });
       }
-      if (!data.ok) {
-        // 服务端语义失败（如 JAVBus 404、release_date 拿不到）
-        throw new Error(data.error || 'JAVBus 搜索失败');
-      }
-      const label = data.created
-        ? `${code} 已添加（${data.bucket || ''}）`
-        : `${code} 已在列表中，已更新（${data.bucket || ''}）`;
-      toast(label);
-      // 重渲整张列表：新车牌按 release_date 排序不一定在第一页，
-      // 同时 status chips / months 计数都可能变 → 全表 reload 最稳
+    }
+
+    // 汇总 toast：成功 / 失败分两条，避免长串塞屏
+    if (ok.length) {
+      const summary = ok
+        .map((x) => `${x.code}${x.created ? ' 🆕' : ''}`)
+        .join(', ');
+      toast(`✅ 成功 ${ok.length}/${codes.length}：${summary}`);
+    }
+    if (failed.length) {
+      const summary = failed
+        .map((x) => `${x.code}（${x.error}）`)
+        .slice(0, 3)  // 最多展示前 3 条避免塞屏
+        .join('；');
+      const more = failed.length > 3 ? `；…还有 ${failed.length - 3} 条` : '';
+      toast(`❌ 失败 ${failed.length}：${summary}${more}`, true);
+    }
+
+    // 有成功 → 全表 reload（新车牌按 release_date 排序不一定在第一页，
+    // status chips / months 计数都可能变 → reload 最稳）。0 成功 0 失败
+    // 不会进这里，failed 路径下 grid 也不动。
+    if (ok.length) {
       await load();
       await loadMonthsOnly();
       await loadStatusCountsOnly();
-    } catch (e) {
-      toast(`添加 ${code} 失败：${e.message}`, true);
-    } finally {
-      btn.textContent = orig;
-      btn.disabled = false;
     }
+
+    btn.textContent = orig;
+    btn.disabled = false;
   }
   $('btn-add-code').addEventListener('click', addCodeByPrompt);
 
