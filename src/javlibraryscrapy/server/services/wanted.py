@@ -893,9 +893,16 @@ class WantedService:
         }
 
     # ---- 预热辅助（P1）----
+    def iter_codes(self) -> List[str]:
         """返回当前 wanted 列表里所有 code 的快照（用于 sample cache 预热）。
 
         按 release_date 倒序排好，前 N 个就是用户最常看的。
+
+        历史：曾因提交丢失过 ``def`` 行（PR #25 review 时发现）—— body 被
+        并入 :meth:`fetch_batch_javbus` 末尾成为 dead code（之前一个 return
+        已经 return 走了），导致 :func:`app.create_app` 启动时调本方法
+        直接抛 AttributeError，被 except 吞掉默默 warn。Sample cache
+        预热事实上从未生效，每次开服首屏都吃 NFS cold start。
         """
         with self._lock:
             return [m.get("code") or "" for m in self._sorted_movies]

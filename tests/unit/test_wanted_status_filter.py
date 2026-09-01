@@ -342,6 +342,31 @@ def test_filter_deleted(wanted_service, statuses):
     assert [m["code"] for m in r["items"]] == ["SNOS-334"]
 
 
+# -------------------- iter_codes 回归测试 --------------------
+
+
+def test_iter_codes_returns_all_codes_in_release_date_order(wanted_service):
+    """iter_codes 返回所有 code 快照，按 release_date 倒序。
+
+    PR #25 review 顺带发现：``WantedService.iter_codes`` 方法的 ``def`` 行
+    在某个提交里丢了，body 被并入 fetch_batch_javbus 末尾成为 dead code。
+    修复后这里加回归测试，确保 :func:`app.create_app` 的 prewarm 调
+    用不会再 AttributeError（之前默默吞 warning 导致 sample cache 预热
+    从未生效，每次开服首屏都吃 NFS cold start）。
+    """
+    codes = wanted_service.iter_codes()
+    assert isinstance(codes, list)
+    assert len(codes) == 5  # fixture 里有 5 条
+    # 按 release_date desc 排序后应该是 2026-08-* 排前面（HMN-880 release_date 空排最后）
+    # 具体顺序：DSOD-001 (2026-08-10) > ABF-340 (2026-08-01) > IPZZ-907 (2026-08-05)
+    # 等等，因为 _sorted_movies 按 release_date desc 排
+    first = codes[0]
+    # 第一条应该是 release_date 最新的（DSOD-001=2026-08-10）
+    assert first == "DSOD-001"
+    # 空 release_date（HMN-880）排最后
+    assert codes[-1] == "HMN-880"
+
+
 # -------------------- _parse_download_codes 进度 --------------------
 # 下载进度（百分比 0-100）从 NAS list 响应里抽出，前端 wanted 卡片徽章
 # 用这个画进度条。覆盖关键字段名 + 边界。
