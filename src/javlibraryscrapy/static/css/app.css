@@ -584,6 +584,12 @@
     /* 微动画：纯色 → 半透 → 纯色，让人一眼看出"还在跑" */
     animation: nas-pulse 2s ease-in-out infinite;
   }
+  /* 跨设备 / 状态字段缺失：NAS 上存在但本设备列表看不见 */
+  .nas-badge.remote {
+    background: rgba(150, 150, 150, 0.12);
+    color: #9ca3af;
+    border: 1px dashed rgba(150, 150, 150, 0.35);
+  }
   @keyframes nas-pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.55; }

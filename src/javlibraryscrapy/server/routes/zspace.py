@@ -89,7 +89,8 @@ class _DummyZSpaceClient:
     async def get_download_codes(
         self, *, force_refresh: bool = False
     ):
-        return set(), set(), {}
+        # 5 元组对应 (downloading, completed, progress, unknown_status_codes, all_codes)
+        return set(), set(), {}, set(), set()
 
     def invalidate_download_codes_cache(self) -> None:
         pass
@@ -273,11 +274,21 @@ def register(app: FastAPI) -> None:
             }
         client = _get_or_create_client(request)
         try:
-            # 3 元组：downloading / completed / downloading_progress。
+            # 5 元组：downloading / completed / progress / unknown_status_codes / all_codes。
             # /api/zspace/codes 端点不返进度（避免 payload 膨胀），所以丢第 3 个。
-            downloading, completed, _progress = await client.get_download_codes(
-                force_refresh=refresh
-            )
+            # unknown_status_codes：NAS 上有但状态字段缺失/无法判断的车
+            #   （如跨设备任务：手机 app 提交但当前 device_id 看不见，
+            #   submit 时会被 NAS 业务码 N201000 "任务已添加" 拒收）。
+            #   前端用这个集合显示 "📡 在 NAS（其他设备）" 徽章 +
+            #   用户重复提交时给友好提示。
+            # all_codes：所有可识别 car id 的并集（调试用 + 兜底显示）。
+            (
+                downloading,
+                completed,
+                _progress,
+                unknown_status_codes,
+                all_codes,
+            ) = await client.get_download_codes(force_refresh=refresh)
         except ZSpaceError as e:
             # 单次 NAS 失败不应让整个 wanted 页 502 —— 降级为空集
             # （前端拿到空集 = 没 NAS 徽章，跟未配置一致）
@@ -286,6 +297,8 @@ def register(app: FastAPI) -> None:
                 "configured": True,
                 "downloading": [],
                 "completed": [],
+                "unknown_status_codes": [],
+                "all_codes": [],
                 "fetched_at": None,
                 "error": str(e),
             }
@@ -293,6 +306,8 @@ def register(app: FastAPI) -> None:
             "configured": True,
             "downloading": sorted(downloading),
             "completed": sorted(completed),
+            "unknown_status_codes": sorted(unknown_status_codes),
+            "all_codes": sorted(all_codes),
             "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "error": None,
         }

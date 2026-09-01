@@ -46,6 +46,14 @@ export async function initWanted() {
   // NAS 下载代码集（downloading / completed）；30s 服务端缓存，wanted load 时拉一次
   let nasDownloading = new Set();
   let nasCompleted = new Set();
+  // NAS 上能识别但状态字段缺失/无法判断的车（跨设备任务、paused/error 等）——
+  // 用于显示"📡 在 NAS（其他设备）"徽章；用户重复提交时给友好提示
+  let nasUnknownStatus = new Set();
+  // 用户本次会话成功提交 / 看到 N201000 "已在 NAS" 错误的 code → 客户端"软记忆"，
+  // 即使下次拉 NAS codes 缓存里没这个 code，也能给卡片显示徽章（避免用户重启后
+  // 又看到"NAS 上没任务"误判）。key = carid，value = {ts, source: 'submit' | 'N201000'}。
+  // 不持久化（localStorage）：刷新页面后仍走服务端权威数据。
+  let nasSeenLocal = new Map();
   let nasConfigured = false;
 
   // ---- URL 状态：month / page / q / status ----
@@ -169,6 +177,10 @@ export async function initWanted() {
   //                     （文件可能还在 NAS 下载目录，可点击触发「整理」搬到本地库）
   //   - 「📁 已整理」    本地库已收录（library scanner 检测到 m.local_exists=true）
   //                     右上角的「本地已有」也是这个语义（绿色徽章）
+  //   - 「📡 在 NAS」    NAS 上有该任务但本设备看不见（跨设备提交 / paused / 状态字段缺失）——
+  //                     来自 nasUnknownStatus 或本次会话的 nasSeenLocal。
+  //                     用户重复提交会被 NAS 业务码 N201000 拒收：不报错，
+  //                     提示「已在 NAS（其他设备）」即可。
   function nasBadgeHtml(m) {
     const code = (m.code || '').toUpperCase();
     if (nasDownloading.has(code)) {
@@ -187,6 +199,14 @@ export async function initWanted() {
       // 已下载但未整理 → 整个徽章是按钮，点一下触发「整理到本地库」
       return `<button class="nas-badge ok clickable" data-code="${esc(m.code)}"
         title="点击整理：把 wanted 元数据 + NAS 下载视频搬到本地库">✅ 已下载 · 整理</button>`;
+    }
+    // 跨设备 / 状态字段缺失 → 显示"在 NAS（其他设备）"提示，避免重复提交
+    if (nasUnknownStatus.has(code) || nasSeenLocal.has(code)) {
+      const source = nasSeenLocal.get(code)?.source;
+      const tip = source === 'N201000'
+        ? 'NAS 业务码 N201000：任务已添加或设备其他账号正在下载（点击重新提交会再次被拒）'
+        : 'NAS 上存在但本设备列表看不见（跨设备任务 / paused）';
+      return `<div class="nas-badge remote" data-code="${esc(m.code)}" title="${esc(tip)}">📡 在 NAS</div>`;
     }
     return '';
   }
@@ -416,10 +436,15 @@ export async function initWanted() {
       nasConfigured = !!data.configured;
       nasDownloading = new Set((data.downloading || []).map((c) => c.toUpperCase()));
       nasCompleted = new Set((data.completed || []).map((c) => c.toUpperCase()));
+      // unknown_status_codes：NAS 上能识别但状态字段缺失/无法判断的车
+      // （跨设备任务：手机 app 提交但当前 device_id 看不见；submit 时会被
+      //  NAS 业务码 N201000 拒收）
+      nasUnknownStatus = new Set((data.unknown_status_codes || []).map((c) => c.toUpperCase()));
     } catch {
       nasConfigured = false;
       nasDownloading = new Set();
       nasCompleted = new Set();
+      nasUnknownStatus = new Set();
     }
   }
 
@@ -1032,14 +1057,35 @@ export async function initWanted() {
         btn.textContent = '✓ 已推送';
         btn.classList.add('r-nas-ok');
         toast(`${code} 已推送到 NAS`);
+        // 把 code 加入"已在 NAS"软记忆（即使下次拉 NAS codes 不见它，也能显示徽章）
+        nasSeenLocal.set(code, { ts: Date.now(), source: 'submit' });
         setTimeout(() => {
           btn.textContent = orig;
           btn.classList.remove('r-nas-ok');
           btn.disabled = false;
         }, 2500);
       } else {
-        const code2 = r.status_code ? ` [${r.status_code}]` : '';
+        const sc = r.status_code || '';
         const msg = r.msg || r.error || '未知错误';
+        // 极空间业务码 N201000：「任务已添加或是设备其他账号正在下载」
+        // 不是错误：磁链已经在 NAS 上有下载任务了（可能其他设备提交的）
+        // → 显示 "📡 已在 NAS" + info toast，不报错
+        if (sc === 'N201000') {
+          btn.textContent = '✓ 已在 NAS';
+          btn.classList.add('r-nas-ok');
+          toast(`${code} 已在 NAS 下载中（其他设备）`);
+          nasSeenLocal.set(code, { ts: Date.now(), source: 'N201000' });
+          // 让卡片立刻刷新徽章（显示"📡 在 NAS"），不等 30s 缓存过期
+          await refreshSingleCardBadge(code);
+          setTimeout(() => {
+            btn.textContent = orig;
+            btn.classList.remove('r-nas-ok');
+            btn.disabled = false;
+          }, 2500);
+          return;
+        }
+        // 其他错误：原有 toast
+        const code2 = sc ? ` [${sc}]` : '';
         btn.textContent = '✗ 失败';
         btn.classList.add('r-nas-fail');
         toast(`${code} NAS 推送失败${code2}：${msg}`, true);
@@ -1059,6 +1105,23 @@ export async function initWanted() {
         btn.disabled = false;
       }, 3000);
     }
+  }
+
+  // NAS 提交成功后（N201000 / submit ok），刷新单张卡的徽章显示：
+  // 直接重渲该卡片 DOM（用最新 nasSeenLocal / nasUnknownStatus 数据），
+  // 不需要重拉整个 /api/zspace/codes 或重新 load()。
+  async function refreshSingleCardBadge(code) {
+    const card = document.querySelector(`.card[data-code="${cssEscape(code)}"]`);
+    if (!card) return;
+    // 从 movies 数组里找到当前 entry
+    const m = movies.find((x) => x.code === code);
+    if (!m) return;
+    // 用最新的 nasBadgeHtml 重渲 nas-badge 部分（最小化 DOM 变更）
+    const tmp = document.createElement('div');
+    tmp.innerHTML = cardHtml(m).trim();
+    const fresh = tmp.firstElementChild;
+    if (fresh) card.replaceWith(fresh);
+    // 重新挂 lightbox 等不需要（replaceWith 保留同名 attr；监听器在 grid 上）
   }
 
   async function sendToZspace() {

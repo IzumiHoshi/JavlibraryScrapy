@@ -384,7 +384,7 @@ def test_parse_progress_from_percent_field():
             ]
         }
     }
-    downloading, completed, progress = _parse_download_codes(raw)
+    downloading, completed, progress, _, _ = _parse_download_codes(raw)
     assert "ABF-340" in downloading
     assert progress["ABF-340"] == 42.5
 
@@ -400,7 +400,7 @@ def test_parse_progress_from_complete_total_bytes():
             ]
         }
     }
-    downloading, _, progress = _parse_download_codes(raw)
+    downloading, _, progress, _, _ = _parse_download_codes(raw)
     assert downloading == {"IPZZ-907"}
     assert progress["IPZZ-907"] == 50.0
 
@@ -415,7 +415,7 @@ def test_parse_progress_clamped_to_100():
             ]
         }
     }
-    _, _, progress = _parse_download_codes(raw)
+    _, _, progress, _, _ = _parse_download_codes(raw)
     assert progress["SNOS-999"] == 100.0
 
 
@@ -428,7 +428,7 @@ def test_parse_progress_missing_field_defaults_zero():
             ]
         }
     }
-    _, _, progress = _parse_download_codes(raw)
+    _, _, progress, _, _ = _parse_download_codes(raw)
     assert progress["MIBB-084"] == 0.0
 
 
@@ -442,7 +442,7 @@ def test_parse_completed_not_in_progress_dict():
             ]
         }
     }
-    downloading, completed, progress = _parse_download_codes(raw)
+    downloading, completed, progress, _, _ = _parse_download_codes(raw)
     assert downloading == {"DOWN-001"}
     assert completed == {"DONE-002"}
     assert "DOWN-001" in progress
@@ -458,5 +458,124 @@ def test_parse_isfinished_false_still_records_progress():
             ]
         }
     }
-    _, _, progress = _parse_download_codes(raw)
+    _, _, progress, _, _ = _parse_download_codes(raw)
     assert progress["PPPE-435"] == 99.7
+
+
+# -------------------- _parse_download_codes 多级 fallback --------------------
+
+
+def test_parse_complete_size_equals_total_size_classifies_completed():
+    """completeSize == totalSize → completed（即使 status 字段缺失）。
+
+    场景：极空间部分固件 / 跨设备任务可能没有 isFinished / status 字段，
+    但 completeSize/totalSize 是更直接的"是否下完"信号。这次重构前会被
+    漏掉为 unknown；现在正确归 completed。
+    """
+    raw = {
+        "data": {
+            "list": [
+                {
+                    "name": "IPZZ-925-C.torrent",
+                    "completeSize": 4_400_000_000,
+                    "totalSize": 4_400_000_000,
+                    # 注意：没有 status / isFinished 字段
+                },
+            ]
+        }
+    }
+    downloading, completed, progress, unknown_status_codes, all_codes = _parse_download_codes(raw)
+    assert "IPZZ-925" in completed
+    assert "IPZZ-925" not in downloading
+    assert "IPZZ-925" not in unknown_status_codes
+    assert "IPZZ-925" in all_codes
+
+
+def test_parse_complete_size_partial_classifies_downloading():
+    """completeSize < totalSize → downloading + progress 按比例算。
+
+    极空间 BT 任务在 metadata 下完之前 progress=-1，但 completeSize/totalSize
+    已经能说明在下了；progress 用 size 比例算出来（之前会丢成 unknown）。
+    """
+    raw = {
+        "data": {
+            "list": [
+                {
+                    "name": "DSOD-001",
+                    "completeSize": 2_500_000_000,
+                    "totalSize": 4_400_000_000,
+                    "progress": -1,  # metadata 没下完时常见
+                },
+            ]
+        }
+    }
+    downloading, completed, progress, _, _ = _parse_download_codes(raw)
+    assert "DSOD-001" in downloading
+    assert "DSOD-001" not in completed
+    # 2.5/4.4 ≈ 56.8%
+    assert 50 < progress["DSOD-001"] < 60
+
+
+def test_parse_unknown_status_classified_as_unknown():
+    """status 字段缺失/无法判断（既不在 downloading 也不在 completed）→ unknown。
+
+    之前这种任务完全被忽略（用户看不到任何 NAS 徽章）。现在归 unknown，
+    前端可显示"📡 在 NAS 上"徽章，避免用户重复提交触发 N201000。
+    """
+    raw = {
+        "data": {
+            "list": [
+                # size 全 0（BT metadata 未下完）+ progress=-1 + 无 status
+                {"name": "TEST-999", "progress": -1},
+                # 任务名可识别但 status 字段是非数字字符串
+                {"name": "FOO-100", "status": "weird-state", "progress": -1},
+            ]
+        }
+    }
+    downloading, completed, _, unknown_status_codes, all_codes = _parse_download_codes(raw)
+    assert "TEST-999" in unknown_status_codes
+    assert "FOO-100" in unknown_status_codes
+    assert "TEST-999" not in downloading
+    assert "TEST-999" not in completed
+    # all_codes 包含全部可识别的 code（跨设备任务 / 状态不明 都包含）
+    assert "TEST-999" in all_codes
+    assert "FOO-100" in all_codes
+
+
+def test_parse_all_codes_is_union_of_other_sets():
+    """all_codes = downloading ∪ completed ∪ unknown_status_codes（去重）。"""
+    raw = {
+        "data": {
+            "list": [
+                # downloading
+                {"name": "DL-001", "status": 0, "progress": 50},
+                # completed
+                {"name": "CM-002", "status": 13, "progress": 100},
+                # unknown（既不是 downloading 也不是 completed 也不是 isFinished）
+                {"name": "UN-003", "progress": -1},
+            ]
+        }
+    }
+    downloading, completed, _, unknown_status_codes, all_codes = _parse_download_codes(raw)
+    assert downloading == {"DL-001"}
+    assert completed == {"CM-002"}
+    assert unknown_status_codes == {"UN-003"}
+    assert all_codes == {"DL-001", "CM-002", "UN-003"}
+
+
+def test_parse_unknown_status_codes_with_extended_status_codes():
+    """status=18（实测的 'stalled' / paused 类）→ 已加入 _DOWNLOADING_STATUS_CODES，
+    归 downloading（不再丢）。同理 status=200 → _COMPLETED_STATUS_CODES。
+    """
+    raw = {
+        "data": {
+            "list": [
+                {"name": "STALL-001", "status": 18, "progress": 30},  # 之前会丢
+                {"name": "DONE-002", "status": 200, "progress": 100},  # 之前会丢
+            ]
+        }
+    }
+    downloading, completed, _, unknown_status_codes, _ = _parse_download_codes(raw)
+    assert "STALL-001" in downloading
+    assert "DONE-002" in completed
+    assert unknown_status_codes == set()
