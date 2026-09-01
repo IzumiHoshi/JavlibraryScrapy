@@ -274,9 +274,15 @@ class WantedService:
     ) -> Dict[str, Any]:
         """按月份筛选 + 关键字搜索 + 状态筛选 + 分页。
 
-        同时返回 ``months`` 列表（月份桶摘要）+ ``status_counts``（4 状态计数，
-        与当前 month/q/filter 无关，全局计数）。status_counts 用于前端
-        ``statusPicker`` 控件显示「下载中 12 / 已下载 8 / 已整理 34」。
+        同时返回 ``months`` 列表（月份桶摘要）+ ``status_counts``（**5 状态**
+        全局计数：none / downloading / downloaded / organized / deleted，
+        与当前 month/q/filter 无关）。status_counts 用于前端
+        ``statusPicker`` 控件显示「下载中 12 / 已下载 8 / 已整理 34 / 已删除 5」。
+
+        状态判定优先级（_status_of）：
+            ``deleted`` > ``downloading`` > ``organized`` > ``downloaded`` > ``none``。
+        ``deleted`` 最高优先级：用户显式删除本地文件夹后，NAS / 本地库的标记
+        不再覆盖它，确保 UI 一致显示「已删除」。
 
         P2：派生数据（months 摘要、missing 总数）已预计算，``_sorted_movies``
         已按 release_date 倒序。本方法只需一次过滤 + 切片。
@@ -415,6 +421,13 @@ class WantedService:
         - 抓取成功：写入 ``release_date/actors/producer/publisher/category``，
           ``_status=ready``，``_bucket=YYYY-MM``，清 ``missing_in_remote``。
         - 抓取失败：``_status=failed``，``_bucket=unknown``，``release_date=""``。
+
+        **undelete 语义**：如果条目当前 ``_status="deleted"``（用户先前删除
+        过本地文件夹），手动调本方法 = 显式 undelete：成功 → ``_status="ready"``，
+        失败 → ``_status="failed"``。前端 ↻ 按钮在已删除车片上是隐藏的
+        （避免误触），但 API 仍允许——便于脚本 / 用户从「已删除」chip 里手动
+        恢复某条记录。自动 Most Wanted 刷新（``merge_wanted``）会跳过 deleted
+        条目，不复活。
 
         ``mw_root``：本地库根目录；非空时把 cover/samples 落到
         ``<root>/<CARID> <title>/``。不传则不落本地库（仍写 JSON 元数据）。
@@ -569,6 +582,12 @@ class WantedService:
             - 不在 JSON → 新建最小记录 + 抓 JAVBus；成功 → 写完整字段；
               失败 → 直接回滚不入盘
             - 在 JSON → 抓成功 → 更新字段；失败 → 标 failed 但保留条目
+
+        **undelete 语义**：与 :meth:`fetch_one_javbus` 一致——批量输入里若某
+        条车片当前 ``_status="deleted"``，抓取成功会"复活"为 ``ready``。
+        自动 Most Wanted 刷新路径不会带 deleted 车片到这里（``merge_wanted``
+        已过滤），所以这条路径只在前端 ➕ 添加车牌（含显式删过但想恢复的）
+        触发。
 
         Returns::
 

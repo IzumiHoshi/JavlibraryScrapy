@@ -216,6 +216,44 @@ def test_status_values_constant():
     )
 
 
+# -------------------- merge_wanted 保护 deleted --------------------
+
+
+def test_merge_wanted_skips_deleted_entries():
+    """Most Wanted 自动刷新不应复活用户已删除的车片。
+
+    场景：用户标记 START-048 为 deleted（手动删了本地文件夹）。
+    之后 Most Wanted 全站刷新把 START-048 又包含进来。
+    期望：merge_wanted 不把它加入 needs_javbus 队列，_status="deleted" 保留。
+    """
+    from javlibraryscrapy.server.services.wanted_refresh import merge_wanted
+
+    local = [
+        # 用户已删除的车片
+        {"code": "START-048", "title": "T", "release_date": "",
+         "_status": "deleted", "_deleted_at": "2026-08-31T20:00:00"},
+        # 普通的 ready 车片（无 release_date，应该走 needs_javbus）
+        {"code": "IPZZ-907", "title": "T2", "release_date": "",
+         "_status": "ready"},
+    ]
+    remote = [
+        {"id": "1", "code": "START-048", "title": "Updated Title",
+         "cover_url": "https://example.com/start-048.jpg"},
+        {"id": "2", "code": "IPZZ-907", "title": "Other",
+         "cover_url": "https://example.com/ipzz-907.jpg"},
+    ]
+
+    result = merge_wanted(remote, local)
+    # IPZZ-907 应该被加入 needs_javbus（普通 ready）
+    codes_needs_javbus = [e["code"] for e in result.needs_javbus]
+    assert "IPZZ-907" in codes_needs_javbus
+    # START-048（deleted）不应该被加入 needs_javbus
+    assert "START-048" not in codes_needs_javbus
+    # 它的 _status 应该仍然是 deleted（没被覆盖为 pending）
+    deleted_entry = next(e for e in local if e["code"] == "START-048")
+    assert deleted_entry["_status"] == "deleted"
+
+
 # -------------------- delete_one + deleted 状态 --------------------
 
 
