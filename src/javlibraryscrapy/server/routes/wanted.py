@@ -387,6 +387,69 @@ def register(app: FastAPI) -> None:
         )
         return result
 
+    @app.post("/api/wanted/{carid}/delete")
+    async def delete_one_movie(
+        carid: str,
+        request: Request,
+        confirm: bool = Query(
+            default=False,
+            description=(
+                "删除确认开关。前端 UI 通过 window.confirm 已向用户确认一次；"
+                "若用户没确认就误调此 API（query 漏了 confirm=true），服务端"
+                "会拒绝执行（403）"
+            ),
+        ),
+    ) -> Dict[str, Any]:
+        """删除 wanted 单部：递归删除 ``<MOSTWANTED_LIBRARY_ROOT>/<CARID> <title>/``
+        并在 wanted JSON 中标 ``_status="deleted"``。
+
+        行为：
+          - 必须传 ``?confirm=true``，否则 403 拒绝（防爬虫 / 误触）
+          - 找不到 folder → 不报错，仍标 ``_status="deleted"``（用户的意图明确）
+          - folder 删除失败（NAS 离线 / 权限）→ JSON 仍标 deleted，但
+            ``folder_deleted=false``，响应带 error 字段供前端 toast 显示
+
+        返回 :meth:`WantedService.delete_one` 的 dict，可直接 jsonify。
+        """
+        carid_norm = carid.strip().upper()
+        if not CARID_RE.fullmatch(carid_norm):
+            raise HTTPException(status_code=400, detail="非法的车牌")
+        normalized = normalize_carid(carid_norm)
+        if not normalized:
+            raise HTTPException(
+                status_code=400,
+                detail=f"非法的车牌：{carid!r}（应为 字母-数字 格式，如 IPZZ-907）",
+            )
+        if normalized != carid_norm:
+            logger.info(f"车牌 {carid_norm} 自动规范化 → {normalized}")
+            carid_norm = normalized
+
+        if not confirm:
+            raise HTTPException(
+                status_code=403,
+                detail="删除操作必须显式确认（前端通过 window.confirm，"
+                       "API 调用需加 ?confirm=true）",
+            )
+
+        wanted: WantedService = request.app.state.wanted
+        settings = request.app.state.settings
+        mw_root = getattr(settings, "mostwanted_library_root", None)
+
+        # 同步删除走 asyncio 线程池（避免阻塞事件循环；
+        # NFS / SMB / NAS 大文件夹递归删除可能 10s+）
+        result = await asyncio.to_thread(
+            functools.partial(
+                wanted.delete_one,
+                carid_norm,
+                mw_root=Path(mw_root) if mw_root else None,
+            )
+        )
+        logger.info(
+            f"删除 wanted {carid_norm}: folder_deleted={result.get('folder_deleted')} "
+            f"folder={result.get('folder')} error={result.get('error')}"
+        )
+        return result
+
     @app.post("/api/wanted/{carid}/organize")
     async def organize_one(
         carid: str,

@@ -46,6 +46,14 @@ export async function initWanted() {
   // NAS 下载代码集（downloading / completed）；30s 服务端缓存，wanted load 时拉一次
   let nasDownloading = new Set();
   let nasCompleted = new Set();
+  // NAS 上能识别但状态字段缺失/无法判断的车（跨设备任务、paused/error 等）——
+  // 用于显示"📡 在 NAS（其他设备）"徽章；用户重复提交时给友好提示
+  let nasUnknownStatus = new Set();
+  // 用户本次会话成功提交 / 看到 N201000 "已在 NAS" 错误的 code → 客户端"软记忆"，
+  // 即使下次拉 NAS codes 缓存里没这个 code，也能给卡片显示徽章（避免用户重启后
+  // 又看到"NAS 上没任务"误判）。key = carid，value = {ts, source: 'submit' | 'N201000'}。
+  // 不持久化（localStorage）：刷新页面后仍走服务端权威数据。
+  let nasSeenLocal = new Map();
   let nasConfigured = false;
 
   // ---- URL 状态：month / page / q / status ----
@@ -169,6 +177,10 @@ export async function initWanted() {
   //                     （文件可能还在 NAS 下载目录，可点击触发「整理」搬到本地库）
   //   - 「📁 已整理」    本地库已收录（library scanner 检测到 m.local_exists=true）
   //                     右上角的「本地已有」也是这个语义（绿色徽章）
+  //   - 「📡 在 NAS」    NAS 上有该任务但本设备看不见（跨设备提交 / paused / 状态字段缺失）——
+  //                     来自 nasUnknownStatus 或本次会话的 nasSeenLocal。
+  //                     用户重复提交会被 NAS 业务码 N201000 拒收：不报错，
+  //                     提示「已在 NAS（其他设备）」即可。
   function nasBadgeHtml(m) {
     const code = (m.code || '').toUpperCase();
     if (nasDownloading.has(code)) {
@@ -188,6 +200,14 @@ export async function initWanted() {
       return `<button class="nas-badge ok clickable" data-code="${esc(m.code)}"
         title="点击整理：把 wanted 元数据 + NAS 下载视频搬到本地库">✅ 已下载 · 整理</button>`;
     }
+    // 跨设备 / 状态字段缺失 → 显示"在 NAS（其他设备）"提示，避免重复提交
+    if (nasUnknownStatus.has(code) || nasSeenLocal.has(code)) {
+      const source = nasSeenLocal.get(code)?.source;
+      const tip = source === 'N201000'
+        ? 'NAS 业务码 N201000：任务已添加或设备其他账号正在下载（点击重新提交会再次被拒）'
+        : 'NAS 上存在但本设备列表看不见（跨设备任务 / paused）';
+      return `<div class="nas-badge remote" data-code="${esc(m.code)}" title="${esc(tip)}">📡 在 NAS</div>`;
+    }
     return '';
   }
 
@@ -206,7 +226,9 @@ export async function initWanted() {
   // 单部 JavBus 重抓按钮：
   //   - 无 release_date（failed / 无日期）→ 必显示（获取日期）
   //   - 有 release_date 但本地样品图为 0 → 也显示（重下 cover + samples）
+  //   - _status="deleted" → 不显示（已删除的车不需要再抓 JavBus）
   function refetchBtnHtml(m) {
+    if (m._status === 'deleted') return '';
     const noDate = !m.release_date;
     const noSamples = !((m.local_samples|0) > 0);
     if (!noDate && !noSamples) return '';
@@ -216,17 +238,40 @@ export async function initWanted() {
     return `<button class="refetch-btn" data-code="${esc(m.code)}" title="${esc(title)}">↻</button>`;
   }
 
+  // 删除按钮（已删除状态不显示，避免重复删除误操作）
+  function deleteBtnHtml(m) {
+    if (m._status === 'deleted') return '';
+    const title = m.local_exists
+      ? '删除本地库 + 在 wanted 标记为已删除（不可撤销）'
+      : '删除 wanted 中的本地文件夹（如有）+ 标记为已删除';
+    return `<button class="delete-btn" data-code="${esc(m.code)}" title="${esc(title)}">🗑️</button>`;
+  }
+
+  // 已删除状态徽章（在卡片顶部显示，对应 statusBadge 分支）
+  // 单独抽出方便将来调整位置 / 样式
+  function deletedBadge(m) {
+    if (m._status !== 'deleted') return '';
+    const deletedAt = m._deleted_at || '';
+    const folder = m._deleted_folder || '';
+    const tip = folder
+      ? `本地文件夹已删除：${folder}${deletedAt ? '（' + deletedAt + '）' : ''}`
+      : (deletedAt ? `已删除（${deletedAt}）` : '已删除');
+    return `<div class="local-badge warn" data-code="${esc(m.code)}" title="${esc(tip)}">🗑️ 已删除</div>`;
+  }
+
   // 单卡片 HTML —— 提取出来供 render() 和 in-place 更新共用。
   function cardHtml(m) {
     return `
-      <div class="card${selected.has(m.code) ? ' selected' : ''}${m.local_exists ? ' local-exists' : ''}"
+      <div class="card${selected.has(m.code) ? ' selected' : ''}${m.local_exists ? ' local-exists' : ''}${m._status === 'deleted' ? ' is-deleted' : ''}"
            data-code="${esc(m.code)}"
            data-search="${esc((m.code + ' ' + (m.title || '') + ' ' + (m.actors || '')).toLowerCase())}">
         <input type="checkbox" ${selected.has(m.code) ? 'checked' : ''} tabindex="-1">
         ${(m.cover || m.cover_url) ? `<img class="cover" src="${esc(m.cover || m.cover_url)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.classList.add('broken')">`
                   : '<div class="cover"></div>'}
+        ${deletedBadge(m)}
         ${statusBadge(m)}
         ${refetchBtnHtml(m)}
+        ${deleteBtnHtml(m)}
         ${nasBadgeHtml(m)}
         ${(m.local_samples|0) > 0 ? `<div class="sample-badge" title="本地已下载的 sample 圖片數量">${esc(m.local_samples)} 張樣品</div>` : ''}
         <div class="body">
@@ -391,10 +436,15 @@ export async function initWanted() {
       nasConfigured = !!data.configured;
       nasDownloading = new Set((data.downloading || []).map((c) => c.toUpperCase()));
       nasCompleted = new Set((data.completed || []).map((c) => c.toUpperCase()));
+      // unknown_status_codes：NAS 上能识别但状态字段缺失/无法判断的车
+      // （跨设备任务：手机 app 提交但当前 device_id 看不见；submit 时会被
+      //  NAS 业务码 N201000 拒收）
+      nasUnknownStatus = new Set((data.unknown_status_codes || []).map((c) => c.toUpperCase()));
     } catch {
       nasConfigured = false;
       nasDownloading = new Set();
       nasCompleted = new Set();
+      nasUnknownStatus = new Set();
     }
   }
 
@@ -610,6 +660,14 @@ export async function initWanted() {
       refetchOneJavbus(refetchBtn);
       return;
     }
+    // 点击单部删除按钮 → window.confirm → 调 /api/wanted/{code}/delete?confirm=true
+    const deleteBtn = e.target.closest('.delete-btn');
+    if (deleteBtn) {
+      e.stopPropagation();
+      e.preventDefault();
+      deleteOneMovie(deleteBtn);
+      return;
+    }
     // 点击封面 → 多图灯箱（wanted 页面：cover + 樣品）
     const cover = e.target.closest('.cover');
     if (cover && cover.src && !cover.classList.contains('broken')) {
@@ -780,6 +838,81 @@ export async function initWanted() {
     }
   }
 
+  // 删除 wanted 单部：window.confirm → POST /api/wanted/{carid}/delete?confirm=true
+  //
+  // 行为：
+  //   - 浏览器原生 confirm（桌面 / 移动都支持；简单可靠）
+  //   - 提示文案带 carid + title，让用户明确知道删的是哪部
+  //   - 成功后服务端返回 data.movie，in-place 更新卡片：状态变"已删除"，
+  //     ↻ 按钮消失，🗑️ 删除按钮消失，出现"🗑️ 已删除"徽章
+  //   - 失败：toast 错误（folder 没找到也会成功，UI 状态正确反映）
+  async function deleteOneMovie(btn) {
+    const code = btn.dataset.code || '';
+    if (!code) return;
+    if (btn.disabled) return;
+
+    // 取 title 给确认框用
+    const card = btn.closest('.card');
+    const title = card?.querySelector('.name')?.textContent || '';
+    const ok = window.confirm(
+      `确认删除 ${code} 的本地文件夹？\n\n` +
+        `操作：递归删除 <${title || code}> 下所有文件\n` +
+        `     + 在 wanted 列表标记为「已删除」\n\n` +
+        `⚠ 此操作不可撤销！\n\n` +
+        `（NAS 上的原始下载不会被触碰；只是 wanted 库里的副本）`
+    );
+    if (!ok) return;
+
+    btn.disabled = true;
+    const orig = btn.textContent;
+    btn.textContent = '⏳';
+    try {
+      const res = await fetch(
+        `/api/wanted/${encodeURIComponent(code)}/delete?confirm=true`,
+        { method: 'POST' }
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.detail || data.error || res.statusText);
+      }
+
+      // 成功：服务端返回了完整 entry（带 _status="deleted"）
+      if (data.movie) {
+        const i = movies.findIndex((x) => x.code === code);
+        if (i >= 0) movies[i] = data.movie;
+        // 刷新该卡片（status_counts / months 也可能变）
+        renderCardInPlace(code);
+        await loadStatusCountsOnly();
+        await loadMonthsOnly();
+        // 提示用户：folder 是否真的删了？没删的话告知磁盘上还有
+        if (data.folder_deleted) {
+          toast(`🗑️ ${code} 已删除（${data.deleted_at || ''}）`);
+        } else {
+          toast(
+            `${code} 已标记为已删除，但本地文件夹删除失败：` +
+              (data.error || '未知错误'),
+            true
+          );
+        }
+      } else {
+        // 防御：理论上服务端总会返回 movie
+        await load();
+        toast(`${code} 已标记为已删除`);
+      }
+    } catch (e) {
+      toast(`删除 ${code} 失败：${e.message}`, true);
+    } finally {
+      // renderCardInPlace 已经把 btn 节点替换掉了；这里用新卡片上的 btn 兜底
+      const liveBtn = document.querySelector(
+        `.delete-btn[data-code="${cssEscape(code)}"]`
+      );
+      if (liveBtn) {
+        liveBtn.textContent = orig;
+        liveBtn.disabled = false;
+      }
+    }
+  }
+
   // ---------- 移动端防御：切走/切回/卸载 ----------
   // 切走（后台标签/锁屏）：abort 所有 in-flight，避免浏览器静默杀掉后 fetch 永远不返回
   document.addEventListener('visibilitychange', () => {
@@ -924,14 +1057,35 @@ export async function initWanted() {
         btn.textContent = '✓ 已推送';
         btn.classList.add('r-nas-ok');
         toast(`${code} 已推送到 NAS`);
+        // 把 code 加入"已在 NAS"软记忆（即使下次拉 NAS codes 不见它，也能显示徽章）
+        nasSeenLocal.set(code, { ts: Date.now(), source: 'submit' });
         setTimeout(() => {
           btn.textContent = orig;
           btn.classList.remove('r-nas-ok');
           btn.disabled = false;
         }, 2500);
       } else {
-        const code2 = r.status_code ? ` [${r.status_code}]` : '';
+        const sc = r.status_code || '';
         const msg = r.msg || r.error || '未知错误';
+        // 极空间业务码 N201000：「任务已添加或是设备其他账号正在下载」
+        // 不是错误：磁链已经在 NAS 上有下载任务了（可能其他设备提交的）
+        // → 显示 "📡 已在 NAS" + info toast，不报错
+        if (sc === 'N201000') {
+          btn.textContent = '✓ 已在 NAS';
+          btn.classList.add('r-nas-ok');
+          toast(`${code} 已在 NAS 下载中（其他设备）`);
+          nasSeenLocal.set(code, { ts: Date.now(), source: 'N201000' });
+          // 让卡片立刻刷新徽章（显示"📡 在 NAS"），不等 30s 缓存过期
+          await refreshSingleCardBadge(code);
+          setTimeout(() => {
+            btn.textContent = orig;
+            btn.classList.remove('r-nas-ok');
+            btn.disabled = false;
+          }, 2500);
+          return;
+        }
+        // 其他错误：原有 toast
+        const code2 = sc ? ` [${sc}]` : '';
         btn.textContent = '✗ 失败';
         btn.classList.add('r-nas-fail');
         toast(`${code} NAS 推送失败${code2}：${msg}`, true);
@@ -951,6 +1105,23 @@ export async function initWanted() {
         btn.disabled = false;
       }, 3000);
     }
+  }
+
+  // NAS 提交成功后（N201000 / submit ok），刷新单张卡的徽章显示：
+  // 直接重渲该卡片 DOM（用最新 nasSeenLocal / nasUnknownStatus 数据），
+  // 不需要重拉整个 /api/zspace/codes 或重新 load()。
+  async function refreshSingleCardBadge(code) {
+    const card = document.querySelector(`.card[data-code="${cssEscape(code)}"]`);
+    if (!card) return;
+    // 从 movies 数组里找到当前 entry
+    const m = movies.find((x) => x.code === code);
+    if (!m) return;
+    // 用最新的 nasBadgeHtml 重渲 nas-badge 部分（最小化 DOM 变更）
+    const tmp = document.createElement('div');
+    tmp.innerHTML = cardHtml(m).trim();
+    const fresh = tmp.firstElementChild;
+    if (fresh) card.replaceWith(fresh);
+    // 重新挂 lightbox 等不需要（replaceWith 保留同名 attr；监听器在 grid 上）
   }
 
   async function sendToZspace() {

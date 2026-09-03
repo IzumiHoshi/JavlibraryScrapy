@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import threading
 from collections import Counter
 from datetime import datetime
@@ -62,7 +63,9 @@ def _matches_query(movie: Dict[str, Any], q_lower: str) -> bool:
 
 # Wanted 状态枚举（与前端 statusPicker 的 data-status 对齐）。
 # "none" 表示「没有任何 NAS / 本地库标记」的影片。
-STATUS_VALUES = ("none", "downloading", "downloaded", "organized")
+# "deleted" 表示「用户手动删除本地文件夹后」的影片（最高优先级，
+# 即便 NAS 正在下载 / 本地库已存在也显示"已删除"）。
+STATUS_VALUES = ("none", "downloading", "downloaded", "organized", "deleted")
 _STATUS_SET = frozenset(STATUS_VALUES)
 
 
@@ -72,7 +75,10 @@ def _status_of(
     nas_completed: set,
     local_exists_by_code: set,
 ) -> str:
-    """判定 wanted 单部的状态（优先级：downloading > organized > downloaded > none）。
+    """判定 wanted 单部的状态（优先级：deleted > downloading > organized > downloaded > none）。
+
+    ``_status="deleted"`` 是用户在 UI 显式删除本地文件夹后的标记——
+    最高优先级，避免"已删除"的车片同时显示"已下载" / "已整理"误导用户。
 
     ``nas_downloading`` / ``nas_completed`` 是从 zspace 服务来的 car id 集合
     （大写）；``local_exists_by_code`` 是 gallery.library_index 命中的 car id 集合
@@ -81,6 +87,9 @@ def _status_of(
     code = (movie.get("code") or "").upper()
     if not code:
         return "none"
+    # 终端状态优先：用户显式删除的车片不再被 NAS / 本地库状态覆盖
+    if (movie.get("_status") or "").lower() == "deleted":
+        return "deleted"
     if code in nas_downloading:
         return "downloading"
     if code in local_exists_by_code:
@@ -265,9 +274,15 @@ class WantedService:
     ) -> Dict[str, Any]:
         """按月份筛选 + 关键字搜索 + 状态筛选 + 分页。
 
-        同时返回 ``months`` 列表（月份桶摘要）+ ``status_counts``（4 状态计数，
-        与当前 month/q/filter 无关，全局计数）。status_counts 用于前端
-        ``statusPicker`` 控件显示「下载中 12 / 已下载 8 / 已整理 34」。
+        同时返回 ``months`` 列表（月份桶摘要）+ ``status_counts``（**5 状态**
+        全局计数：none / downloading / downloaded / organized / deleted，
+        与当前 month/q/filter 无关）。status_counts 用于前端
+        ``statusPicker`` 控件显示「下载中 12 / 已下载 8 / 已整理 34 / 已删除 5」。
+
+        状态判定优先级（_status_of）：
+            ``deleted`` > ``downloading`` > ``organized`` > ``downloaded`` > ``none``。
+        ``deleted`` 最高优先级：用户显式删除本地文件夹后，NAS / 本地库的标记
+        不再覆盖它，确保 UI 一致显示「已删除」。
 
         P2：派生数据（months 摘要、missing 总数）已预计算，``_sorted_movies``
         已按 release_date 倒序。本方法只需一次过滤 + 切片。
@@ -406,6 +421,13 @@ class WantedService:
         - 抓取成功：写入 ``release_date/actors/producer/publisher/category``，
           ``_status=ready``，``_bucket=YYYY-MM``，清 ``missing_in_remote``。
         - 抓取失败：``_status=failed``，``_bucket=unknown``，``release_date=""``。
+
+        **undelete 语义**：如果条目当前 ``_status="deleted"``（用户先前删除
+        过本地文件夹），手动调本方法 = 显式 undelete：成功 → ``_status="ready"``，
+        失败 → ``_status="failed"``。前端 ↻ 按钮在已删除车片上是隐藏的
+        （避免误触），但 API 仍允许——便于脚本 / 用户从「已删除」chip 里手动
+        恢复某条记录。自动 Most Wanted 刷新（``merge_wanted``）会跳过 deleted
+        条目，不复活。
 
         ``mw_root``：本地库根目录；非空时把 cover/samples 落到
         ``<root>/<CARID> <title>/``。不传则不落本地库（仍写 JSON 元数据）。
@@ -560,6 +582,12 @@ class WantedService:
             - 不在 JSON → 新建最小记录 + 抓 JAVBus；成功 → 写完整字段；
               失败 → 直接回滚不入盘
             - 在 JSON → 抓成功 → 更新字段；失败 → 标 failed 但保留条目
+
+        **undelete 语义**：与 :meth:`fetch_one_javbus` 一致——批量输入里若某
+        条车片当前 ``_status="deleted"``，抓取成功会"复活"为 ``ready``。
+        自动 Most Wanted 刷新路径不会带 deleted 车片到这里（``merge_wanted``
+        已过滤），所以这条路径只在前端 ➕ 添加车牌（含显式删过但想恢复的）
+        触发。
 
         Returns::
 
@@ -733,10 +761,148 @@ class WantedService:
             },
         }
 
+    # ---- 删除 wanted 单部（手动删除本地文件夹 + 标记状态）----
+    def delete_one(
+        self,
+        code: str,
+        *,
+        mw_root: Optional[Path] = None,
+    ) -> Dict[str, Any]:
+        """删除 wanted 单部：删除本地文件夹 + 在 JSON 中标记 ``_status="deleted"``。
+
+        行为：
+          - 在 ``mw_root`` 下找 ``<CARID> <title>/``（大小写不敏感前缀匹配），
+            找到则 ``shutil.rmtree`` 递归删除整个文件夹
+          - 在 wanted JSON 里给该车号标 ``_status="deleted"``、记录删除时间
+            和原 folder 名（保留历史，便于 UI 显示 / 未来恢复）
+          - JSON 中没该车号 → 新建一条 ``_status="deleted"`` 最小记录（让 UI
+            能渲染，方便用户看到"已删除"列表）
+          - 删文件夹失败（如 NAS 离线）但 JSON 标记仍会保留 → 用户能看到
+            "已删除"标记，但 ``folder_deleted=false`` 提示磁盘上还在
+
+        ``_status="deleted"`` 是**终端状态**：`_status_of` 里优先于
+        downloading / organized / downloaded，避免"已删除"的车同时显示
+        "已下载" / "已整理"误导用户。
+
+        ``mw_root`` 不传 → 用 :attr:`_movies` 的 ``data_path.parent``
+        作为 fallback（保持与 wanted 抓取默认一致）。**注意**：wanted 服务
+        自己不知道 ``MOSTWANTED_LIBRARY_ROOT``（那是 route / settings 层
+        的事）；调用方（route handler）应优先从 ``settings`` 取。
+
+        返回::
+
+            ``{
+                "code", "ok",                   # ok=True 表示 folder 删除成功
+                "deleted_at",                   # ISO 时间戳（标记写入时间）
+                "folder",                       # 被删除的 folder 名（如 "START-048 ..."）
+                "folder_deleted",               # bool; 物理删除是否成功
+                "error",                        # 失败原因（folder_deleted=False 时）
+                "movie",                        # 完整 updated entry（供前端 in-place）
+            }``
+        """
+        code_norm = (code or "").strip().upper()
+        if not code_norm:
+            return {"code": code_norm, "ok": False, "error": "空车牌"}
+
+        # 没传 mw_root → 用 data_path.parent 作 fallback
+        # （settings.mostwanted_library_root 通常就在那里）
+        if mw_root is None:
+            mw_root = self.data_path.parent
+
+        # 找 folder（大小写不敏感前缀匹配；与 _find_movie_folder 一致）
+        deleted_folder_name: Optional[str] = None
+        folder_deleted = False
+        folder_error: Optional[str] = None
+        if mw_root and mw_root.exists():
+            prefix = code_norm + " "
+            try:
+                for entry in mw_root.iterdir():
+                    if entry.is_dir() and entry.name.upper().startswith(prefix):
+                        try:
+                            shutil.rmtree(entry)
+                            deleted_folder_name = entry.name
+                            folder_deleted = True
+                            logger.info(f"已删除 wanted 文件夹：{entry}")
+                        except OSError as e:
+                            folder_error = f"删除文件夹失败：{e}"
+                            logger.warning(f"删除 wanted 文件夹失败 {entry}: {e}")
+                        break  # 第一个匹配即可
+            except OSError as e:
+                folder_error = f"枚举 {mw_root} 失败：{e}"
+                logger.warning(folder_error)
+        else:
+            folder_error = "未配置 MOSTWANTED_LIBRARY_ROOT（或目录不存在）"
+
+        now = datetime.now().isoformat(timespec="seconds")
+
+        with self._lock:
+            movies = list(self._movies)  # 防御性 copy
+            existing = next(
+                (m for m in movies
+                 if (m.get("code") or "").upper() == code_norm),
+                None,
+            )
+            if existing is None:
+                # JSON 没记录 → 新建最小 deleted entry（让 UI 能渲染）
+                existing = {
+                    "id": "",
+                    "code": code_norm,
+                    "title": "",
+                    "cover_url": "",
+                    "release_date": "",
+                    "magnet": "",
+                    "_status": "deleted",
+                    "_deleted_at": now,
+                    "_deleted_folder": deleted_folder_name or "",
+                    "_bucket": "unknown",
+                    "_seen_at": now,
+                    "_updated_at": now,
+                    "missing_in_remote": False,
+                }
+                movies.append(existing)
+            else:
+                existing["_status"] = "deleted"
+                existing["_deleted_at"] = now
+                if deleted_folder_name:
+                    # 本次确实删了 folder → 记录原 folder 名（覆盖旧值）
+                    existing["_deleted_folder"] = deleted_folder_name
+                # _deleted_folder 留空表示"用户点了删除但文件夹不存在"
+                # —— 仍然标 deleted（用户意图明确）
+                existing["_updated_at"] = now
+
+            # 落盘 + 重算派生数据（与 fetch_one_javbus 一致）
+            self._movies = movies
+            self._recompute_derived_unlocked()
+            self._loaded_at = datetime.now().isoformat(timespec="seconds")
+            self.data_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.data_path.with_suffix(self.data_path.suffix + ".tmp")
+            tmp.write_text(
+                json.dumps(movies, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            tmp.replace(self.data_path)
+
+        return {
+            "code": code_norm,
+            "ok": folder_deleted,  # True = folder 物理删除成功
+            "folder": deleted_folder_name,
+            "folder_deleted": folder_deleted,
+            "deleted_at": now,
+            "error": folder_error if not folder_deleted else None,
+            "movie": dict(existing),
+        }
+
     # ---- 预热辅助（P1）----
+    def iter_codes(self) -> List[str]:
         """返回当前 wanted 列表里所有 code 的快照（用于 sample cache 预热）。
 
         按 release_date 倒序排好，前 N 个就是用户最常看的。
+
+        历史：曾因提交丢失过 ``def`` 行（PR #25 review 时发现）—— body 被
+        并入 :meth:`fetch_batch_javbus` 末尾成为 dead code（之前一个 return
+        已经 return 走了），导致 :func:`app.create_app` 启动时调本方法
+        直接抛 AttributeError，被 except 吞掉默默 warn。Sample cache
+        预热事实上从未生效，每次开服首屏都吃 NFS cold start。
         """
         with self._lock:
             return [m.get("code") or "" for m in self._sorted_movies]

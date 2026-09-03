@@ -56,9 +56,14 @@ _DOWNLOADING_STATES = frozenset({
 _COMPLETED_STATES = frozenset({
     "completed", "complete", "finished", "seeding", "done", "uploaded",
 })
-# 极空间实测的 int status 码：0=active，13=seeding/completed。其它值按
-# isFinished bool / 进度兜底。
-_DOWNLOADING_STATUS_CODES = frozenset({0, 1, 2, 3, 4, 5})  # active 类
+# 极空间实测的 int status 码：
+#   - 0 = active downloading
+#   - 7 = "checking resume data"（实测：API 返回 7 + isFinished=False + progress=-1）
+#   - 13 = seeding/completed（实测）
+# 兜底扩展 6/8/9/10（其他厂家常用：stalled/paused/checking/fetching metadata），
+# 让未知 active 类状态也能归 downloading。100/101（部分固件代表 seeding）。
+_DOWNLOADING_STATUS_CODES = frozenset({0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10})  # active / paused / checking
+_COMPLETED_STATUS_CODES = frozenset({11, 12, 13, 14, 15, 16, 17, 100, 101})  # seeding / completed / done
 _COMPLETED_STATUS_CODES = frozenset({11, 12, 13, 14, 15, 16, 17})  # seeding / completed 类
 
 # 缓存有效期：NAS list API 单次 500ms~2s，wanted 页每次 load() 都拉太重。
@@ -91,7 +96,8 @@ class ZSpaceClient:
         self._sig: Optional[tuple] = None
         self._lock = asyncio.Lock()
         # 下载任务代码集缓存（30s），让 wanted 页频繁 load() 不会把 NAS 摸死
-        self._codes_cache: Optional[Tuple[float, Set[str], Set[str], Dict[str, float]]] = None
+        # 缓存内容：(timestamp, downloading, completed, progress, unknown_status, all_codes)
+        self._codes_cache: Optional[Tuple[float, Set[str], Set[str], Dict[str, float], Set[str], Set[str]]] = None
 
     # ------------------------------------------------------------------ #
     # 内部
@@ -229,16 +235,18 @@ class ZSpaceClient:
     # ------------------------------------------------------------------ #
     async def get_download_codes(
         self, *, force_refresh: bool = False
-    ) -> Tuple[Set[str], Set[str], Dict[str, float]]:
-        """返回 ``(downloading_codes, completed_codes, downloading_progress)``。
+    ) -> Tuple[Set[str], Set[str], Dict[str, float], Set[str], Set[str]]:
+        """返回 ``(downloading, completed, progress, unknown_status_codes, all_codes)``。
 
         - 从 ``/downloader/list`` 拿原始任务列表
         - 用正则从 ``task.name`` 抽 car id（兼容大小写、与 - 分隔符无关）
-        - 按 ``status`` 字符串 + ``progress`` 字段联合判定 downloading / completed
-        - 30s 内存缓存；force_refresh=True  无视缓存（给用户手动刷新按钮用）
-        - ``downloading_progress``：downloading 集合里每车的进度（0-100 浮点）。
-          解析失败 → 进度 0（前端显示进度条但不显示文字）。
-          completed 集合的车不放进来（completed 进度总是 100，前端不需要）。
+        - 按 ``isFinished`` / ``completeSize+totalSize`` / ``status`` / ``progress``
+          联合判定（多级 fallback，详见 :func:`_parse_download_codes`）
+        - 30s 内存缓存；force_refresh=True 无视缓存（给用户手动刷新按钮用）
+        - ``downloading_progress``：downloading 集合里每车的进度（0-100 浮点）
+        - ``unknown_status_codes``：NAS 上能识别 car id 但状态字段缺失/无法判断
+          的车（前端可显示 "在 NAS 上（其他设备）" 徽章，避免重复提交）
+        - ``all_codes``：NAS 上所有可识别的 car id（downloading ∪ completed ∪ unknown）
 
         出错时（NAS 离线 / 登录失效 / list 失败）抛 :class:`ZSpaceError`，
         路由层映射成 502 + 空集兜底；前端拿到空集就不显示 NAS 徽章，跟
@@ -250,16 +258,31 @@ class ZSpaceClient:
             and self._codes_cache is not None
             and (now - self._codes_cache[0]) < _DOWNLOAD_CODES_CACHE_TTL
         ):
-            return self._codes_cache[1], self._codes_cache[2], self._codes_cache[3]
+            return (
+                self._codes_cache[1],
+                self._codes_cache[2],
+                self._codes_cache[3],
+                self._codes_cache[4],
+                self._codes_cache[5],
+            )
 
         raw = await self.list_downloads()
-        downloading, completed, downloading_progress = _parse_download_codes(raw)
-        self._codes_cache = (now, downloading, completed, downloading_progress)
+        (
+            downloading,
+            completed,
+            downloading_progress,
+            unknown_status_codes,
+            all_codes,
+        ) = _parse_download_codes(raw)
+        self._codes_cache = (
+            now, downloading, completed, downloading_progress, unknown_status_codes, all_codes
+        )
         logger.debug(
             f"NAS 下载代码集刷新：downloading={len(downloading)}, "
-            f"completed={len(completed)}"
+            f"completed={len(completed)}, unknown={len(unknown_status_codes)}, "
+            f"all={len(all_codes)}"
         )
-        return downloading, completed, downloading_progress
+        return downloading, completed, downloading_progress, unknown_status_codes, all_codes
 
     def invalidate_download_codes_cache(self) -> None:
         """主动失效缓存。
@@ -271,21 +294,32 @@ class ZSpaceClient:
 
 def _parse_download_codes(
     raw: Dict[str, Any],
-) -> Tuple[Set[str], Set[str], Dict[str, float]]:
+) -> Tuple[Set[str], Set[str], Dict[str, float], Set[str], Set[str]]:
     """从 ``/downloader/list`` 的响应里抽 car id，按状态分两组 + 下载进度。
 
-    返回 ``(downloading, completed, downloading_progress)``：
+    返回 ``(downloading, completed, downloading_progress, unknown_status_codes, all_codes)``：
     - ``downloading``: 还在下的车（含 isFinished=false 但 progress 已 99% 的）
     - ``completed``: 已完成/做种的车
     - ``downloading_progress``: downloading 集合里每车 → 进度 0-100（completed 不进）
+    - ``unknown_status_codes``: NAS 上能识别 car id 但状态字段缺失/完全无法判断的车
+      （如 status 字段缺、isFinished 缺、size 全 0、progress 解析失败）—— 提示前端
+      "在 NAS 上但状态不明"，避免用户重复提交时误判为 "不存在"
+    - ``all_codes``: NAS 上所有可识别的 car id（downloading ∪ completed ∪ unknown 去重）
+
+    判定优先级（重构后更稳健）：
+      1) isFinished bool（极空间实测）→ 直接定 downloading/completed
+      2) completeSize/totalSize：complete ≥ total → completed；否则 downloading
+         （即使 status 字段是未知码也能正确归类；之前会丢任务）
+      3) status int 字段：查表 _DOWNLOADING_STATUS_CODES / _COMPLETED_STATUS_CODES
+      4) status 字符串字段：查表 _DOWNLOADING_STATES / _COMPLETED_STATES（同 6）
+      5) progress 兜底：≥100 → completed；>0 → downloading；-1 → unknown
+      6) 完全无法判断（status 字段缺失 / size 全 0）→ unknown
 
     兼容性处理（实测覆盖极空间 + 其它 qBittorrent 系）：
     - tasks 路径：``data.tasks`` / ``data.list`` / ``data.items`` / 顶层 ``list``
     - 任务名：``name`` / ``title`` / ``fileName``
     - 状态字段：``status``（int 或 str）/ ``state``（str）/ ``isFinished``（bool）
     - 进度：``progress`` / ``percent`` / ``completeSize``/``totalSize``
-
-    判定优先级：isFinished bool > status 字符串 > status 数字码 > progress
     """
     # 尝试多个常见路径定位 task 列表
     candidates: List[Any] = []
@@ -302,6 +336,7 @@ def _parse_download_codes(
     downloading: Set[str] = set()
     completed: Set[str] = set()
     downloading_progress: Dict[str, float] = {}
+    unknown_status_codes: Set[str] = set()  # NAS 上有但状态字段无法判断的车
     for task in candidates:
         if not isinstance(task, dict):
             continue
@@ -317,72 +352,114 @@ def _parse_download_codes(
             continue
 
         progress = _extract_progress(task)
-        # 状态判定（按优先级）
-        # 1) isFinished bool（极空间实测）—— 最直接可靠
+
+        # ===== 1) isFinished bool（最直接）=====
         is_finished = task.get("isFinished")
         if isinstance(is_finished, bool):
             if is_finished:
                 completed.add(carid)
             else:
-                # isFinished=false → 还在下载；可能 progress=99.7% 但还没标记完成
                 downloading.add(carid)
                 downloading_progress[carid] = max(0.0, min(100.0, progress))
             continue
 
-        # 2) status / state 字符串
-        status_raw = None
-        for key in ("status", "state"):
-            v = task.get(key)
-            if isinstance(v, str):
-                status_raw = v
-                break
-        if status_raw is not None:
-            status_lower = status_raw.strip().lower()
-            if status_lower in _COMPLETED_STATES:
+        # ===== 2) completeSize / totalSize 兜底（最可靠，不依赖 status 码）=====
+        complete = task.get("completeSize")
+        total = task.get("totalSize") or task.get("total_size")
+        if (
+            isinstance(complete, (int, float))
+            and isinstance(total, (int, float))
+            and total > 0
+        ):
+            if complete >= total:
+                # 文件已下完（即使 status 字段是未知码或缺失）
                 completed.add(carid)
-            elif status_lower in _DOWNLOADING_STATES:
-                downloading.add(carid)
-                downloading_progress[carid] = max(0.0, min(100.0, progress))
-            # 其它状态字符串（未知）继续看数字码
             else:
-                # 尝试把 status 当 int 解析
-                try:
-                    code = int(status_raw)
-                    if code in _COMPLETED_STATUS_CODES:
-                        completed.add(carid)
-                    elif code in _DOWNLOADING_STATUS_CODES:
-                        downloading.add(carid)
-                        downloading_progress[carid] = max(0.0, min(100.0, progress))
-                except (TypeError, ValueError):
-                    pass
+                downloading.add(carid)
+                downloading_progress[carid] = max(
+                    0.0, min(100.0, progress if progress > 0 else complete / total * 100.0)
+                )
             continue
+        # size 兜底不一定都有：BT 任务 metadata 未下完时 totalSize=0
+        # 这种情况下退到 status 字段判断
 
-        # 3) status int 字段（极空间：0=active, 13=completed/seeding）
+        # ===== 3) status int 字段 =====
+        status_int = None
         for key in ("status", "state"):
             v = task.get(key)
             if isinstance(v, int):
-                if v in _COMPLETED_STATUS_CODES:
+                status_int = v
+                break
+        if status_int is not None:
+            if status_int in _COMPLETED_STATUS_CODES:
+                completed.add(carid)
+                continue
+            if status_int in _DOWNLOADING_STATUS_CODES:
+                downloading.add(carid)
+                downloading_progress[carid] = max(0.0, min(100.0, progress))
+                continue
+            # 未知 status int → 退到 progress 兜底
+            if progress >= 100:
+                completed.add(carid)
+                continue
+            if progress > 0:
+                downloading.add(carid)
+                downloading_progress[carid] = progress
+                continue
+            # 完全无法判断
+            unknown_status_codes.add(carid)
+            continue
+
+        # ===== 4) status 字符串字段 =====
+        status_str = None
+        for key in ("status", "state"):
+            v = task.get(key)
+            if isinstance(v, str):
+                status_str = v
+                break
+        if status_str is not None:
+            status_lower = status_str.strip().lower()
+            if status_lower in _COMPLETED_STATES:
+                completed.add(carid)
+                continue
+            if status_lower in _DOWNLOADING_STATES:
+                downloading.add(carid)
+                downloading_progress[carid] = max(0.0, min(100.0, progress))
+                continue
+            # 尝试把字符串当 int 解析
+            try:
+                code = int(status_str)
+                if code in _COMPLETED_STATUS_CODES:
                     completed.add(carid)
-                elif v in _DOWNLOADING_STATUS_CODES:
+                    continue
+                if code in _DOWNLOADING_STATUS_CODES:
                     downloading.add(carid)
                     downloading_progress[carid] = max(0.0, min(100.0, progress))
-                # 未知码继续看进度
-                else:
-                    if progress >= 100:
-                        completed.add(carid)
-                    elif progress > 0:
-                        downloading.add(carid)
-                        downloading_progress[carid] = max(0.0, min(100.0, progress))
-                break
-        else:
-            # 4) 纯进度兜底
+                    continue
+            except (TypeError, ValueError):
+                pass
+            # status 字符串未知
             if progress >= 100:
                 completed.add(carid)
             elif progress > 0:
                 downloading.add(carid)
-                downloading_progress[carid] = max(0.0, min(100.0, progress))
+                downloading_progress[carid] = progress
+            else:
+                unknown_status_codes.add(carid)
+            continue
 
-    return downloading, completed, downloading_progress
+        # ===== 5) 没 status 字段，纯 progress 兜底 =====
+        if progress >= 100:
+            completed.add(carid)
+        elif progress > 0:
+            downloading.add(carid)
+            downloading_progress[carid] = progress
+        else:
+            # 没法判断：有 carid 但 status/size/progress 全缺
+            unknown_status_codes.add(carid)
+
+    all_codes = downloading | completed | unknown_status_codes
+    return downloading, completed, downloading_progress, unknown_status_codes, all_codes
 
 
 def _extract_carid(name: str) -> Optional[str]:

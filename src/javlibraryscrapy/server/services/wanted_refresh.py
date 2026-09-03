@@ -206,9 +206,19 @@ def merge_wanted(
                 existing["_updated_at"] = datetime.now().isoformat(timespec="seconds")
                 result.updated += 1
             # 如果本地 release_date 还是空的，标记需要重抓
+            # 保护 _status="deleted"（commit 1d3aab6 引入的状态）：
+            # 自动 Most Wanted refresh 不应覆盖用户的删除标记，否则每次刷
+            # 全站都会"复活"已删除的车牌。手动 refetch（fetch_one_javbus）
+            # 是显式 undelete 路径，可以覆盖。
             if not existing.get("release_date"):
-                existing["_status"] = "pending"
-                result.needs_javbus.append(existing)
+                if (existing.get("_status") or "").lower() == "deleted":
+                    logger.debug(
+                        f"merge_wanted: 跳过 deleted {existing.get('code')}"
+                        "（自动刷新不复活已删除的车牌）"
+                    )
+                else:
+                    existing["_status"] = "pending"
+                    result.needs_javbus.append(existing)
 
     for code, entry in by_code.items():
         if code not in seen_codes and not entry.get("missing_in_remote"):

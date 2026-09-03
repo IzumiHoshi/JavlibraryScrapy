@@ -228,12 +228,18 @@ def create_app(
     # P1：后台预热 sample cache —— 把 wanted 列表里的前 N 个 code 的 sample 数扫掉，
     # 让首次 /api/wanted 不必触发 NFS cold start（NFS 单目录 glob 几百 ms~几 s）。
     # 用 daemon 线程，不阻塞启动；失败也不影响服务可用。
+    #
+    # 异常处理：用 ``logger.exception``（而不是 ``logger.warning``）保留 stack
+    # trace——之前 ``WantedService.iter_codes`` 方法的 ``def`` 行丢失（PR #25
+    # review 时发现，提交 ``d6fd585`` 顺手修了），AttributeError 被这里吞成
+    # 一行 warning，导致 sample cache 预热事实上从未生效。现在保留 stack trace
+    # 方便下次 coding bug 一眼看到。
     def _prewarm() -> None:
         try:
             codes = wanted.iter_codes()
             sample_cache.prewarm(codes[:120])
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"sample cache prewarm 失败：{e}")
+        except Exception:  # noqa: BLE001
+            logger.exception("sample cache prewarm 失败")
 
     threading.Thread(target=_prewarm, daemon=True, name="sample-cache-prewarm").start()
 

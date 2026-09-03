@@ -584,6 +584,12 @@
     /* 微动画：纯色 → 半透 → 纯色，让人一眼看出"还在跑" */
     animation: nas-pulse 2s ease-in-out infinite;
   }
+  /* 跨设备 / 状态字段缺失：NAS 上存在但本设备列表看不见 */
+  .nas-badge.remote {
+    background: rgba(150, 150, 150, 0.12);
+    color: #9ca3af;
+    border: 1px dashed rgba(150, 150, 150, 0.35);
+  }
   @keyframes nas-pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.55; }
@@ -813,6 +819,36 @@
   .refetch-btn.running { background: var(--warn); border-color: var(--warn); animation: pulse 1.4s ease-in-out infinite; }
   .refetch-btn.done { background: var(--ok); border-color: var(--ok); }
   .refetch-btn.failed { background: var(--err); border-color: var(--err); }
+
+  /* 删除按钮：左上角（与 ↻ 右上对称），色调偏危险色 */
+  .delete-btn {
+    position: absolute;
+    top: 6px; left: 6px;
+    width: 30px; height: 30px;
+    padding: 0;
+    background: rgba(0, 0, 0, 0.55);
+    border: 1px solid var(--border);
+    border-radius: 50%;
+    color: #fff;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    line-height: 1;
+    z-index: 3;
+    transition: background .15s, transform .12s;
+  }
+  .delete-btn:hover:not(:disabled) {
+    background: var(--err);
+    border-color: var(--err);
+    transform: scale(1.05);
+  }
+  .delete-btn:disabled { cursor: not-allowed; opacity: .9; }
+
+  /* 已删除的车片：整张卡片灰一档，让"已删除"徽章 + 视觉一致 */
+  .card.is-deleted { opacity: .65; }
+  .card.is-deleted .cover { filter: grayscale(.7) brightness(.85); }
 
   /* ---------- 灯箱（双页面通用） ---------- */
   #lightbox {
